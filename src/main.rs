@@ -217,7 +217,7 @@ impl ExampleChart {
             self.data_points.push_back((time, price));
         }
 
-        while self.data_points.len() > 2000 {
+        while self.data_points.len() > 6000 {
             self.data_points.pop_front();
         }
 
@@ -266,30 +266,23 @@ impl Chart<Message> for ExampleChart {
                 .data_points
                 .back()
                 .unwrap()
-                .0
-                .checked_add_signed(chrono::Duration::from_std(Duration::from_millis(1000)).unwrap())
-                .unwrap();
-            //let oldest_time = newest_time - chrono::Duration::seconds(PLOT_SECONDS as i64);
-            let oldest_time = self
-                .data_points
-                .front()
-                .unwrap()
-                .0
-                .checked_sub_signed(chrono::Duration::from_std(Duration::from_millis(1000)).unwrap())
-                .unwrap();
-            //dbg!(&newest_time);
-            //dbg!(&oldest_time);
+                .0;
+            let oldest_time = newest_time - chrono::Duration::seconds(30);
+        
+            // y-axis range, acquire price range within the time range
+            let recent_data_points: Vec<_> = self.data_points.iter().filter_map(|&(time, price)| {
+                if time >= oldest_time && time <= newest_time {
+                    Some((time, price))
+                } else {
+                    None
+                }
+            }).collect();
 
-            // y-axis range, acquire price range
             let mut y_min = f32::MAX;
             let mut y_max = f32::MIN;
-            for (_, value) in &self.data_points {
-                if *value < y_min {
-                    y_min = *value;
-                }
-                if *value > y_max {
-                    y_max = *value;
-                }
+            for (_, price) in &recent_data_points {
+                y_min = y_min.min(*price);
+                y_max = y_max.max(*price);
             }
 
             let mut chart = chart
@@ -318,13 +311,13 @@ impl Chart<Message> for ExampleChart {
             chart
                 .draw_series(
                     AreaSeries::new(
-                        self.data_points.iter().cloned(),
+                        recent_data_points,
                         0_f32,
                         PLOT_LINE_COLOR.mix(0.175),
                     )
                     .border_style(ShapeStyle::from(PLOT_LINE_COLOR).stroke_width(2)),
                 )
-                .expect("failed to draw chart data");
+            .expect("failed to draw chart data");
         }
     }
 }
