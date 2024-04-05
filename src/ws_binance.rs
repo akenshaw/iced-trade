@@ -170,3 +170,40 @@ pub enum Event {
 
 #[derive(Debug, Clone)]
 pub struct Connection(mpsc::Sender<String>);
+
+#[derive(Deserialize, Debug, Clone)]
+struct FetchedKlines (
+    u64,
+    #[serde(with = "string_to_f32")] f32,
+    #[serde(with = "string_to_f32")] f32,
+    #[serde(with = "string_to_f32")] f32,
+    #[serde(with = "string_to_f32")] f32,
+    #[serde(with = "string_to_f32")] f32,
+    u64,
+    String,
+    u32,
+    #[serde(with = "string_to_f32")] f32,
+    String,
+    String,
+);
+impl From<FetchedKlines> for Kline {
+    fn from(fetched: FetchedKlines) -> Self {
+        Self {
+            time: fetched.0,
+            open: fetched.1,
+            high: fetched.2,
+            low: fetched.3,
+            close: fetched.4,
+            volume: fetched.5,
+            taker_buy_base_asset_volume: fetched.9,
+        }
+    }
+}
+pub async fn fetch_klines(ticker: String) -> Result<Vec<Kline>, reqwest::Error> {
+    let url = format!("https://fapi.binance.com/fapi/v1/klines?symbol={}&interval=1m&limit=30", ticker.to_lowercase());
+    let response = reqwest::get(&url).await?;
+    let value: serde_json::Value = response.json().await?;
+    let fetched_klines: Result<Vec<FetchedKlines>, _> = serde_json::from_value(value);
+    let klines: Vec<Kline> = fetched_klines.unwrap().into_iter().map(Kline::from).collect();
+    Ok(klines)
+}
