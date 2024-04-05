@@ -129,7 +129,7 @@ impl Application for State {
                 dbg!(&self.ws_running);
                 self.trades_chart = Some(LineChart::new());
                 Command::perform(
-                    fetch_klines(self.selected_ticker.unwrap())
+                    ws_binance::fetch_klines(self.selected_ticker.unwrap().to_string())
                         .map_err(|err| format!("{}", err)), 
                     |klines| {
                         Message::FetchEvent(klines)
@@ -301,7 +301,7 @@ impl Chart<Message> for CandlestickChart {
         }
 
         let mut chart = chart
-            .x_label_area_size(0)
+            .x_label_area_size(28)
             .y_label_area_size(28)
             .margin(20)
             .build_cartesian_2d(oldest_time..newest_time, y_min..y_max)
@@ -320,6 +320,15 @@ impl Chart<Message> for CandlestickChart {
                     .transform(FontTransform::Rotate90),
             )
             .y_label_formatter(&|y| format!("{}", y))
+            .x_labels(8) 
+            .x_label_style(
+                ("Noto Sans", 12)
+                    .into_font()
+                    .color(&GREY.mix(0.65))
+            )
+            .x_label_formatter(&|x| {
+                x.format("%H:%M").to_string()
+            })
             .draw()
             .expect("failed to draw chart mesh");
 
@@ -420,7 +429,7 @@ impl Chart<Message> for LineChart {
             }
 
             let mut chart = chart
-                .x_label_area_size(0)
+                .x_label_area_size(28)
                 .y_label_area_size(28)
                 .margin(20)
                 .build_cartesian_2d(oldest_time..newest_time, y_min..y_max)
@@ -439,6 +448,15 @@ impl Chart<Message> for LineChart {
                         .transform(FontTransform::Rotate90),
                 )
                 .y_label_formatter(&|y| format!("{}", y))
+                .x_labels(8)
+                .x_label_style(
+                    ("Noto Sans", 12)
+                        .into_font()
+                        .color(&GREY.mix(0.65))
+                )
+                .x_label_formatter(&|x| {
+                    x.format("%M:%S").to_string()
+                })
                 .draw()
                 .expect("failed to draw chart mesh");
 
@@ -454,53 +472,4 @@ impl Chart<Message> for LineChart {
                 .expect("failed to draw chart data");
         }
     }
-}
-
-
-mod string_to_f32 {
-    use serde::{self, Deserialize, Deserializer};
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<f32, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        s.parse::<f32>().map_err(serde::de::Error::custom)
-    }
-}
-#[derive(Deserialize, Debug, Clone)]
-struct FetchedKlines (
-    u64,
-    #[serde(with = "string_to_f32")] f32,
-    #[serde(with = "string_to_f32")] f32,
-    #[serde(with = "string_to_f32")] f32,
-    #[serde(with = "string_to_f32")] f32,
-    #[serde(with = "string_to_f32")] f32,
-    u64,
-    String,
-    u32,
-    #[serde(with = "string_to_f32")] f32,
-    String,
-    String,
-);
-impl From<FetchedKlines> for Kline {
-    fn from(fetched: FetchedKlines) -> Self {
-        Self {
-            time: fetched.0,
-            open: fetched.1,
-            high: fetched.2,
-            low: fetched.3,
-            close: fetched.4,
-            volume: fetched.5,
-            taker_buy_base_asset_volume: fetched.9,
-        }
-    }
-}
-async fn fetch_klines(ticker: Ticker) -> Result<Vec<Kline>, reqwest::Error> {
-    let url = format!("https://fapi.binance.com/fapi/v1/klines?symbol={}&interval=1m&limit=30", ticker.to_string().to_lowercase());
-    let response = reqwest::get(&url).await?;
-    let value: serde_json::Value = response.json().await?;
-    let fetched_klines: Result<Vec<FetchedKlines>, _> = serde_json::from_value(value);
-    let klines: Vec<Kline> = fetched_klines.unwrap().into_iter().map(Kline::from).collect();
-    Ok(klines)
 }
