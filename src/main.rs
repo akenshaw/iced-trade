@@ -155,10 +155,9 @@ impl Application for State {
                     self.ws_state = WsState::Disconnected;
                     Command::none()
                 }
-                ws_binance::Event::DepthReceived(depth_update, bids, _asks, trades_buffer) => {
-                    let best_bid_price = bids.first().map(|(price, _)| *price).unwrap_or(0.0);
+                ws_binance::Event::DepthReceived(depth_update, bids, asks, trades_buffer) => {
                     if let Some(chart) = &mut self.trades_chart {
-                        chart.update(depth_update, trades_buffer, best_bid_price);
+                        chart.update(depth_update, trades_buffer, bids, asks);
                     }
                     Command::none()
                 }
@@ -338,19 +337,19 @@ impl Chart<Message> for CandlestickChart {
 struct LineChart {
     cache: Cache,
     data_points: VecDeque<(DateTime<Utc>, f32, f32, bool)>,
-    bid_prices: VecDeque<(DateTime<Utc>, f32)>,
+    depth: VecDeque<(DateTime<Utc>, Vec<(f32, f32)>, Vec<(f32, f32)>)>,
 }
 impl LineChart {
     fn new() -> Self {
         Self {
             cache: Cache::new(),
             data_points: VecDeque::new(),
-            bid_prices: VecDeque::new(),
+            depth: VecDeque::new(),
         }
     }
 
-    fn update(&mut self, depth_update: u64, mut trades_buffer: Vec<ws_binance::Trade>, best_bid_price: f32) {
-        let aggregate_time = 250; 
+    fn update(&mut self, depth_update: u64, mut trades_buffer: Vec<ws_binance::Trade>, bids: Vec<(f32, f32)>, asks: Vec<(f32, f32)>) {
+        let aggregate_time = 100; 
         let depth_update_time = DateTime::<Utc>::from_utc(
             NaiveDateTime::from_timestamp(
                 (depth_update / 1000) as i64, 
@@ -358,16 +357,22 @@ impl LineChart {
             ), 
             Utc
         );
-        self.bid_prices.push_back((depth_update_time, best_bid_price));
 
         for trade in trades_buffer.drain(..) {
             self.data_points.push_back((depth_update_time, trade.price, trade.qty, trade.is_sell));
         }
+        if let Some((time, _, _)) = self.depth.back() {
+            if *time == depth_update_time {
+                self.depth.pop_back();
+            }
+        }
+        self.depth.push_back((depth_update_time, bids, asks));
+
         while self.data_points.len() > 6000 {
             self.data_points.pop_front();
-            self.bid_prices.pop_front();
+            self.depth.pop_front();
         }
-
+        
         self.cache.clear();
     }
 
@@ -393,8 +398,6 @@ impl Chart<Message> for LineChart {
 
     fn build_chart<DB: DrawingBackend>(&self, _state: &Self::State, mut chart: ChartBuilder<DB>) {
         use plotters::prelude::*;
-
-        const PLOT_LINE_COLOR: RGBColor = RGBColor(0, 175, 255);
         
         if self.data_points.len() > 1 {
             // x-axis range, acquire time range
@@ -418,9 +421,11 @@ impl Chart<Message> for LineChart {
                 }
             }).collect();
 
-            let recent_bid_prices: Vec<_> = self.bid_prices.iter().filter_map(|&(time, price)| {
-                if time >= oldest_time && time <= newest_time {
-                    Some((time, price))
+            let recent_depth: Vec<_> = self.depth.iter().filter_map(|(time, bids, asks)| {
+                if time >= &oldest_time && time <= &newest_time {
+                    y_min = y_min.min(bids.iter().map(|(price, _qty)| *price).fold(f32::MAX, f32::min));
+                    y_max = y_max.max(asks.iter().map(|(price, _qty)| *price).fold(f32::MIN, f32::max));
+                    Some((time, bids, asks))
                 } else {
                     None
                 }
@@ -458,16 +463,31 @@ impl Chart<Message> for LineChart {
                 .draw()
                 .expect("failed to draw chart mesh");
 
-            chart
-                .draw_series(
-                    AreaSeries::new(
-                        recent_bid_prices.iter().map(|&(time, price)| (time, price)),
-                        0_f32,
-                        PLOT_LINE_COLOR.mix(0.175),
+            for i in 0..20 { 
+                let bids_i: Vec<(DateTime<Utc>, f32, f32)> = recent_depth.iter().map(|&(time, bid, _ask)| ((*time).clone(), bid[i].0, bid[i].1)).collect();
+                let asks_i: Vec<(DateTime<Utc>, f32, f32)> = recent_depth.iter().map(|&(time, _bid, ask)| ((*time).clone(), ask[i].0, ask[i].1)).collect();
+            
+                let max_bid_quantity = bids_i.iter().map(|&(_time, _price, quantity)| quantity).fold(f32::MIN, f32::max);
+                let max_ask_quantity = asks_i.iter().map(|&(_time, _price, quantity)| quantity).fold(f32::MIN, f32::max);
+            
+                chart
+                    .draw_series(
+                        bids_i.iter().map(|&(time, price, quantity)| {
+                            let alpha = 0.1 + 0.9 * (quantity / max_bid_quantity);
+                            Pixel::new((time, price), RGBAColor(0, 128, 128, alpha.into()))
+                        }),
                     )
-                    .border_style(ShapeStyle::from(PLOT_LINE_COLOR).stroke_width(2)),
-                )
-                .expect("failed to draw chart data");
+                    .expect(&format!("failed to draw bids_{}", i));
+            
+                chart
+                    .draw_series(
+                        asks_i.iter().map(|&(time, price, quantity)| {
+                            let alpha = 0.1 + 0.9 * (quantity / max_ask_quantity);
+                            Pixel::new((time, price), RGBAColor(128, 0, 128, alpha.into()))
+                        }),
+                    )
+                    .expect(&format!("failed to draw asks_{}", i));
+            }
             
             let qty_min = recent_data_points.iter().map(|&(_, _, qty, _)| qty).fold(f32::MAX, f32::min);
             let qty_max = recent_data_points.iter().map(|&(_, _, qty, _)| qty).fold(f32::MIN, f32::max);
