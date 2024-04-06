@@ -114,6 +114,8 @@ pub fn connect(selected_ticker: String) -> Subscription<Event> {
                                                         }
                                                     }
                                                 } else if wrapper.stream.contains("depth") {
+                                                    let update_time = wrapper.data.get("T").unwrap().as_u64().unwrap();
+
                                                     if let Some(bids_data) = wrapper.data.get_mut("b") {
                                                         let bids: Vec<(String, String)> = serde_json::from_value(bids_data.take()).unwrap();
                                                         let bids: Vec<(f32, f32)> = bids.into_iter().map(|(price, qty)| (price.parse().unwrap(), qty.parse().unwrap())).collect();
@@ -122,7 +124,7 @@ pub fn connect(selected_ticker: String) -> Subscription<Event> {
                                                             let asks: Vec<(String, String)> = serde_json::from_value(asks_data.take()).unwrap();
                                                             let asks: Vec<(f32, f32)> = asks.into_iter().map(|(price, qty)| (price.parse().unwrap(), qty.parse().unwrap())).collect();
                                                 
-                                                            let _ = output.send(Event::DepthReceived(bids, asks, std::mem::take(&mut trades_buffer))).await;
+                                                            let _ = output.send(Event::DepthReceived(update_time, bids, asks, std::mem::take(&mut trades_buffer))).await;
                                                         }
                                                     }
                                                 } else if wrapper.stream.contains("kline") {
@@ -175,7 +177,7 @@ enum State {
 pub enum Event {
     Connected(Connection),
     Disconnected,
-    DepthReceived(Vec<(f32, f32)>, Vec<(f32, f32)>, Vec<Trade>),
+    DepthReceived(u64, Vec<(f32, f32)>, Vec<(f32, f32)>, Vec<Trade>),
     KlineReceived(Kline),
 }
 
