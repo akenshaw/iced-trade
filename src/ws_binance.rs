@@ -73,7 +73,7 @@ pub fn connect(selected_ticker: String) -> Subscription<Event> {
                 match &mut state {
                     State::Disconnected => {
                         let symbol = selected_ticker.to_lowercase();
-                        let websocket_server = format!("wss://fstream.binance.com/stream?streams={}@aggTrade/{}@depth5@100ms/{}@kline_1m", symbol, symbol, symbol);
+                        let websocket_server = format!("wss://fstream.binance.com/stream?streams={}@aggTrade/{}@depth20@100ms/{}@kline_1m", symbol, symbol, symbol);
                         
                         match async_tungstenite::tokio::connect_async(
                             websocket_server,
