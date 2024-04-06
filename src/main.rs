@@ -1,13 +1,11 @@
 mod ws_binance;
-use serde::Deserialize;
 use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use iced::{
-    executor, font, widget::{
+    executor, widget::{
         Row, button, canvas::{Cache, Frame, Geometry}, pick_list, shader::wgpu::hal::auxil::db, Column, Container, Text
     }, Alignment, Application, Command, Element, Event, Font, Length, Settings, Size, Subscription, Theme
 };
-use ws_binance::Kline;
 use futures::TryFutureExt;
 use plotters::prelude::ChartBuilder;
 use plotters_backend::DrawingBackend;
@@ -157,9 +155,10 @@ impl Application for State {
                     self.ws_state = WsState::Disconnected;
                     Command::none()
                 }
-                ws_binance::Event::TradeReceived(trades_buffer) => {
+                ws_binance::Event::DepthReceived(bids, asks, trades_buffer) => {
+                    let best_bid_price = bids.first().map(|(price, _)| *price).unwrap_or(0.0);
                     if let Some(chart) = &mut self.trades_chart {
-                        chart.update(trades_buffer);
+                        chart.update(trades_buffer, best_bid_price);
                     }
                     Command::none()
                 }
@@ -276,7 +275,6 @@ impl CandlestickChart {
 
 impl Chart<Message> for CandlestickChart {
     type State = ();
-
     #[inline]
     fn draw<R: Renderer, F: Fn(&mut Frame)>(
         &self,
@@ -334,7 +332,7 @@ impl Chart<Message> for CandlestickChart {
 
         chart.draw_series(
             self.data_points.iter().map(|(time, (open, high, low, close))| {
-                CandleStick::new(*time, *open, *high, *low, *close, GREEN.filled(), RED.filled(), 15)
+                CandleStick::new(*time, *open, *high, *low, *close, RGBColor(81, 205, 160).filled(), RGBColor(192, 80, 77).filled(), 15)
             }),
         ).expect("failed to draw chart data");
     }
@@ -342,7 +340,7 @@ impl Chart<Message> for CandlestickChart {
 
 struct LineChart {
     cache: Cache,
-    data_points: VecDeque<(DateTime<Utc>, f32)>,
+    data_points: VecDeque<(DateTime<Utc>, f32, f32, bool)>,
 }
 
 impl LineChart {
@@ -353,11 +351,10 @@ impl LineChart {
         }
     }
 
-    fn update(&mut self, mut trades_buffer: Vec<ws_binance::Trade>) {
+    fn update(&mut self, mut trades_buffer: Vec<ws_binance::Trade>, _best_bid_price: f32) {
         for trade in trades_buffer.drain(..) {
             let time = DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(trade.time as i64 / 1000, 0), Utc);
-            let price = trade.price;
-            self.data_points.push_back((time, price));
+            self.data_points.push_back((time, trade.price, trade.qty, trade.is_sell));
         }
 
         while self.data_points.len() > 6000 {
@@ -378,16 +375,6 @@ impl LineChart {
 
 impl Chart<Message> for LineChart {
     type State = ();
-    // fn update(
-    //     &mut self,
-    //     event: Event,
-    //     bounds: Rectangle,
-    //     cursor: Cursor,
-    // ) -> (event::Status, Option<Message>) {
-    //     self.cache.clear();
-    //     (event::Status::Ignored, None)
-    // }
-
     #[inline]
     fn draw<R: Renderer, F: Fn(&mut Frame)>(
         &self,
@@ -413,9 +400,9 @@ impl Chart<Message> for LineChart {
             let oldest_time = newest_time - chrono::Duration::seconds(30);
         
             // y-axis range, acquire price range within the time range
-            let recent_data_points: Vec<_> = self.data_points.iter().filter_map(|&(time, price)| {
+            let recent_data_points: Vec<_> = self.data_points.iter().filter_map(|&(time, price, qty, bool)| {
                 if time >= oldest_time && time <= newest_time {
-                    Some((time, price))
+                    Some((time, price, qty, bool))
                 } else {
                     None
                 }
@@ -423,7 +410,7 @@ impl Chart<Message> for LineChart {
 
             let mut y_min = f32::MAX;
             let mut y_max = f32::MIN;
-            for (_, price) in &recent_data_points {
+            for (_, price, _, _) in &recent_data_points {
                 y_min = y_min.min(*price);
                 y_max = y_max.max(*price);
             }
@@ -463,13 +450,29 @@ impl Chart<Message> for LineChart {
             chart
                 .draw_series(
                     AreaSeries::new(
-                        recent_data_points,
+                        recent_data_points.iter().map(|&(time, price, _, _)| (time, price)),
                         0_f32,
                         PLOT_LINE_COLOR.mix(0.175),
                     )
                     .border_style(ShapeStyle::from(PLOT_LINE_COLOR).stroke_width(2)),
                 )
                 .expect("failed to draw chart data");
+            
+            let qty_min = recent_data_points.iter().map(|&(_, _, qty, _)| qty).fold(f32::MAX, f32::min);
+            let qty_max = recent_data_points.iter().map(|&(_, _, qty, _)| qty).fold(f32::MIN, f32::max);
+            chart
+                .draw_series(
+                    recent_data_points.iter().map(|&(time, price, qty, is_sell)| {
+                        let radius = 1.0 + (qty - qty_min) * (30.0 - 1.0) / (qty_max - qty_min);
+                        let color = if is_sell { RGBColor(192, 80, 77) } else { RGBColor(81, 205, 160)};
+                        Circle::new(
+                            (time, price), 
+                            radius as i32,
+                            ShapeStyle::from(color).filled(),
+                        )
+                    }),
+                )
+                .expect("failed to draw circles");
         }
     }
 }
