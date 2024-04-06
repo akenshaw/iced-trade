@@ -155,10 +155,10 @@ impl Application for State {
                     self.ws_state = WsState::Disconnected;
                     Command::none()
                 }
-                ws_binance::Event::DepthReceived(bids, asks, trades_buffer) => {
+                ws_binance::Event::DepthReceived(depth_update, bids, _asks, trades_buffer) => {
                     let best_bid_price = bids.first().map(|(price, _)| *price).unwrap_or(0.0);
                     if let Some(chart) = &mut self.trades_chart {
-                        chart.update(trades_buffer, best_bid_price);
+                        chart.update(depth_update, trades_buffer, best_bid_price);
                     }
                     Command::none()
                 }
@@ -228,12 +228,10 @@ impl Application for State {
     }
 }
 
-
 struct CandlestickChart {
     cache: Cache,
     data_points: HashMap<DateTime<Utc>, (f32, f32, f32, f32)>,
 }
-
 impl CandlestickChart {
     fn new(klines: Vec<ws_binance::Kline>) -> Self {
         let mut data_points = HashMap::new();
@@ -272,7 +270,6 @@ impl CandlestickChart {
         chart.into()
     }
 }
-
 impl Chart<Message> for CandlestickChart {
     type State = ();
     #[inline]
@@ -293,7 +290,7 @@ impl Chart<Message> for CandlestickChart {
 
         let mut y_min = f32::MAX;
         let mut y_max = f32::MIN;
-        for (_time, (open, high, low, close)) in &self.data_points {
+        for (_time, (_open, high, low, _close)) in &self.data_points {
             y_min = y_min.min(*low);
             y_max = y_max.max(*high);
         }
@@ -341,24 +338,34 @@ impl Chart<Message> for CandlestickChart {
 struct LineChart {
     cache: Cache,
     data_points: VecDeque<(DateTime<Utc>, f32, f32, bool)>,
+    bid_prices: VecDeque<(DateTime<Utc>, f32)>,
 }
-
 impl LineChart {
     fn new() -> Self {
         Self {
             cache: Cache::new(),
             data_points: VecDeque::new(),
+            bid_prices: VecDeque::new(),
         }
     }
 
-    fn update(&mut self, mut trades_buffer: Vec<ws_binance::Trade>, _best_bid_price: f32) {
-        for trade in trades_buffer.drain(..) {
-            let time = DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(trade.time as i64 / 1000, 0), Utc);
-            self.data_points.push_back((time, trade.price, trade.qty, trade.is_sell));
-        }
+    fn update(&mut self, depth_update: u64, mut trades_buffer: Vec<ws_binance::Trade>, best_bid_price: f32) {
+        let aggregate_time = 250; 
+        let depth_update_time = DateTime::<Utc>::from_utc(
+            NaiveDateTime::from_timestamp(
+                (depth_update / 1000) as i64, 
+                ((depth_update % 1000) / aggregate_time * aggregate_time * 1_000_000) as u32
+            ), 
+            Utc
+        );
+        self.bid_prices.push_back((depth_update_time, best_bid_price));
 
+        for trade in trades_buffer.drain(..) {
+            self.data_points.push_back((depth_update_time, trade.price, trade.qty, trade.is_sell));
+        }
         while self.data_points.len() > 6000 {
             self.data_points.pop_front();
+            self.bid_prices.pop_front();
         }
 
         self.cache.clear();
@@ -372,7 +379,6 @@ impl LineChart {
         chart.into()
     }
 }
-
 impl Chart<Message> for LineChart {
     type State = ();
     #[inline]
@@ -400,20 +406,25 @@ impl Chart<Message> for LineChart {
             let oldest_time = newest_time - chrono::Duration::seconds(30);
         
             // y-axis range, acquire price range within the time range
+            let mut y_min = f32::MAX;
+            let mut y_max = f32::MIN;
             let recent_data_points: Vec<_> = self.data_points.iter().filter_map(|&(time, price, qty, bool)| {
                 if time >= oldest_time && time <= newest_time {
+                    y_min = y_min.min(price);
+                    y_max = y_max.max(price);
                     Some((time, price, qty, bool))
                 } else {
                     None
                 }
             }).collect();
 
-            let mut y_min = f32::MAX;
-            let mut y_max = f32::MIN;
-            for (_, price, _, _) in &recent_data_points {
-                y_min = y_min.min(*price);
-                y_max = y_max.max(*price);
-            }
+            let recent_bid_prices: Vec<_> = self.bid_prices.iter().filter_map(|&(time, price)| {
+                if time >= oldest_time && time <= newest_time {
+                    Some((time, price))
+                } else {
+                    None
+                }
+            }).collect();
 
             let mut chart = chart
                 .x_label_area_size(28)
@@ -450,7 +461,7 @@ impl Chart<Message> for LineChart {
             chart
                 .draw_series(
                     AreaSeries::new(
-                        recent_data_points.iter().map(|&(time, price, _, _)| (time, price)),
+                        recent_bid_prices.iter().map(|&(time, price)| (time, price)),
                         0_f32,
                         PLOT_LINE_COLOR.mix(0.175),
                     )
