@@ -465,14 +465,16 @@ impl Chart<Message> for LineChart {
                 let bids_i: Vec<(DateTime<Utc>, f32, f32)> = recent_depth.iter().map(|&(time, bid, _ask)| ((*time).clone(), bid[i].0, bid[i].1)).collect();
                 let asks_i: Vec<(DateTime<Utc>, f32, f32)> = recent_depth.iter().map(|&(time, _bid, ask)| ((*time).clone(), ask[i].0, ask[i].1)).collect();
             
-                let max_bid_quantity = bids_i.iter().map(|&(_time, _price, quantity)| quantity).fold(f32::MIN, f32::max);
-                let max_ask_quantity = asks_i.iter().map(|&(_time, _price, quantity)| quantity).fold(f32::MIN, f32::max);
-            
+                let max_order_quantity = bids_i.iter()
+                    .map(|&(_time, _price, quantity)| quantity)
+                    .chain(asks_i.iter().map(|&(_time, _price, quantity)| quantity))
+                    .fold(f32::MIN, f32::max);
+
                 chart
                     .draw_series(
                         bids_i.iter().map(|&(time, price, quantity)| {
-                            let alpha = 0.1 + 0.9 * (quantity / max_bid_quantity);
-                            Pixel::new((time, price), RGBAColor(0, 128, 128, alpha.into()))
+                            let alpha = 0.1 + 0.9 * (quantity / max_order_quantity);
+                            Pixel::new((time, price), RGBAColor(0, 144, 144, alpha.into()))
                         }),
                     )
                     .expect(&format!("failed to draw bids_{}", i));
@@ -480,8 +482,8 @@ impl Chart<Message> for LineChart {
                 chart
                     .draw_series(
                         asks_i.iter().map(|&(time, price, quantity)| {
-                            let alpha = 0.1 + 0.9 * (quantity / max_ask_quantity);
-                            Pixel::new((time, price), RGBAColor(128, 0, 128, alpha.into()))
+                            let alpha = 0.1 + 0.9 * (quantity / max_order_quantity);
+                            Pixel::new((time, price), RGBAColor(192, 0, 192, alpha.into()))
                         }),
                     )
                     .expect(&format!("failed to draw asks_{}", i));
