@@ -1,6 +1,6 @@
 mod ws_binance;
 use std::collections::HashMap;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Utc, NaiveDateTime, Duration};
 use iced::{
     executor, widget::{
         Row, button, canvas::{Cache, Frame, Geometry}, pick_list, shader::wgpu::hal::auxil::db, Column, Container, Text
@@ -9,7 +9,6 @@ use iced::{
 use futures::TryFutureExt;
 use plotters::prelude::ChartBuilder;
 use plotters_backend::DrawingBackend;
-use chrono::NaiveDateTime;
 use plotters_iced::{
     sample::lttb::{DataPoint, LttbSource},
     Chart, ChartWidget, Renderer,
@@ -303,8 +302,8 @@ impl Chart<Message> for CandlestickChart {
 
         chart
             .configure_mesh()
-            .bold_line_style(GREY.mix(0.1))
-            .light_line_style(GREY.mix(0.05))
+            .bold_line_style(GREY.mix(0.05))
+            .light_line_style(GREY.mix(0.02))
             .axis_style(ShapeStyle::from(GREY.mix(0.45)).stroke_width(1))
             .y_labels(10)
             .y_label_style(
@@ -401,20 +400,14 @@ impl Chart<Message> for LineChart {
         
         if self.data_points.len() > 1 {
             // x-axis range, acquire time range
-            let newest_time = self
-                .data_points
-                .back()
-                .unwrap()
-                .0;
-            let oldest_time = newest_time - chrono::Duration::seconds(30);
+            let newest_time = self.depth.back().unwrap().0 + Duration::milliseconds(200);
+            let oldest_time = newest_time - Duration::seconds(30);
         
             // y-axis range, acquire price range within the time range
             let mut y_min = f32::MAX;
             let mut y_max = f32::MIN;
             let recent_data_points: Vec<_> = self.data_points.iter().filter_map(|&(time, price, qty, bool)| {
                 if time >= oldest_time && time <= newest_time {
-                    y_min = y_min.min(price);
-                    y_max = y_max.max(price);
                     Some((time, price, qty, bool))
                 } else {
                     None
@@ -423,8 +416,13 @@ impl Chart<Message> for LineChart {
 
             let recent_depth: Vec<_> = self.depth.iter().filter_map(|(time, bids, asks)| {
                 if time >= &oldest_time && time <= &newest_time {
-                    y_min = y_min.min(bids.iter().map(|(price, _qty)| *price).fold(f32::MAX, f32::min));
-                    y_max = y_max.max(asks.iter().map(|(price, _qty)| *price).fold(f32::MIN, f32::max));
+                    if let Some((bid_price, _)) = bids.last() {
+                        y_min = y_min.min(*bid_price);
+                    } 
+                    if let Some((ask_price, _)) = asks.last() {
+                        y_max = y_max.max(*ask_price);
+                    }
+            
                     Some((time, bids, asks))
                 } else {
                     None
@@ -440,8 +438,8 @@ impl Chart<Message> for LineChart {
 
             chart
                 .configure_mesh()
-                .bold_line_style(GREY.mix(0.1))
-                .light_line_style(GREY.mix(0.05))
+                .bold_line_style(GREY.mix(0.04))
+                .light_line_style(GREY.mix(0.01))
                 .axis_style(ShapeStyle::from(GREY.mix(0.45)).stroke_width(1))
                 .y_labels(10)
                 .y_label_style(
