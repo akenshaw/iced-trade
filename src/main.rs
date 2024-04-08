@@ -166,7 +166,7 @@ impl Application for State {
                     }
                     Command::none()
                 }
-            },  
+            }, 
         }
     }
 
@@ -283,12 +283,23 @@ impl Chart<Message> for CandlestickChart {
     fn build_chart<DB: DrawingBackend>(&self, _state: &Self::State, mut chart: ChartBuilder<DB>) {
         use plotters::prelude::*;
 
-        let oldest_time = *self.data_points.keys().min().unwrap_or(&Utc::now());
+        let drawing_area;
+        {
+            let dummy_chart = chart
+                .build_cartesian_2d(0..1, 0..1) 
+                .expect("failed to build dummy chart");
+            drawing_area = dummy_chart.plotting_area().dim_in_pixel();
+        }
         let newest_time = *self.data_points.keys().max().unwrap_or(&Utc::now());
+        let oldest_time = newest_time - Duration::minutes(drawing_area.0 as i64 / 20);
+
+        let visible_data_points: Vec<_> = self.data_points.iter().filter(|&(time, _)| {
+            time >= &oldest_time && time <= &newest_time
+        }).collect();
 
         let mut y_min = f32::MAX;
         let mut y_max = f32::MIN;
-        for (_time, (_open, high, low, _close)) in &self.data_points {
+        for (_time, (_open, high, low, _close)) in &visible_data_points {
             y_min = y_min.min(*low);
             y_max = y_max.max(*high);
         }
@@ -326,8 +337,8 @@ impl Chart<Message> for CandlestickChart {
             .expect("failed to draw chart mesh");
 
         chart.draw_series(
-            self.data_points.iter().map(|(time, (open, high, low, close))| {
-                CandleStick::new(*time, *open, *high, *low, *close, RGBColor(81, 205, 160).filled(), RGBColor(192, 80, 77).filled(), 15)
+            visible_data_points.iter().map(|(time, (open, high, low, close))| {
+                CandleStick::new(**time, *open, *high, *low, *close, RGBColor(81, 205, 160).filled(), RGBColor(192, 80, 77).filled(), 15)
             }),
         ).expect("failed to draw chart data");
     }
@@ -369,9 +380,11 @@ impl LineChart {
 
         while self.data_points.len() > 6000 {
             self.data_points.pop_front();
+        }
+        while self.depth.len() > 1000 {
             self.depth.pop_front();
         }
-        
+
         self.cache.clear();
     }
 
@@ -400,8 +413,15 @@ impl Chart<Message> for LineChart {
         
         if self.data_points.len() > 1 {
             // x-axis range, acquire time range
+            let drawing_area;
+            {
+                let dummy_chart = chart
+                    .build_cartesian_2d(0..1, 0..1) 
+                    .expect("failed to build dummy chart");
+                drawing_area = dummy_chart.plotting_area().dim_in_pixel();
+            }
             let newest_time = self.depth.back().unwrap().0 + Duration::milliseconds(200);
-            let oldest_time = newest_time - Duration::seconds(30);
+            let oldest_time = newest_time - Duration::seconds(drawing_area.0 as i64 / 30);
         
             // y-axis range, acquire price range within the time range
             let mut y_min = f32::MAX;
