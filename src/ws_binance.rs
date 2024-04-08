@@ -213,7 +213,7 @@ impl From<FetchedKlines> for Kline {
     }
 }
 pub async fn fetch_klines(ticker: String) -> Result<Vec<Kline>, reqwest::Error> {
-    let url = format!("https://fapi.binance.com/fapi/v1/klines?symbol={}&interval=1m&limit=30", ticker.to_lowercase());
+    let url = format!("https://fapi.binance.com/fapi/v1/klines?symbol={}&interval=1m&limit=180", ticker.to_lowercase());
     let response = reqwest::get(&url).await?;
     let value: serde_json::Value = response.json().await?;
     let fetched_klines: Result<Vec<FetchedKlines>, _> = serde_json::from_value(value);
