@@ -291,7 +291,7 @@ impl Chart<Message> for CandlestickChart {
             drawing_area = dummy_chart.plotting_area().dim_in_pixel();
         }
         let newest_time = *self.data_points.keys().max().unwrap_or(&Utc::now());
-        let oldest_time = newest_time - Duration::minutes(drawing_area.0 as i64 / 20);
+        let oldest_time = newest_time - Duration::minutes(drawing_area.0 as i64 / 12);
 
         let visible_data_points: Vec<_> = self.data_points.iter().filter(|&(time, _)| {
             time >= &oldest_time && time <= &newest_time
@@ -338,7 +338,7 @@ impl Chart<Message> for CandlestickChart {
 
         chart.draw_series(
             visible_data_points.iter().map(|(time, (open, high, low, close))| {
-                CandleStick::new(**time, *open, *high, *low, *close, RGBColor(81, 205, 160).filled(), RGBColor(192, 80, 77).filled(), 15)
+                CandleStick::new(**time, *open, *high, *low, *close, RGBColor(81, 205, 160).filled(), RGBColor(192, 80, 77).filled(), 8)
             }),
         ).expect("failed to draw chart data");
     }
