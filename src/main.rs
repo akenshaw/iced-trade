@@ -1,9 +1,9 @@
 mod ws_binance;
-use std::collections::HashMap;
+use std::collections::{HashMap, BTreeMap};
 use chrono::{DateTime, Utc, NaiveDateTime, Duration};
 use iced::{
     executor, widget::{
-        Row, button, canvas::{Cache, Frame, Geometry}, pick_list, shader::wgpu::hal::auxil::db, Column, Container, Text
+        button, canvas::{path::lyon_path::geom::euclid::num::Round, Cache, Frame, Geometry}, pick_list, shader::wgpu::hal::auxil::db, Column, Container, Row, Text
     }, Alignment, Application, Command, Element, Event, Font, Length, Settings, Size, Subscription, Theme
 };
 use futures::TryFutureExt;
@@ -73,6 +73,7 @@ fn main() {
 #[derive(Debug, Clone)]
 enum Message {
     TickerSelected(Ticker),
+    TimeframeSelected(&'static str),
     WsEvent(ws_binance::Event),
     WsToggle(),
     FetchEvent(Result<Vec<ws_binance::Kline>, std::string::String>),
@@ -82,6 +83,7 @@ struct State {
     trades_chart: Option<LineChart>,
     candlestick_chart: Option<CandlestickChart>,
     selected_ticker: Option<Ticker>,
+    selected_timeframe: Option<&'static str>,
     ws_state: WsState,
     ws_running: bool,
 }
@@ -98,6 +100,7 @@ impl Application for State {
                 trades_chart: None,
                 candlestick_chart: None,
                 selected_ticker: None,
+                selected_timeframe: Some("1m"),
                 ws_state: WsState::Disconnected,
                 ws_running: false,
             },
@@ -117,30 +120,47 @@ impl Application for State {
     fn update(&mut self, message: Self::Message) -> Command<Self::Message> {
         match message {
             Message::TickerSelected(ticker) => {
-                self.ws_running = false;
                 self.selected_ticker = Some(ticker);
+                Command::none()
+            },
+            Message::TimeframeSelected(timeframe) => {
+                self.selected_timeframe = Some(timeframe);
                 Command::none()
             },
             Message::WsToggle() => {
                 self.ws_running =! self.ws_running;
                 dbg!(&self.ws_running);
-                self.trades_chart = Some(LineChart::new());
-                Command::perform(
-                    ws_binance::fetch_klines(self.selected_ticker.unwrap().to_string())
-                        .map_err(|err| format!("{}", err)), 
-                    |klines| {
-                        Message::FetchEvent(klines)
-                    }
-                )
+                if self.ws_running {
+                    self.trades_chart = Some(LineChart::new());
+                    Command::perform(
+                        ws_binance::fetch_klines(self.selected_ticker.unwrap().to_string(), self.selected_timeframe.unwrap().to_string())
+                            .map_err(|err| format!("{}", err)), 
+                        |klines| {
+                            Message::FetchEvent(klines)
+                        }
+                    )
+                } else {
+                    self.trades_chart = None;
+                    self.candlestick_chart = None;
+                    Command::none()
+                }
             },
             Message::FetchEvent(klines) => {
                 match klines {
                     Ok(klines) => {
-                        self.candlestick_chart = Some(CandlestickChart::new(klines));
+                        let timeframe_in_minutes = match self.selected_timeframe.unwrap() {
+                            "1m" => 1,
+                            "3m" => 3,
+                            "5m" => 5,
+                            "15m" => 15,
+                            "30m" => 30,
+                            _ => 1,
+                        };
+                        self.candlestick_chart = Some(CandlestickChart::new(klines, timeframe_in_minutes));
                     },
                     Err(err) => {
                         eprintln!("Error fetching klines: {}", err);
-                        self.candlestick_chart = Some(CandlestickChart::new(vec![]));
+                        self.candlestick_chart = Some(CandlestickChart::new(vec![], 1));
                     },
                 }
                 Command::none()
@@ -174,12 +194,30 @@ impl Application for State {
         let button_text = if self.ws_running { "Disconnect" } else { "Connect" };
         let ws_button = button(button_text).on_press(Message::WsToggle());
 
-        let pick_list = pick_list(
-            &Ticker::ALL[..],
-            self.selected_ticker,
-            Message::TickerSelected,
-        )
-        .placeholder("Choose a ticker...");
+        let mut controls = Row::new()
+            .spacing(20)
+            .align_items(Alignment::Center)
+            .push(ws_button);
+
+            if !self.ws_running {
+                let symbol_pick_list = pick_list(
+                    &Ticker::ALL[..],
+                    self.selected_ticker,
+                    Message::TickerSelected,
+                )
+                .placeholder("Choose a ticker...");
+            
+                let timeframe_pick_list = pick_list(
+                    &["1m", "3m", "5m", "15m", "30m"][..],
+                    self.selected_timeframe,
+                    Message::TimeframeSelected,
+                );
+            
+                controls = controls.push(timeframe_pick_list)
+                    .push(symbol_pick_list);
+            } else {
+                controls = controls.push(Text::new(self.selected_ticker.unwrap().to_string()).size(20));
+            }
 
         let trades_chart = match self.trades_chart {
             Some(ref trades_chart) => trades_chart.view(),
@@ -187,14 +225,8 @@ impl Application for State {
         };
         let candlestick_chart = match self.candlestick_chart {
             Some(ref candlestick_chart) => candlestick_chart.view(),
-            None => Text::new("Loading...").into(),
+            None => Text::new("").into(),
         };
-
-        let controls = Row::new()
-            .spacing(20)
-            .align_items(Alignment::Center)
-            .push(pick_list)
-            .push(ws_button);
 
         let content = Column::new()
             .spacing(20)
@@ -216,7 +248,7 @@ impl Application for State {
 
     fn subscription(&self) -> Subscription<Message> {
         match (&self.selected_ticker, self.ws_running) {
-            (Some(selected_ticker), true) => ws_binance::connect(selected_ticker.to_string()).map(Message::WsEvent),
+            (Some(selected_ticker), true) => ws_binance::connect(selected_ticker.to_string(), self.selected_timeframe.unwrap().to_string()).map(Message::WsEvent),
             _ => Subscription::none(),
         }
     }
@@ -228,11 +260,12 @@ impl Application for State {
 
 struct CandlestickChart {
     cache: Cache,
-    data_points: HashMap<DateTime<Utc>, (f32, f32, f32, f32)>,
+    data_points: BTreeMap<DateTime<Utc>, (f32, f32, f32, f32)>,
+    timeframe_in_minutes: i16,
 }
 impl CandlestickChart {
-    fn new(klines: Vec<ws_binance::Kline>) -> Self {
-        let mut data_points = HashMap::new();
+    fn new(klines: Vec<ws_binance::Kline>, timeframe_in_minutes: i16) -> Self {
+        let mut data_points = BTreeMap::new();
 
         for kline in klines {
             let time = DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(kline.time as i64 / 1000, 0), Utc);
@@ -246,6 +279,7 @@ impl CandlestickChart {
         Self {
             cache: Cache::new(),
             data_points,
+            timeframe_in_minutes,
         }
     }
 
@@ -290,9 +324,10 @@ impl Chart<Message> for CandlestickChart {
                 .expect("failed to build dummy chart");
             drawing_area = dummy_chart.plotting_area().dim_in_pixel();
         }
-        let newest_time = *self.data_points.keys().max().unwrap_or(&Utc::now());
-        let oldest_time = newest_time - Duration::minutes(drawing_area.0 as i64 / 12);
-
+        let newest_time = *self.data_points.keys().last().unwrap_or(&Utc::now());
+        let cutoff_number = (drawing_area.0 as i64 / 12).round();
+        let oldest_time = newest_time - Duration::minutes((cutoff_number*self.timeframe_in_minutes as i64).max(1));
+        
         let visible_data_points: Vec<_> = self.data_points.iter().filter(|&(time, _)| {
             time >= &oldest_time && time <= &newest_time
         }).collect();
