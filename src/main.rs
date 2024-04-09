@@ -1,20 +1,20 @@
 mod ws_binance;
-use std::collections::{HashMap, BTreeMap};
-use chrono::{DateTime, Utc, NaiveDateTime, Duration};
+use std::collections::BTreeMap;
+use chrono::{DateTime, Utc, Duration, TimeZone, LocalResult};
 use iced::{
     executor, widget::{
-        button, canvas::{path::lyon_path::geom::euclid::num::Round, Cache, Frame, Geometry}, pick_list, shader::wgpu::hal::auxil::db, Column, Container, Row, Text
-    }, Alignment, Application, Command, Element, Event, Font, Length, Settings, Size, Subscription, Theme
+        button, canvas::{path::lyon_path::geom::euclid::num::Round, Cache, Frame, Geometry}, pick_list, Column, Container, Row, Text
+    }, Alignment, Application, Command, Element, Font, Length, Settings, Size, Subscription, Theme
 };
 use futures::TryFutureExt;
 use plotters::prelude::ChartBuilder;
 use plotters_backend::DrawingBackend;
 use plotters_iced::{
-    sample::lttb::{DataPoint, LttbSource},
+    sample::lttb::DataPoint,
     Chart, ChartWidget, Renderer,
 };
 use plotters::prelude::full_palette::GREY;
-use std::{collections::VecDeque, time::Instant};
+use std::collections::VecDeque;
 struct Wrapper<'a>(&'a DateTime<Utc>, &'a f32);
 impl DataPoint for Wrapper<'_> {
     #[inline]
@@ -268,7 +268,10 @@ impl CandlestickChart {
         let mut data_points = BTreeMap::new();
 
         for kline in klines {
-            let time = DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(kline.time as i64 / 1000, 0), Utc);
+            let time = match Utc.timestamp_opt(kline.time as i64 / 1000, 0) {
+                LocalResult::Single(dt) => dt,
+                _ => continue, 
+            };
             let open = kline.open;
             let high = kline.high;
             let low = kline.low;
@@ -284,7 +287,10 @@ impl CandlestickChart {
     }
 
     fn update(&mut self, kline: ws_binance::Kline) {
-        let time = DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(kline.time as i64 / 1000, 0), Utc);
+        let time = match Utc.timestamp_opt(kline.time as i64 / 1000, 0) {
+            LocalResult::Single(dt) => dt,
+            _ => return,
+        };
         let open = kline.open;
         let high = kline.high;
         let low = kline.low;
@@ -395,13 +401,12 @@ impl LineChart {
 
     fn update(&mut self, depth_update: u64, mut trades_buffer: Vec<ws_binance::Trade>, bids: Vec<(f32, f32)>, asks: Vec<(f32, f32)>) {
         let aggregate_time = 100; 
-        let depth_update_time = DateTime::<Utc>::from_utc(
-            NaiveDateTime::from_timestamp(
-                (depth_update / 1000) as i64, 
-                ((depth_update % 1000) / aggregate_time * aggregate_time * 1_000_000) as u32
-            ), 
-            Utc
-        );
+        let seconds = (depth_update / 1000) as i64;
+        let nanoseconds = ((depth_update % 1000) / aggregate_time * aggregate_time * 1_000_000) as u32;
+        let depth_update_time = match Utc.timestamp_opt(seconds, nanoseconds) {
+            LocalResult::Single(dt) => dt,
+            _ => return, 
+        };
 
         for trade in trades_buffer.drain(..) {
             self.data_points.push_back((depth_update_time, trade.price, trade.qty, trade.is_sell));
