@@ -59,7 +59,7 @@ pub struct Kline {
     pub taker_buy_base_asset_volume: f32,
 }
 
-pub fn connect(selected_ticker: String) -> Subscription<Event> {
+pub fn connect(selected_ticker: String, timeframe: String) -> Subscription<Event> {
     struct Connect;
 
     subscription::channel(
@@ -73,7 +73,7 @@ pub fn connect(selected_ticker: String) -> Subscription<Event> {
                 match &mut state {
                     State::Disconnected => {
                         let symbol = selected_ticker.to_lowercase();
-                        let websocket_server = format!("wss://fstream.binance.com/stream?streams={}@aggTrade/{}@depth20@100ms/{}@kline_1m", symbol, symbol, symbol);
+                        let websocket_server = format!("wss://fstream.binance.com/stream?streams={}@aggTrade/{}@depth20@100ms/{}@kline_{}", symbol, symbol, symbol, timeframe);
                         
                         match async_tungstenite::tokio::connect_async(
                             websocket_server,
@@ -212,8 +212,8 @@ impl From<FetchedKlines> for Kline {
         }
     }
 }
-pub async fn fetch_klines(ticker: String) -> Result<Vec<Kline>, reqwest::Error> {
-    let url = format!("https://fapi.binance.com/fapi/v1/klines?symbol={}&interval=1m&limit=180", ticker.to_lowercase());
+pub async fn fetch_klines(ticker: String, timeframe: String) -> Result<Vec<Kline>, reqwest::Error> {
+    let url = format!("https://fapi.binance.com/fapi/v1/klines?symbol={}&interval={}&limit=180", ticker.to_lowercase(), timeframe);
     let response = reqwest::get(&url).await?;
     let value: serde_json::Value = response.json().await?;
     let fetched_klines: Result<Vec<FetchedKlines>, _> = serde_json::from_value(value);
