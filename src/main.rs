@@ -98,8 +98,6 @@ enum Message {
     WsToggle(),
     FetchEvent(Result<Vec<ws_binance::Kline>, std::string::String>),
     Split(pane_grid::Axis, pane_grid::Pane),
-    SplitFocused(pane_grid::Axis),
-    FocusAdjacent(pane_grid::Direction),
     Clicked(pane_grid::Pane),
     Dragged(pane_grid::DragEvent),
     Resized(pane_grid::ResizeEvent),
@@ -144,12 +142,7 @@ impl Application for State {
                 focus: None,
                 first_pane,
             },
-           
-            Command::batch([
-                //Command::perform(tokio::task::spawn_blocking(generate_data), |data| {
-                //    Message::DataLoaded(data.unwrap())
-                //}),
-            ]),
+            Command::none(),
         )
     }
 
@@ -253,31 +246,6 @@ impl Application for State {
                 self.panes_created += 1;
                 Command::none()
             }
-            Message::SplitFocused(axis) => {
-                if let Some(pane) = self.focus {
-                    let result = self.panes.split(
-                        axis,
-                        pane,
-                        Pane::new(self.panes_created),
-                    );
-
-                    if let Some((pane, _)) = result {
-                        self.focus = Some(pane);
-                    }
-
-                    self.panes_created += 1;
-                }
-                Command::none()
-            }
-            Message::FocusAdjacent(direction) => {
-                if let Some(pane) = self.focus {
-                    if let Some(adjacent) = self.panes.adjacent(pane, direction)
-                    {
-                        self.focus = Some(adjacent);
-                    }
-                }
-                Command::none()
-            }
             Message::Clicked(pane) => {
                 self.focus = Some(pane);
                 Command::none()
@@ -341,12 +309,17 @@ impl Application for State {
             let pin_button = button(
                 text(if pane.is_pinned { "Unpin" } else { "Pin" }).size(14),
             )
+            .on_press(Message::TogglePin(id))
             .padding(3);
 
-           let title = row![
+            let title = row![
                 pin_button,
                 "Pane",
-                text(pane.id.to_string())
+                text(pane.id.to_string()).style(if is_focused {
+                    PANE_ID_COLOR_FOCUSED
+                } else {
+                    PANE_ID_COLOR_UNFOCUSED
+                }),
             ]
             .spacing(5);
 
@@ -357,12 +330,22 @@ impl Application for State {
                     pane.is_pinned,
                     is_maximized,
                 ))
-                .padding(10);
+                .padding(10)
+                .style(if is_focused {
+                    style::title_bar_focused
+                } else {
+                    style::title_bar_active
+                });                
 
             pane_grid::Content::new(responsive(move |size| {
                 view_content(id, total_panes, pane.is_pinned, size, pane.id.to_string(), &self.trades_chart, &self.candlestick_chart)
             }))
             .title_bar(title_bar)
+            .style(if is_focused {
+                style::pane_focused
+            } else {
+                style::pane_active
+            })
         })
         .width(Length::Fill)
         .height(Length::Fill)
@@ -503,6 +486,56 @@ const PANE_ID_COLOR_FOCUSED: Color = Color::from_rgb(
     0x47 as f32 / 255.0,
     0x47 as f32 / 255.0,
 );
+
+mod style {
+    use iced::widget::container;
+    use iced::{Border, Theme};
+
+    pub fn title_bar_active(theme: &Theme) -> container::Appearance {
+        let palette = theme.extended_palette();
+
+        container::Appearance {
+            text_color: Some(palette.background.strong.text),
+            background: Some(palette.background.strong.color.into()),
+            ..Default::default()
+        }
+    }
+    pub fn title_bar_focused(theme: &Theme) -> container::Appearance {
+        let palette = theme.extended_palette();
+
+        container::Appearance {
+            text_color: Some(palette.primary.strong.text),
+            background: Some(palette.primary.strong.color.into()),
+            ..Default::default()
+        }
+    }
+    pub fn pane_active(theme: &Theme) -> container::Appearance {
+        let palette = theme.extended_palette();
+
+        container::Appearance {
+            //background: Some(palette.background.weak.color.into()),
+            border: Border {
+                width: 2.0,
+                color: palette.background.strong.color,
+                ..Border::default()
+            },
+            ..Default::default()
+        }
+    }
+    pub fn pane_focused(theme: &Theme) -> container::Appearance {
+        let palette = theme.extended_palette();
+
+        container::Appearance {
+            //background: Some(palette.background.weak.color.into()),
+            border: Border {
+                width: 2.0,
+                color: palette.primary.strong.color,
+                ..Border::default()
+            },
+            ..Default::default()
+        }
+    }
+}
 
 struct CandlestickChart {
     cache: Cache,
