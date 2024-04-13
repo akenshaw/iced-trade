@@ -2,9 +2,13 @@ mod ws_binance;
 use std::collections::BTreeMap;
 use chrono::{DateTime, Utc, Duration, TimeZone, LocalResult};
 use iced::{
-    executor, widget::{
+    executor, Color, widget::{
         button, canvas::{path::lyon_path::geom::euclid::num::Round, Cache, Frame, Geometry}, pick_list, Column, Container, Row, Text
     }, Alignment, Application, Command, Element, Font, Length, Settings, Size, Subscription, Theme
+};
+use iced::widget::pane_grid::{self, PaneGrid};
+use iced::widget::{
+    column, container, row, scrollable, text, responsive
 };
 use futures::TryFutureExt;
 use plotters::prelude::ChartBuilder;
@@ -61,6 +65,22 @@ impl Default for WsState {
     }
 }
 
+
+#[derive(Clone, Copy)]
+struct Pane {
+    id: usize,
+    pub is_pinned: bool,
+}
+
+impl Pane {
+    fn new(id: usize) -> Self {
+        Self {
+            id,
+            is_pinned: false,
+        }
+    }
+}
+
 fn main() {
     State::run(Settings {
         antialiasing: true,
@@ -77,6 +97,17 @@ enum Message {
     WsEvent(ws_binance::Event),
     WsToggle(),
     FetchEvent(Result<Vec<ws_binance::Kline>, std::string::String>),
+    Split(pane_grid::Axis, pane_grid::Pane),
+    SplitFocused(pane_grid::Axis),
+    FocusAdjacent(pane_grid::Direction),
+    Clicked(pane_grid::Pane),
+    Dragged(pane_grid::DragEvent),
+    Resized(pane_grid::ResizeEvent),
+    TogglePin(pane_grid::Pane),
+    Maximize(pane_grid::Pane),
+    Restore,
+    Close(pane_grid::Pane),
+    CloseFocused,
 }
 
 struct State {
@@ -86,6 +117,10 @@ struct State {
     selected_timeframe: Option<&'static str>,
     ws_state: WsState,
     ws_running: bool,
+    panes: pane_grid::State<Pane>,
+    panes_created: usize,
+    focus: Option<pane_grid::Pane>,
+    first_pane: pane_grid::Pane,
 }
 
 impl Application for State {
@@ -95,6 +130,7 @@ impl Application for State {
     type Theme = Theme;
 
     fn new(_flags: Self::Flags) -> (Self, Command<Self::Message>) {
+        let (panes, first_pane) = pane_grid::State::new(Pane::new(0));
         (
             Self { 
                 trades_chart: None,
@@ -103,6 +139,10 @@ impl Application for State {
                 selected_timeframe: Some("1m"),
                 ws_state: WsState::Disconnected,
                 ws_running: false,
+                panes,
+                panes_created: 1,
+                focus: None,
+                first_pane,
             },
            
             Command::batch([
@@ -132,19 +172,34 @@ impl Application for State {
                 dbg!(&self.ws_running);
                 if self.ws_running {
                     self.trades_chart = Some(LineChart::new());
-                    Command::perform(
+                    let fetch_klines = Command::perform(
                         ws_binance::fetch_klines(self.selected_ticker.unwrap().to_string(), self.selected_timeframe.unwrap().to_string())
                             .map_err(|err| format!("{}", err)), 
                         |klines| {
                             Message::FetchEvent(klines)
                         }
-                    )
+                    );
+                    if self.panes.len() == 1 {
+                        let first_pane = self.first_pane;
+                        let split_pane = Command::perform(
+                            async move {
+                                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                                (pane_grid::Axis::Horizontal, first_pane) 
+                            },
+                            |(axis, pane)| {
+                                Message::Split(axis, pane)
+                            }
+                        );
+                        Command::batch(vec![fetch_klines, split_pane])
+                    } else {
+                        fetch_klines
+                    }
                 } else {
                     self.trades_chart = None;
                     self.candlestick_chart = None;
                     Command::none()
                 }
-            },
+            },       
             Message::FetchEvent(klines) => {
                 match klines {
                     Ok(klines) => {
@@ -187,14 +242,139 @@ impl Application for State {
                     Command::none()
                 }
             }, 
+            Message::Split(axis, pane) => {
+                let result =
+                    self.panes.split(axis, pane, Pane::new(self.panes_created));
+
+                if let Some((pane, _)) = result {
+                    self.focus = Some(pane);
+                }
+
+                self.panes_created += 1;
+                Command::none()
+            }
+            Message::SplitFocused(axis) => {
+                if let Some(pane) = self.focus {
+                    let result = self.panes.split(
+                        axis,
+                        pane,
+                        Pane::new(self.panes_created),
+                    );
+
+                    if let Some((pane, _)) = result {
+                        self.focus = Some(pane);
+                    }
+
+                    self.panes_created += 1;
+                }
+                Command::none()
+            }
+            Message::FocusAdjacent(direction) => {
+                if let Some(pane) = self.focus {
+                    if let Some(adjacent) = self.panes.adjacent(pane, direction)
+                    {
+                        self.focus = Some(adjacent);
+                    }
+                }
+                Command::none()
+            }
+            Message::Clicked(pane) => {
+                self.focus = Some(pane);
+                Command::none()
+            }
+            Message::Resized(pane_grid::ResizeEvent { split, ratio }) => {
+                self.panes.resize(split, ratio);
+                Command::none()
+            }
+            Message::Dragged(pane_grid::DragEvent::Dropped {
+                pane,
+                target,
+            }) => {
+                self.panes.drop(pane, target);
+                Command::none()
+            }
+            Message::Dragged(_) => {
+                Command::none()
+            }
+            Message::TogglePin(pane) => {
+                if let Some(Pane { is_pinned, .. }) = self.panes.get_mut(pane) {
+                    *is_pinned = !*is_pinned;
+                }
+                Command::none()
+            }
+            Message::Maximize(pane) => {
+                self.panes.maximize(pane);
+                Command::none()
+            },
+            Message::Restore => {
+                self.panes.restore();
+                Command::none()
+            }
+            Message::Close(pane) => {
+                if let Some((_, sibling)) = self.panes.close(pane) {
+                    self.focus = Some(sibling);
+                }
+                Command::none()
+            }
+            Message::CloseFocused => {
+                if let Some(pane) = self.focus {
+                    if let Some(Pane { is_pinned, .. }) = self.panes.get(pane) {
+                        if !is_pinned {
+                            if let Some((_, sibling)) = self.panes.close(pane) {
+                                self.focus = Some(sibling);
+                            }
+                        }
+                    }
+                }
+                Command::none()
+            }
         }
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
+        let focus = self.focus;
+        let total_panes = self.panes.len();
+
+        let pane_grid = PaneGrid::new(&self.panes, |id, pane, is_maximized| {
+            let is_focused = focus == Some(id);
+
+            let pin_button = button(
+                text(if pane.is_pinned { "Unpin" } else { "Pin" }).size(14),
+            )
+            .padding(3);
+
+           let title = row![
+                pin_button,
+                "Pane",
+                text(pane.id.to_string())
+            ]
+            .spacing(5);
+
+            let title_bar = pane_grid::TitleBar::new(title)
+                .controls(view_controls(
+                    id,
+                    total_panes,
+                    pane.is_pinned,
+                    is_maximized,
+                ))
+                .padding(10);
+
+            pane_grid::Content::new(responsive(move |size| {
+                view_content(id, total_panes, pane.is_pinned, size, pane.id.to_string(), &self.trades_chart, &self.candlestick_chart)
+            }))
+            .title_bar(title_bar)
+        })
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .spacing(10)
+        .on_click(Message::Clicked)
+        .on_drag(Message::Dragged)
+        .on_resize(10, Message::Resized);
+
         let button_text = if self.ws_running { "Disconnect" } else { "Connect" };
         let ws_button = button(button_text).on_press(Message::WsToggle());
 
-        let mut controls = Row::new()
+        let mut ws_controls = Row::new()
             .spacing(20)
             .align_items(Alignment::Center)
             .push(ws_button);
@@ -213,34 +393,24 @@ impl Application for State {
                     Message::TimeframeSelected,
                 );
             
-                controls = controls.push(timeframe_pick_list)
+                ws_controls = ws_controls.push(timeframe_pick_list)
                     .push(symbol_pick_list);
             } else {
-                controls = controls.push(Text::new(self.selected_ticker.unwrap().to_string()).size(20));
+                ws_controls = ws_controls.push(Text::new(self.selected_ticker.unwrap().to_string()).size(20));
             }
 
-        let trades_chart = match self.trades_chart {
-            Some(ref trades_chart) => trades_chart.view(),
-            None => Text::new("").into(),
-        };
-        let candlestick_chart = match self.candlestick_chart {
-            Some(ref candlestick_chart) => candlestick_chart.view(),
-            None => Text::new("").into(),
-        };
-
         let content = Column::new()
-            .spacing(20)
+            .spacing(5)
             .align_items(Alignment::Start)
             .width(Length::Fill)
             .height(Length::Fill)
-            .push(controls)
-            .push(trades_chart)
-            .push(candlestick_chart);
+            .push(ws_controls)
+            .push(pane_grid);
 
         Container::new(content)
             .width(Length::Fill)
             .height(Length::Fill)
-            .padding(20)
+            .padding(10)
             .center_x()
             .center_y()
             .into()
@@ -257,6 +427,82 @@ impl Application for State {
         Theme::Oxocarbon
     }
 }
+
+fn view_content<'a>(
+    _pane: pane_grid::Pane,
+    _total_panes: usize,
+    _is_pinned: bool,
+    _size: Size,
+    pane_id: String,
+    trades_chart: &'a Option<LineChart>,
+    candlestick_chart: &'a Option<CandlestickChart>,
+) -> Element<'a, Message> {
+
+    let chart = match pane_id.as_str() {
+        "0" => trades_chart.as_ref().map(LineChart::view).unwrap_or_else(|| Text::new("No data").into()),
+        "1" => candlestick_chart.as_ref().map(CandlestickChart::view).unwrap_or_else(|| Text::new("No data").into()),
+        _ => Text::new("No data").into(),
+    };
+
+    container(chart)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+fn view_controls<'a>(
+    pane: pane_grid::Pane,
+    total_panes: usize,
+    _is_pinned: bool,
+    is_maximized: bool,
+) -> Element<'a, Message> {
+    let mut row = row![].spacing(5);
+
+    if total_panes > 1 {
+        let buttons = if is_maximized {
+            vec![
+                ("Restore", Message::Restore),
+                //("Split Horizontally", Message::Split(pane_grid::Axis::Horizontal, pane)),
+                //("Split Vertically", Message::Split(pane_grid::Axis::Vertical, pane))
+            ]
+        } else {
+            vec![
+                ("Maximize", Message::Maximize(pane)),
+                //("Split Horizontally", Message::Split(pane_grid::Axis::Horizontal, pane)),
+                //("Split Vertically", Message::Split(pane_grid::Axis::Vertical, pane))
+            ]
+        };
+
+        for (content, message) in buttons {
+            row = row.push(
+                button(text(content).size(14))
+                    .padding(3)
+                    .on_press(message),
+            );
+        }
+    }
+
+    //let close = button(text("Close").size(14))
+    //    .padding(3)
+    //    .on_press_maybe(if total_panes > 1 && !is_pinned {
+    //        Some(Message::Close(pane))
+    //    } else {
+    //        None
+    //    });
+    //row.push(close).into()
+    row.into()
+}
+
+const PANE_ID_COLOR_UNFOCUSED: Color = Color::from_rgb(
+    0xFF as f32 / 255.0,
+    0xC7 as f32 / 255.0,
+    0xC7 as f32 / 255.0,
+);
+const PANE_ID_COLOR_FOCUSED: Color = Color::from_rgb(
+    0xFF as f32 / 255.0,
+    0x47 as f32 / 255.0,
+    0x47 as f32 / 255.0,
+);
 
 struct CandlestickChart {
     cache: Cache,
@@ -384,7 +630,6 @@ impl Chart<Message> for CandlestickChart {
         ).expect("failed to draw chart data");
     }
 }
-
 struct LineChart {
     cache: Cache,
     data_points: VecDeque<(DateTime<Utc>, f32, f32, bool)>,
@@ -554,7 +799,7 @@ impl Chart<Message> for LineChart {
             chart
                 .draw_series(
                     recent_data_points.iter().map(|&(time, price, qty, is_sell)| {
-                        let radius = 1.0 + (qty - qty_min) * (30.0 - 1.0) / (qty_max - qty_min);
+                        let radius = 1.0 + (qty - qty_min) * (35.0 - 1.0) / (qty_max - qty_min);
                         let color = if is_sell { RGBColor(192, 80, 77) } else { RGBColor(81, 205, 160)};
                         Circle::new(
                             (time, price), 
