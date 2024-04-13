@@ -65,13 +65,11 @@ impl Default for WsState {
     }
 }
 
-
 #[derive(Clone, Copy)]
 struct Pane {
     id: usize,
     pub is_pinned: bool,
 }
-
 impl Pane {
     fn new(id: usize) -> Self {
         Self {
@@ -305,47 +303,37 @@ impl Application for State {
 
         let pane_grid = PaneGrid::new(&self.panes, |id, pane, is_maximized| {
             let is_focused = focus == Some(id);
-
-            let pin_button = button(
-                text(if pane.is_pinned { "Unpin" } else { "Pin" }).size(14),
-            )
-            .on_press(Message::TogglePin(id))
-            .padding(3);
-
-            let title = row![
-                pin_button,
-                "Pane",
-                text(pane.id.to_string()).style(if is_focused {
-                    PANE_ID_COLOR_FOCUSED
-                } else {
-                    PANE_ID_COLOR_UNFOCUSED
-                }),
-            ]
-            .spacing(5);
-
-            let title_bar = pane_grid::TitleBar::new(title)
-                .controls(view_controls(
-                    id,
-                    total_panes,
-                    pane.is_pinned,
-                    is_maximized,
-                ))
-                .padding(10)
-                .style(if is_focused {
-                    style::title_bar_focused
-                } else {
-                    style::title_bar_active
-                });                
-
-            pane_grid::Content::new(responsive(move |size| {
+    
+            let title = if pane.id == 0 {
+                "Heatmap"
+            } else {
+                "Candlesticks"
+            };
+    
+            let mut content = pane_grid::Content::new(responsive(move |size| {
                 view_content(id, total_panes, pane.is_pinned, size, pane.id.to_string(), &self.trades_chart, &self.candlestick_chart)
             }))
-            .title_bar(title_bar)
             .style(if is_focused {
                 style::pane_focused
             } else {
                 style::pane_active
-            })
+            });
+    
+            if is_focused {
+                let title_bar = pane_grid::TitleBar::new(title)
+                    .controls(view_controls(
+                        id,
+                        total_panes,
+                        pane.is_pinned,
+                        is_maximized,
+                    ))
+                    .padding(5)
+                    .style(style::title_bar_focused);
+    
+                content = content.title_bar(title_bar);
+            }
+    
+            content
         })
         .width(Length::Fill)
         .height(Length::Fill)
@@ -475,17 +463,6 @@ fn view_controls<'a>(
     //row.push(close).into()
     row.into()
 }
-
-const PANE_ID_COLOR_UNFOCUSED: Color = Color::from_rgb(
-    0xFF as f32 / 255.0,
-    0xC7 as f32 / 255.0,
-    0xC7 as f32 / 255.0,
-);
-const PANE_ID_COLOR_FOCUSED: Color = Color::from_rgb(
-    0xFF as f32 / 255.0,
-    0x47 as f32 / 255.0,
-    0x47 as f32 / 255.0,
-);
 
 mod style {
     use iced::widget::container;
