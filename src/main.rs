@@ -756,7 +756,6 @@ impl Chart<Message> for LineChart {
                     if let Some((ask_price, _)) = asks.last() {
                         y_max = y_max.max(*ask_price);
                     }
-            
                     Some((time, bids, asks))
                 } else {
                     None
@@ -795,15 +794,14 @@ impl Chart<Message> for LineChart {
                 .draw()
                 .expect("failed to draw chart mesh");
 
+            let max_order_quantity = recent_depth.iter()
+                .map(|(_, bids, asks)| {
+                bids.iter().map(|(_, qty)| qty).chain(asks.iter().map(|(_, qty)| qty)).fold(f32::MIN, |current_max: f32, qty: &f32| f32::max(current_max, *qty))
+            }).fold(f32::MIN, f32::max);
             for i in 0..20 { 
                 let bids_i: Vec<(DateTime<Utc>, f32, f32)> = recent_depth.iter().map(|&(time, bid, _ask)| ((*time).clone(), bid[i].0, bid[i].1)).collect();
                 let asks_i: Vec<(DateTime<Utc>, f32, f32)> = recent_depth.iter().map(|&(time, _bid, ask)| ((*time).clone(), ask[i].0, ask[i].1)).collect();
             
-                let max_order_quantity = bids_i.iter()
-                    .map(|&(_time, _price, quantity)| quantity)
-                    .chain(asks_i.iter().map(|&(_time, _price, quantity)| quantity))
-                    .fold(f32::MIN, f32::max);
-
                 chart
                     .draw_series(
                         bids_i.iter().map(|&(time, price, quantity)| {
@@ -823,8 +821,9 @@ impl Chart<Message> for LineChart {
                     .expect(&format!("failed to draw asks_{}", i));
             }
             
-            let qty_min = recent_data_points.iter().map(|&(_, _, qty, _)| qty).fold(f32::MAX, f32::min);
-            let qty_max = recent_data_points.iter().map(|&(_, _, qty, _)| qty).fold(f32::MIN, f32::max);
+            let (qty_min, qty_max) = recent_data_points.iter()
+                .map(|&(_, _, qty, _)| qty)
+                .fold((f32::MAX, f32::MIN), |(min, max), qty| (f32::min(min, qty), f32::max(max, qty)));
             chart
                 .draw_series(
                     recent_data_points.iter().map(|&(time, price, qty, is_sell)| {
