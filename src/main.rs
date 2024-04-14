@@ -2,9 +2,9 @@ mod ws_binance;
 use std::collections::BTreeMap;
 use chrono::{DateTime, Utc, Duration, TimeZone, LocalResult};
 use iced::{
-    executor, Color, widget::{
-        button, canvas::{path::lyon_path::geom::euclid::num::Round, Cache, Frame, Geometry}, pick_list, Column, Container, Row, Text
-    }, Alignment, Application, Command, Element, Font, Length, Settings, Size, Subscription, Theme
+    executor, widget::{
+        button, canvas::{path::lyon_path::geom::euclid::num::Round, Cache, Frame, Geometry}, pick_list, Column, Container, Row, Space, Text
+    }, Alignment, Application, Color, Command, Element, Font, Length, Settings, Size, Subscription, Theme
 };
 use iced::widget::pane_grid::{self, PaneGrid};
 use iced::widget::{
@@ -104,6 +104,7 @@ enum Message {
     Restore,
     Close(pane_grid::Pane),
     CloseFocused,
+    ToggleLayoutLock,
 }
 
 struct State {
@@ -117,6 +118,7 @@ struct State {
     panes_created: usize,
     focus: Option<pane_grid::Pane>,
     first_pane: pane_grid::Pane,
+    pane_lock: bool,
 }
 
 impl Application for State {
@@ -139,6 +141,7 @@ impl Application for State {
                 panes_created: 1,
                 focus: None,
                 first_pane,
+                pane_lock: false,
             },
             Command::none(),
         )
@@ -294,30 +297,40 @@ impl Application for State {
                 }
                 Command::none()
             }
+            Message::ToggleLayoutLock => {
+                self.focus = None;
+                self.pane_lock = !self.pane_lock;
+                Command::none()
+            }
         }
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
         let focus = self.focus;
         let total_panes = self.panes.len();
-
+    
         let pane_grid = PaneGrid::new(&self.panes, |id, pane, is_maximized| {
             let is_focused = focus == Some(id);
+    
+            let content = pane_grid::Content::new(responsive(move |size| {
+                view_content(id, total_panes, pane.is_pinned, size, pane.id.to_string(), &self.trades_chart, &self.candlestick_chart)
+            }));
+    
+            if self.pane_lock {
+                return content.style(style::pane_active);
+            }
+    
+            let mut content = content.style(if is_focused {
+                style::pane_focused
+            } else {
+                style::pane_active
+            });
     
             let title = if pane.id == 0 {
                 "Heatmap"
             } else {
                 "Candlesticks"
             };
-    
-            let mut content = pane_grid::Content::new(responsive(move |size| {
-                view_content(id, total_panes, pane.is_pinned, size, pane.id.to_string(), &self.trades_chart, &self.candlestick_chart)
-            }))
-            .style(if is_focused {
-                style::pane_focused
-            } else {
-                style::pane_active
-            });
     
             if is_focused {
                 let title_bar = pane_grid::TitleBar::new(title)
@@ -327,12 +340,11 @@ impl Application for State {
                         pane.is_pinned,
                         is_maximized,
                     ))
-                    .padding(5)
+                    .padding(4)
                     .style(style::title_bar_focused);
     
                 content = content.title_bar(title_bar);
             }
-    
             content
         })
         .width(Length::Fill)
@@ -342,8 +354,10 @@ impl Application for State {
         .on_drag(Message::Dragged)
         .on_resize(10, Message::Resized);
 
-        let button_text = if self.ws_running { "Disconnect" } else { "Connect" };
-        let ws_button = button(button_text).on_press(Message::WsToggle());
+        let ws_button = button(if self.ws_running { "Disconnect" } else { "Connect" })
+            .on_press(Message::WsToggle());
+        let layout_lock = button(if self.pane_lock { "Unlock Layout" } else { "Lock Layout" })
+            .on_press(Message::ToggleLayoutLock);
 
         let mut ws_controls = Row::new()
             .spacing(20)
@@ -371,11 +385,16 @@ impl Application for State {
             }
 
         let content = Column::new()
-            .spacing(5)
+            .spacing(10)
             .align_items(Alignment::Start)
             .width(Length::Fill)
             .height(Length::Fill)
-            .push(ws_controls)
+            .push(
+                Row::new()
+                    .push(ws_controls)
+                    .push(Space::with_width(Length::Fill))
+                    .push(layout_lock)
+            )
             .push(pane_grid);
 
         Container::new(content)
@@ -602,8 +621,8 @@ impl Chart<Message> for CandlestickChart {
         }
 
         let mut chart = chart
-            .x_label_area_size(28)
-            .y_label_area_size(28)
+            .x_label_area_size(20)
+            .y_label_area_size(32)
             .margin(20)
             .build_cartesian_2d(oldest_time..newest_time, y_min..y_max)
             .expect("failed to build chart");
@@ -745,8 +764,8 @@ impl Chart<Message> for LineChart {
             }).collect();
 
             let mut chart = chart
-                .x_label_area_size(28)
-                .y_label_area_size(28)
+                .x_label_area_size(20)
+                .y_label_area_size(32)
                 .margin(20)
                 .build_cartesian_2d(oldest_time..newest_time, y_min..y_max)
                 .expect("failed to build chart");
