@@ -1,21 +1,22 @@
 mod ws_binance;
-use std::collections::BTreeMap;
+use std::{cell::{RefCell, RefMut}, collections::BTreeMap, rc::Rc};
 use chrono::{DateTime, Utc, Duration, TimeZone, LocalResult};
 use iced::{
     executor, widget::{
-        button, canvas::{path::lyon_path::geom::euclid::num::Round, Cache, Frame, Geometry}, pick_list, Column, Container, Row, Space, Text
-    }, Alignment, Application, Color, Command, Element, Font, Length, Settings, Size, Subscription, Theme
+        button, canvas::{path::lyon_path::geom::euclid::num::Round, Cache, Frame, Geometry}, pick_list, text_input, Column, Container, Row, Space, Text, horizontal_space, checkbox
+    }, Alignment, Application, Color, Command, Element, Font, Length, Settings, Size, Subscription, Theme, Renderer
 };
 use iced::widget::pane_grid::{self, PaneGrid};
 use iced::widget::{
     column, container, row, scrollable, text, responsive
 };
+use iced_table::table;
 use futures::TryFutureExt;
 use plotters::prelude::ChartBuilder;
 use plotters_backend::DrawingBackend;
 use plotters_iced::{
     sample::lttb::DataPoint,
-    Chart, ChartWidget, Renderer,
+    Chart, ChartWidget, Renderer as plottersRenderer,
 };
 use plotters::prelude::full_palette::GREY;
 use std::collections::VecDeque;
@@ -54,6 +55,9 @@ enum Ticker {
 impl Ticker {
     const ALL: [Ticker; 4] = [Ticker::BTCUSDT, Ticker::ETHUSDT, Ticker::SOLUSDT, Ticker::LTCUSDT];
 }
+
+const API_KEY: &str = "";
+const SECRET_KEY: &str = "";
 
 enum WsState {
     Disconnected,
@@ -105,6 +109,18 @@ enum Message {
     Close(pane_grid::Pane),
     CloseFocused,
     ToggleLayoutLock,
+    LimitOrder(String),
+    InputChanged((String, String)),
+    OrderCreated(ws_binance::LimitOrder),
+    OrdersFetched(Vec<ws_binance::LimitOrder>),
+    OrderFailed(String),
+    SyncHeader(scrollable::AbsoluteOffset),
+    TableResizing(usize, f32),
+    TableResized,
+    TableResizeColumnsEnabled(bool),
+    FooterEnabled(bool),
+    MinWidthEnabled(bool),
+    Delete(usize),
 }
 
 struct State {
@@ -119,6 +135,17 @@ struct State {
     focus: Option<pane_grid::Pane>,
     first_pane: pane_grid::Pane,
     pane_lock: bool,
+    qty_input_val: RefCell<Option<String>>,
+    price_input_val: RefCell<Option<String>>,
+    open_orders: Vec<ws_binance::LimitOrder>,
+    header: scrollable::Id,
+    body: scrollable::Id,
+    footer: scrollable::Id,
+    columns: Vec<TableColumn>,
+    rows: Vec<TableRow>,
+    resize_columns_enabled: bool,
+    footer_enabled: bool,
+    min_width_enabled: bool,
 }
 
 impl Application for State {
@@ -142,6 +169,28 @@ impl Application for State {
                 focus: None,
                 first_pane,
                 pane_lock: false,
+                qty_input_val: RefCell::new(None),
+                price_input_val: RefCell::new(None),
+                open_orders: vec![],
+                header: scrollable::Id::unique(),
+                body: scrollable::Id::unique(),
+                footer: scrollable::Id::unique(),
+                resize_columns_enabled: true,
+                footer_enabled: true,
+                min_width_enabled: true,
+                columns: vec![
+                    TableColumn::new(ColumnKind::UpdateTime),
+                    TableColumn::new(ColumnKind::Symbol),
+                    TableColumn::new(ColumnKind::OrderType),
+                    TableColumn::new(ColumnKind::Side),
+                    TableColumn::new(ColumnKind::Price),
+                    TableColumn::new(ColumnKind::OrigQty),
+                    TableColumn::new(ColumnKind::ExecutedQty),
+                    TableColumn::new(ColumnKind::ReduceOnly),
+                    TableColumn::new(ColumnKind::TimeInForce),
+                ],
+                rows: vec![
+                ],
             },
             Command::none(),
         )
@@ -184,13 +233,40 @@ impl Application for State {
                                 Message::Split(axis, pane)
                             }
                         );
-                        Command::batch(vec![fetch_klines, split_pane])
+                        let split_pane_again = Command::perform(
+                            async move {
+                                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                                (pane_grid::Axis::Vertical, first_pane) 
+                            },
+                            |(axis, pane)| {
+                                Message::Split(axis, pane)
+                            }
+                        );
+                        let fetch_open_orders = Command::perform(
+                            ws_binance::fetch_open_orders(self.selected_ticker.unwrap().to_string(), API_KEY, SECRET_KEY)
+                                .map_err(|err| format!("{}", err)),
+                            |orders| {
+                                match orders {
+                                    Ok(orders) => {
+                                        Message::OrdersFetched(orders)
+                                    },
+                                    Err(err) => {
+                                        Message::OrderFailed(format!("{}", err))
+                                    }
+                                }
+                            }
+                        );
+                        Command::batch(vec![fetch_klines, fetch_open_orders, split_pane, split_pane_again])
                     } else {
                         fetch_klines
                     }
                 } else {
                     self.trades_chart = None;
                     self.candlestick_chart = None;
+                    self.open_orders.clear();
+                    self.rows.clear();
+
+                    dbg!(&self.open_orders);
                     Command::none()
                 }
             },       
@@ -301,6 +377,81 @@ impl Application for State {
                 self.focus = None;
                 self.pane_lock = !self.pane_lock;
                 Command::none()
+            },
+            Message::LimitOrder(side) => {
+                Command::perform(
+                    ws_binance::create_limit_order(side, self.qty_input_val.borrow().as_ref().unwrap().to_string(), self.price_input_val.borrow().as_ref().unwrap().to_string(), API_KEY, SECRET_KEY),
+                    |res| {
+                        match res {
+                            Ok(res) => {
+                                Message::OrderCreated(res)
+                            },
+                            Err(err) => {
+                                Message::OrderFailed(format!("{}", err))
+                            }
+                        }
+                    }
+                )
+            },
+            Message::OrdersFetched(orders) => {
+                for order in orders {
+                    self.open_orders.push(order.clone());
+                    self.rows.push(TableRow::add_row(order));
+                }
+                Command::none()
+            },
+            Message::OrderCreated(order) => {
+                self.rows.push(TableRow::add_row(order.clone()));
+                self.open_orders.push(order);
+                Command::none()
+            },
+            Message::OrderFailed(err) => {
+                eprintln!("Error creating order: {}", err);
+                Command::none()
+            },
+            Message::InputChanged((field, new_value)) => {
+                if field == "price" {
+                    *self.price_input_val.borrow_mut() = Some(new_value);
+                } else if field == "qty" {
+                    *self.qty_input_val.borrow_mut() = Some(new_value);
+                }
+                Command::none()
+            },
+            Message::SyncHeader(offset) => {
+                return Command::batch(vec![
+                    scrollable::scroll_to(self.header.clone(), offset),
+                    scrollable::scroll_to(self.footer.clone(), offset),
+                ])
+            },
+            Message::TableResizing(index, offset) => {
+                if let Some(column) = self.columns.get_mut(index) {
+                    column.resize_offset = Some(offset);
+                }
+                Command::none()
+            },
+            Message::TableResized => {
+                self.columns.iter_mut().for_each(|column| {
+                    if let Some(offset) = column.resize_offset.take() {
+                        column.width += offset;
+                    }
+                });
+                Command::none()
+            },
+            Message::TableResizeColumnsEnabled(enabled) => {
+                self.resize_columns_enabled = enabled;
+                Command::none()
+            },
+            Message::FooterEnabled(enabled) => {
+                self.footer_enabled = enabled;
+                Command::none()
+            },
+            Message::MinWidthEnabled(enabled) => {
+                self.min_width_enabled = enabled;
+                Command::none()
+            },
+            Message::Delete(index) => {
+                self.rows.remove(index);
+                Command::none()
             }
         }
     }
@@ -308,12 +459,26 @@ impl Application for State {
     fn view(&self) -> Element<'_, Self::Message> {
         let focus = self.focus;
         let total_panes = self.panes.len();
-    
+
         let pane_grid = PaneGrid::new(&self.panes, |id, pane, is_maximized| {
             let is_focused = focus == Some(id);
     
-            let content = pane_grid::Content::new(responsive(move |size| {
-                view_content(id, total_panes, pane.is_pinned, size, pane.id.to_string(), &self.trades_chart, &self.candlestick_chart)
+            let content: pane_grid::Content<'_, Message, _, Renderer> = pane_grid::Content::new(responsive(move |size| {
+                view_content(
+                    id, 
+                    total_panes, 
+                    pane.is_pinned, 
+                    size, 
+                    pane.id.to_string(), 
+                    &self.trades_chart, 
+                    &self.candlestick_chart, 
+                    self.qty_input_val.borrow().clone(), 
+                    self.price_input_val.borrow().clone(),
+                    &self.header,
+                    &self.body,
+                    &self.columns,
+                    &self.rows,
+                )
             }));
     
             if self.pane_lock {
@@ -327,9 +492,11 @@ impl Application for State {
             });
     
             let title = if pane.id == 0 {
-                "Heatmap"
+                "Heatmap Chart"
+            } else if pane.id == 1 {
+                "Candlestick Chart"
             } else {
-                "Candlesticks"
+                "Trading Panel"
             };
     
             if is_focused {
@@ -418,7 +585,7 @@ impl Application for State {
     }
 }
 
-fn view_content<'a>(
+fn view_content<'a, 'b: 'a>(
     _pane: pane_grid::Pane,
     _total_panes: usize,
     _is_pinned: bool,
@@ -426,15 +593,63 @@ fn view_content<'a>(
     pane_id: String,
     trades_chart: &'a Option<LineChart>,
     candlestick_chart: &'a Option<CandlestickChart>,
+    qty_input_val: Option<String>,
+    price_input_val: Option<String>, 
+    header: &'b scrollable::Id,
+    body: &'b scrollable::Id,
+    columns: &'b Vec<TableColumn>,
+    rows: &'b Vec<TableRow>,
 ) -> Element<'a, Message> {
-
-    let chart = match pane_id.as_str() {
+    let content = match pane_id.as_str() {
         "0" => trades_chart.as_ref().map(LineChart::view).unwrap_or_else(|| Text::new("No data").into()),
         "1" => candlestick_chart.as_ref().map(CandlestickChart::view).unwrap_or_else(|| Text::new("No data").into()),
+        "2" => {
+            let buy_button = button("Buy")
+                .on_press(Message::LimitOrder("BUY".to_string()));
+            let sell_button = button("Sell")
+                .on_press(Message::LimitOrder("SELL".to_string()));
+
+            let buttons = Row::new()
+                .push(buy_button)
+                .push(sell_button)
+                .align_items(Alignment::Center)
+                .padding(10)
+                .spacing(5);
+
+            let qty_input = text_input("Quantity...", qty_input_val.as_deref().unwrap_or(""))
+                .on_input(|input| Message::InputChanged(("qty".to_string(), input)));
+            let price_input = text_input("Price...", price_input_val.as_deref().unwrap_or(""))
+                .on_input(|input| Message::InputChanged(("price".to_string(), input)));
+
+            let table = responsive(move |_size| {
+                let table = table(
+                    header.clone(),
+                    body.clone(),
+                    columns,
+                    rows,
+                    Message::SyncHeader,
+                );
+                Container::new(table).padding(10).into()
+            });
+
+            let inputs = Row::new()
+                .push(qty_input)
+                .push(price_input)
+                .align_items(Alignment::Center)
+                .padding(10)
+                .spacing(5);
+            
+            Column::new()
+                .push(buttons)
+                .push(inputs)
+                .push(table)
+                .align_items(Alignment::Center)
+                .into()
+        },
         _ => Text::new("No data").into(),
     };
 
-    container(chart)
+    container(content)
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
@@ -586,7 +801,7 @@ impl CandlestickChart {
 impl Chart<Message> for CandlestickChart {
     type State = ();
     #[inline]
-    fn draw<R: Renderer, F: Fn(&mut Frame)>(
+    fn draw<R: plottersRenderer, F: Fn(&mut Frame)>(
         &self,
         renderer: &R,
         bounds: Size,
@@ -713,7 +928,7 @@ impl LineChart {
 impl Chart<Message> for LineChart {
     type State = ();
     #[inline]
-    fn draw<R: Renderer, F: Fn(&mut Frame)>(
+    fn draw<R: plottersRenderer, F: Fn(&mut Frame)>(
         &self,
         renderer: &R,
         bounds: Size,
@@ -799,8 +1014,10 @@ impl Chart<Message> for LineChart {
                 bids.iter().map(|(_, qty)| qty).chain(asks.iter().map(|(_, qty)| qty)).fold(f32::MIN, |current_max: f32, qty: &f32| f32::max(current_max, *qty))
             }).fold(f32::MIN, f32::max);
             for i in 0..20 { 
-                let bids_i: Vec<(DateTime<Utc>, f32, f32)> = recent_depth.iter().map(|&(time, bid, _ask)| ((*time).clone(), bid[i].0, bid[i].1)).collect();
-                let asks_i: Vec<(DateTime<Utc>, f32, f32)> = recent_depth.iter().map(|&(time, _bid, ask)| ((*time).clone(), ask[i].0, ask[i].1)).collect();
+                let bids_i: Vec<(DateTime<Utc>, f32, f32)> = recent_depth.iter()
+                    .map(|&(time, bid, _ask)| ((*time).clone(), bid[i].0, bid[i].1)).collect();
+                let asks_i: Vec<(DateTime<Utc>, f32, f32)> = recent_depth.iter()
+                    .map(|&(time, _bid, ask)| ((*time).clone(), ask[i].0, ask[i].1)).collect();
             
                 chart
                     .draw_series(
@@ -838,5 +1055,114 @@ impl Chart<Message> for LineChart {
                 )
                 .expect("failed to draw circles");
         }
+    }
+}
+struct TableColumn {
+    kind: ColumnKind,
+    width: f32,
+    resize_offset: Option<f32>,
+}
+
+impl TableColumn {
+    fn new(kind: ColumnKind) -> Self {
+        let width = match kind {
+            ColumnKind::UpdateTime => 130.0,
+            ColumnKind::Symbol => 80.0,
+            ColumnKind::OrderType => 50.0,
+            ColumnKind::Side => 50.0,
+            ColumnKind::Price => 100.0,
+            ColumnKind::OrigQty => 100.0,
+            ColumnKind::ExecutedQty => 100.0,
+            ColumnKind::ReduceOnly => 100.0,
+            ColumnKind::TimeInForce => 50.0,
+        };
+
+        Self {
+            kind,
+            width,
+            resize_offset: None,
+        }
+    }
+}
+
+enum ColumnKind {
+    Symbol,
+    Side,
+    Price,
+    OrigQty,
+    ExecutedQty,
+    TimeInForce,
+    OrderType,
+    ReduceOnly,
+    UpdateTime,
+}
+
+struct TableRow {
+    order: ws_binance::LimitOrder,
+}
+
+impl TableRow {
+    fn generate(order: ws_binance::LimitOrder) -> Self {
+        Self {
+            order,
+        }
+    }
+    fn add_row(order: ws_binance::LimitOrder) -> Self {
+        Self {
+            order,
+        }
+    }
+}
+
+impl<'a> table::Column<'a, Message, Theme, Renderer> for TableColumn {
+    type Row = TableRow;
+
+    fn header(&'a self, _col_index: usize) -> Element<'a, Message> {
+        let content = match self.kind {
+            ColumnKind::UpdateTime => "Time",
+            ColumnKind::Symbol => "Symbol",
+            ColumnKind::OrderType => "Type",
+            ColumnKind::Side => "Side",
+            ColumnKind::Price => "Price",
+            ColumnKind::OrigQty => "Amount",
+            ColumnKind::ExecutedQty => "Filled",
+            ColumnKind::ReduceOnly => "Reduce Only",
+            ColumnKind::TimeInForce => "TIF",
+        };
+
+        container(text(content)).height(24).center_y().into()
+    }
+
+    fn cell(
+        &'a self,
+        _col_index: usize,
+        row_index: usize,
+        row: &'a Self::Row,
+    ) -> Element<'a, Message> {
+        let content: Element<_> = match self.kind {
+            ColumnKind::UpdateTime => text(row.order.update_time.to_string()).into(),
+            ColumnKind::Symbol => text(&row.order.symbol).into(),
+            ColumnKind::OrderType => text(&row.order.order_type).into(),
+            ColumnKind::Side => text(&row.order.side).into(),
+            ColumnKind::Price => text(&row.order.price).into(),
+            ColumnKind::OrigQty => text(&row.order.orig_qty).into(),
+            ColumnKind::ExecutedQty => text(&row.order.executed_qty).into(),
+            ColumnKind::ReduceOnly => text(row.order.reduce_only.to_string()).into(),
+            ColumnKind::TimeInForce => text(&row.order.time_in_force).into(),
+        };
+
+        container(content)
+            .width(Length::Fill)
+            .height(32)
+            .center_y()
+            .into()
+    }
+
+    fn width(&self) -> f32 {
+        self.width
+    }
+
+    fn resize_offset(&self) -> Option<f32> {
+        self.resize_offset
     }
 }
