@@ -1,5 +1,5 @@
 mod ws_binance;
-use std::{cell::{RefCell, RefMut}, collections::BTreeMap, rc::Rc};
+use std::{cell::RefCell, collections::BTreeMap};
 use chrono::{DateTime, Utc, Duration, TimeZone, LocalResult};
 use iced::{
     executor, widget::{
@@ -60,8 +60,8 @@ const API_KEY: &str = "";
 const SECRET_KEY: &str = "";
 
 enum WsState {
-    Disconnected,
     Connected(ws_binance::Connection),
+    Disconnected,
 }
 impl Default for WsState {
     fn default() -> Self {
@@ -121,6 +121,7 @@ enum Message {
     FooterEnabled(bool),
     MinWidthEnabled(bool),
     Delete(usize),
+    UserListenKey(String),
 }
 
 struct State {
@@ -146,6 +147,7 @@ struct State {
     resize_columns_enabled: bool,
     footer_enabled: bool,
     min_width_enabled: bool,
+    listen_key: String,
 }
 
 impl Application for State {
@@ -189,10 +191,20 @@ impl Application for State {
                     TableColumn::new(ColumnKind::ReduceOnly),
                     TableColumn::new(ColumnKind::TimeInForce),
                 ],
-                rows: vec![
-                ],
+                rows: vec![],
+                listen_key: "".to_string(),
             },
-            Command::none(),
+            Command::perform(ws_binance::get_listen_key(API_KEY, SECRET_KEY), |res| {
+                match res {
+                    Ok(listen_key) => {
+                        Message::UserListenKey(listen_key)
+                    },
+                    Err(err) => {
+                        eprintln!("Error getting listen key: {}", err);
+                        Message::UserListenKey("".to_string())
+                    }
+                }
+            }),
         )
     }
 
@@ -312,6 +324,14 @@ impl Application for State {
                     Command::none()
                 }
             }, 
+            Message::UserListenKey(listen_key) => {
+                if listen_key != "" {
+                    self.listen_key = listen_key;
+                } else {
+                    eprintln!("Error getting listen key");
+                }
+                Command::none()
+            },
             Message::Split(axis, pane) => {
                 let result =
                     self.panes.split(axis, pane, Pane::new(self.panes_created));
