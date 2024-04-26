@@ -195,6 +195,7 @@ enum State {
 
 #[derive(Debug, Clone)]
 pub enum Event {
+    Connected(Connection),
     Disconnected,
     DepthReceived(u64, Vec<(f32, f32)>, Vec<(f32, f32)>, Vec<Trade>),
     KlineReceived(Kline),
