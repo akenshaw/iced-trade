@@ -2,11 +2,7 @@ use iced::futures;
 use iced::subscription::{self, Subscription};
 use serde::Deserialize;
 use serde_json::json;
-use chrono::Utc;
-use reqwest::header::{HeaderMap, HeaderValue};
 use hmac::{Hmac, Mac};
-use sha2::Sha256;
-use hex;
 
 mod string_to_f32 {
     use serde::{self, Deserialize, Deserializer};
@@ -65,7 +61,7 @@ pub struct Kline {
     pub taker_buy_base_asset_volume: f32,
 }
 
-pub fn connect(selected_ticker: String, timeframe: String) -> Subscription<Event> {
+pub fn connect_market_stream(selected_ticker: String, timeframe: String) -> Subscription<Event> {
     struct Connect;
 
     subscription::channel(
@@ -239,82 +235,4 @@ pub async fn fetch_klines(ticker: String, timeframe: String) -> Result<Vec<Kline
     let fetched_klines: Result<Vec<FetchedKlines>, _> = serde_json::from_value(value);
     let klines: Vec<Kline> = fetched_klines.unwrap().into_iter().map(Kline::from).collect();
     Ok(klines)
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct LimitOrder {
-    #[serde(rename = "orderId")]
-    pub order_id: i64,
-    pub symbol: String,
-    pub side: String,
-    pub price: String,
-    #[serde(rename = "origQty")]
-    pub orig_qty: String,
-    #[serde(rename = "executedQty")]
-    pub executed_qty: String,
-    #[serde(rename = "timeInForce")]
-    pub time_in_force: String,
-    #[serde(rename = "type")]
-    pub order_type: String,
-    #[serde(rename = "reduceOnly")]
-    pub reduce_only: bool,
-    #[serde(rename = "updateTime")]
-    pub update_time: u64,
-}
-
-pub async fn create_limit_order (side: String, qty: String, price: String, api_key: &str, secret_key: &str) -> Result<LimitOrder, reqwest::Error> {
-    let params = format!("symbol=BTCUSDT&side={}&type=LIMIT&timeInForce=GTC&quantity={}&price={}&timestamp={}", side, qty, price, Utc::now().timestamp_millis());
-    let signature = sign_params(&params, secret_key);
-
-    let url = format!("https://testnet.binancefuture.com/fapi/v1/order?{}&signature={}", params, signature);
-
-    let mut headers = HeaderMap::new();
-    headers.insert("X-MBX-APIKEY", HeaderValue::from_str(api_key).unwrap());
-
-    let client = reqwest::Client::new();
-    let res = client.post(&url).headers(headers).send().await?;
-
-    let limit_order: LimitOrder = res.json().await?;
-    Ok(limit_order)
-}
-
-pub async fn fetch_open_orders(symbol: String, api_key: &str, secret_key: &str) -> Result<Vec<LimitOrder>, reqwest::Error> {
-    let params = format!("timestamp={}&symbol={}", Utc::now().timestamp_millis(), symbol);
-    let signature = sign_params(&params, secret_key);
-
-    let url = format!("https://testnet.binancefuture.com/fapi/v1/openOrders?{}&signature={}", params, signature);
-
-    let mut headers = HeaderMap::new();
-    headers.insert("X-MBX-APIKEY", HeaderValue::from_str(api_key).unwrap());
-
-    let client = reqwest::Client::new();
-    let res = client.get(&url).headers(headers).send().await?;
-
-    let open_orders: Vec<LimitOrder> = res.json().await?;
-    Ok(open_orders)
-}
-
-pub async fn get_listen_key(api_key: &str, secret_key: &str) -> Result<String, reqwest::Error> {
-    let params = format!("timestamp={}", Utc::now().timestamp_millis());
-    let signature = sign_params(&params, secret_key);
-
-    let url = format!("https://testnet.binancefuture.com/fapi/v1/listenKey?{}&signature={}", params, signature);
-
-    let mut headers = HeaderMap::new();
-    headers.insert("X-MBX-APIKEY", HeaderValue::from_str(api_key).unwrap());
-
-    let client = reqwest::Client::new();
-    let res = client.post(&url).headers(headers).send().await?;
-
-    let listen_key: serde_json::Value = res.json().await?;
-    Ok(listen_key["listenKey"].as_str().unwrap().to_string())
-}
-
-fn sign_params(params: &str, secret_key: &str) -> String {
-    type HmacSha256 = Hmac<Sha256>;
-
-    let mut mac = HmacSha256::new_from_slice(secret_key.as_bytes())
-        .expect("HMAC can take key of any size");
-    mac.update(params.as_bytes());
-    hex::encode(mac.finalize().into_bytes())
 }
