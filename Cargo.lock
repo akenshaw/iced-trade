@@ -1481,6 +1481,7 @@ dependencies = [
  "hex",
  "hmac",
  "iced",
+ "iced_futures",
  "iced_table",
  "native-tls",
  "plotters",
