@@ -1,4 +1,5 @@
 mod ws_binance;
+mod user_ws_binance;
 use std::{cell::RefCell, collections::BTreeMap};
 use chrono::{DateTime, Utc, Duration, TimeZone, LocalResult};
 use iced::{
@@ -56,14 +57,24 @@ impl Ticker {
     const ALL: [Ticker; 4] = [Ticker::BTCUSDT, Ticker::ETHUSDT, Ticker::SOLUSDT, Ticker::LTCUSDT];
 }
 
-const API_KEY: &str = "";
-const SECRET_KEY: &str = "";
+const API_KEY: &str = "d5811ebf135cc577a5d657216adaafb0b8631cdc85d6a1122f04438ffdb17af1";
+const SECRET_KEY: &str = "fd4b4e3286245d1eb6eda3c4538b52a3159dd35a3647ea8744a5f1d7d83a3bb5";
 
 enum WsState {
     Connected(ws_binance::Connection),
     Disconnected,
 }
 impl Default for WsState {
+    fn default() -> Self {
+        Self::Disconnected
+    }
+}
+
+enum UserWsState {
+    Connected(user_ws_binance::Connection),
+    Disconnected,
+}
+impl Default for UserWsState {
     fn default() -> Self {
         Self::Disconnected
     }
@@ -97,6 +108,7 @@ enum Message {
     TickerSelected(Ticker),
     TimeframeSelected(&'static str),
     WsEvent(ws_binance::Event),
+    UserWsEvent(user_ws_binance::Event),
     WsToggle(),
     FetchEvent(Result<Vec<ws_binance::Kline>, std::string::String>),
     Split(pane_grid::Axis, pane_grid::Pane),
@@ -111,8 +123,8 @@ enum Message {
     ToggleLayoutLock,
     LimitOrder(String),
     InputChanged((String, String)),
-    OrderCreated(ws_binance::LimitOrder),
-    OrdersFetched(Vec<ws_binance::LimitOrder>),
+    OrderCreated(user_ws_binance::LimitOrder),
+    OrdersFetched(Vec<user_ws_binance::LimitOrder>),
     OrderFailed(String),
     SyncHeader(scrollable::AbsoluteOffset),
     TableResizing(usize, f32),
@@ -130,6 +142,7 @@ struct State {
     selected_ticker: Option<Ticker>,
     selected_timeframe: Option<&'static str>,
     ws_state: WsState,
+    user_ws_state: UserWsState,
     ws_running: bool,
     panes: pane_grid::State<Pane>,
     panes_created: usize,
@@ -138,7 +151,7 @@ struct State {
     pane_lock: bool,
     qty_input_val: RefCell<Option<String>>,
     price_input_val: RefCell<Option<String>>,
-    open_orders: Vec<ws_binance::LimitOrder>,
+    open_orders: Vec<user_ws_binance::LimitOrder>,
     header: scrollable::Id,
     body: scrollable::Id,
     footer: scrollable::Id,
@@ -165,6 +178,7 @@ impl Application for State {
                 selected_ticker: None,
                 selected_timeframe: Some("1m"),
                 ws_state: WsState::Disconnected,
+                user_ws_state: UserWsState::Disconnected,
                 ws_running: false,
                 panes,
                 panes_created: 1,
@@ -194,7 +208,7 @@ impl Application for State {
                 rows: vec![],
                 listen_key: "".to_string(),
             },
-            Command::perform(ws_binance::get_listen_key(API_KEY, SECRET_KEY), |res| {
+            Command::perform(user_ws_binance::get_listen_key(API_KEY, SECRET_KEY), |res| {
                 match res {
                     Ok(listen_key) => {
                         Message::UserListenKey(listen_key)
@@ -255,7 +269,7 @@ impl Application for State {
                             }
                         );
                         let fetch_open_orders = Command::perform(
-                            ws_binance::fetch_open_orders(self.selected_ticker.unwrap().to_string(), API_KEY, SECRET_KEY)
+                            user_ws_binance::fetch_open_orders(self.selected_ticker.unwrap().to_string(), API_KEY, SECRET_KEY)
                                 .map_err(|err| format!("{}", err)),
                             |orders| {
                                 match orders {
@@ -324,6 +338,23 @@ impl Application for State {
                     Command::none()
                 }
             }, 
+            Message::UserWsEvent(event) => {
+                match event {
+                    user_ws_binance::Event::Connected(connection) => {
+                        self.user_ws_state = UserWsState::Connected(connection);
+                    }
+                    user_ws_binance::Event::Disconnected => {
+                        self.user_ws_state = UserWsState::Disconnected;
+                    }
+                    user_ws_binance::Event::TestEvent(message) => {
+                        dbg!(message);
+                    }
+                    user_ws_binance::Event::LimitOrder(order) => {
+                        dbg!(order);
+                    }
+                }
+                Command::none()
+            }
             Message::UserListenKey(listen_key) => {
                 if listen_key != "" {
                     self.listen_key = listen_key;
@@ -400,14 +431,17 @@ impl Application for State {
             },
             Message::LimitOrder(side) => {
                 Command::perform(
-                    ws_binance::create_limit_order(side, self.qty_input_val.borrow().as_ref().unwrap().to_string(), self.price_input_val.borrow().as_ref().unwrap().to_string(), API_KEY, SECRET_KEY),
+                    user_ws_binance::create_limit_order(side, self.qty_input_val.borrow().as_ref().unwrap().to_string(), self.price_input_val.borrow().as_ref().unwrap().to_string(), API_KEY, SECRET_KEY),
                     |res| {
                         match res {
                             Ok(res) => {
                                 Message::OrderCreated(res)
                             },
-                            Err(err) => {
-                                Message::OrderFailed(format!("{}", err))
+                            Err(user_ws_binance::BinanceError::Reqwest(err)) => {
+                                Message::OrderFailed(format!("Network error: {}", err))
+                            },
+                            Err(user_ws_binance::BinanceError::BinanceAPI(err_msg)) => {
+                                Message::OrderFailed(format!("Binance API error: {}", err_msg))
                             }
                         }
                     }
@@ -594,11 +628,20 @@ impl Application for State {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        match (&self.selected_ticker, self.ws_running) {
-            (Some(selected_ticker), true) => ws_binance::connect(selected_ticker.to_string(), self.selected_timeframe.unwrap().to_string()).map(Message::WsEvent),
-            _ => Subscription::none(),
+        let mut subscriptions = Vec::new();
+    
+        if let Some(selected_ticker) = &self.selected_ticker {
+            if self.ws_running {
+                let binance_market_stream = ws_binance::connect_market_stream(selected_ticker.to_string(), self.selected_timeframe.unwrap().to_string()).map(Message::WsEvent);
+                subscriptions.push(binance_market_stream);
+            }
         }
-    }
+        //if self.listen_key != "" {
+        //    let binance_user_stream = user_ws_binance::connect_user_stream(self.listen_key.clone()).map(Message::UserWsEvent);
+        //    subscriptions.push(binance_user_stream);
+        //}
+        Subscription::batch(subscriptions)
+    }    
 
     fn theme(&self) -> Self::Theme {
         Theme::Oxocarbon
@@ -1118,16 +1161,16 @@ enum ColumnKind {
 }
 
 struct TableRow {
-    order: ws_binance::LimitOrder,
+    order: user_ws_binance::LimitOrder,
 }
 
 impl TableRow {
-    fn generate(order: ws_binance::LimitOrder) -> Self {
+    fn generate(order: user_ws_binance::LimitOrder) -> Self {
         Self {
             order,
         }
     }
-    fn add_row(order: ws_binance::LimitOrder) -> Self {
+    fn add_row(order: user_ws_binance::LimitOrder) -> Self {
         Self {
             order,
         }
