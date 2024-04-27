@@ -81,6 +81,7 @@ pub fn connect_user_stream(listen_key: String) -> Subscription<Event> {
                                         let parsed_message: Result<serde_json::Value, _> = serde_json::from_str(&message);
                                         match parsed_message {
                                             Ok(data) => {
+                                                dbg!(&data);
                                                 if data["e"] == "ACCOUNT_UPDATE" {
                                                     let event = Event::TestEvent("Account Update".to_string());
                                                     let _ = output.send(event).await;
@@ -167,6 +168,26 @@ pub async fn create_limit_order (side: String, qty: String, price: String, api_k
     if res.status().is_success() {
         let limit_order: LimitOrder = res.json().await.map_err(BinanceError::Reqwest)?;
         Ok(limit_order)
+    } else {
+        let error_msg: String = res.text().await.map_err(BinanceError::Reqwest)?;
+        Err(BinanceError::BinanceAPI(error_msg))
+    }
+}
+
+pub async fn cancel_order(order_id: String, api_key: &str, secret_key: &str) -> Result<(), BinanceError> {
+    let params = format!("symbol=BTCUSDT&orderId={}&timestamp={}", order_id, Utc::now().timestamp_millis());
+    let signature = sign_params(&params, secret_key);
+
+    let url = format!("https://testnet.binancefuture.com/fapi/v1/order?{}&signature={}", params, signature);
+
+    let mut headers = HeaderMap::new();
+    headers.insert("X-MBX-APIKEY", HeaderValue::from_str(api_key).unwrap());
+
+    let client = reqwest::Client::new();
+    let res = client.delete(&url).headers(headers).send().await?;
+
+    if res.status().is_success() {
+        Ok(())
     } else {
         let error_msg: String = res.text().await.map_err(BinanceError::Reqwest)?;
         Err(BinanceError::BinanceAPI(error_msg))

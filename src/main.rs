@@ -122,6 +122,7 @@ enum Message {
     CloseFocused,
     ToggleLayoutLock,
     LimitOrder(String),
+    CancelOrder(String),
     InputChanged((String, String)),
     OrderCreated(user_ws_binance::LimitOrder),
     OrdersFetched(Vec<user_ws_binance::LimitOrder>),
@@ -204,6 +205,7 @@ impl Application for State {
                     TableColumn::new(ColumnKind::ExecutedQty),
                     TableColumn::new(ColumnKind::ReduceOnly),
                     TableColumn::new(ColumnKind::TimeInForce),
+                    TableColumn::new(ColumnKind::CancelOrder),
                 ],
                 rows: vec![],
                 listen_key: "".to_string(),
@@ -248,6 +250,20 @@ impl Application for State {
                             Message::FetchEvent(klines)
                         }
                     );
+                    let fetch_open_orders = Command::perform(
+                        user_ws_binance::fetch_open_orders(self.selected_ticker.unwrap().to_string(), API_KEY, SECRET_KEY)
+                            .map_err(|err| format!("{}", err)),
+                        |orders| {
+                            match orders {
+                                Ok(orders) => {
+                                    Message::OrdersFetched(orders)
+                                },
+                                Err(err) => {
+                                    Message::OrderFailed(format!("{}", err))
+                                }
+                            }
+                        }
+                    );
                     if self.panes.len() == 1 {
                         let first_pane = self.first_pane;
                         let split_pane = Command::perform(
@@ -268,23 +284,10 @@ impl Application for State {
                                 Message::Split(axis, pane)
                             }
                         );
-                        let fetch_open_orders = Command::perform(
-                            user_ws_binance::fetch_open_orders(self.selected_ticker.unwrap().to_string(), API_KEY, SECRET_KEY)
-                                .map_err(|err| format!("{}", err)),
-                            |orders| {
-                                match orders {
-                                    Ok(orders) => {
-                                        Message::OrdersFetched(orders)
-                                    },
-                                    Err(err) => {
-                                        Message::OrderFailed(format!("{}", err))
-                                    }
-                                }
-                            }
-                        );
+                        
                         Command::batch(vec![fetch_klines, fetch_open_orders, split_pane, split_pane_again])
                     } else {
-                        fetch_klines
+                        Command::batch(vec![fetch_klines, fetch_open_orders])
                     }
                 } else {
                     self.trades_chart = None;
@@ -436,6 +439,24 @@ impl Application for State {
                         match res {
                             Ok(res) => {
                                 Message::OrderCreated(res)
+                            },
+                            Err(user_ws_binance::BinanceError::Reqwest(err)) => {
+                                Message::OrderFailed(format!("Network error: {}", err))
+                            },
+                            Err(user_ws_binance::BinanceError::BinanceAPI(err_msg)) => {
+                                Message::OrderFailed(format!("Binance API error: {}", err_msg))
+                            }
+                        }
+                    }
+                )
+            },
+            Message::CancelOrder(order_id) => {
+                Command::perform(
+                    user_ws_binance::cancel_order(order_id, API_KEY, SECRET_KEY),
+                    |res| {
+                        match res {
+                            Ok(_) => {
+                                Message::OrderFailed("Order cancelled".to_string())
                             },
                             Err(user_ws_binance::BinanceError::Reqwest(err)) => {
                                 Message::OrderFailed(format!("Network error: {}", err))
@@ -636,10 +657,10 @@ impl Application for State {
                 subscriptions.push(binance_market_stream);
             }
         }
-        //if self.listen_key != "" {
-        //    let binance_user_stream = user_ws_binance::connect_user_stream(self.listen_key.clone()).map(Message::UserWsEvent);
-        //    subscriptions.push(binance_user_stream);
-        //}
+        if self.listen_key != "" {
+            let binance_user_stream = user_ws_binance::connect_user_stream(self.listen_key.clone()).map(Message::UserWsEvent);
+            subscriptions.push(binance_user_stream);
+        }
         Subscription::batch(subscriptions)
     }    
 
@@ -1134,10 +1155,11 @@ impl TableColumn {
             ColumnKind::OrderType => 50.0,
             ColumnKind::Side => 50.0,
             ColumnKind::Price => 100.0,
-            ColumnKind::OrigQty => 100.0,
-            ColumnKind::ExecutedQty => 100.0,
+            ColumnKind::OrigQty => 80.0,
+            ColumnKind::ExecutedQty => 80.0,
             ColumnKind::ReduceOnly => 100.0,
             ColumnKind::TimeInForce => 50.0,
+            ColumnKind::CancelOrder => 50.0,
         };
 
         Self {
@@ -1158,6 +1180,7 @@ enum ColumnKind {
     OrderType,
     ReduceOnly,
     UpdateTime,
+    CancelOrder
 }
 
 struct TableRow {
@@ -1165,11 +1188,6 @@ struct TableRow {
 }
 
 impl TableRow {
-    fn generate(order: user_ws_binance::LimitOrder) -> Self {
-        Self {
-            order,
-        }
-    }
     fn add_row(order: user_ws_binance::LimitOrder) -> Self {
         Self {
             order,
@@ -1191,6 +1209,7 @@ impl<'a> table::Column<'a, Message, Theme, Renderer> for TableColumn {
             ColumnKind::ExecutedQty => "Filled",
             ColumnKind::ReduceOnly => "Reduce Only",
             ColumnKind::TimeInForce => "TIF",
+            ColumnKind::CancelOrder => "Cancel",
         };
 
         container(text(content)).height(24).center_y().into()
@@ -1212,6 +1231,7 @@ impl<'a> table::Column<'a, Message, Theme, Renderer> for TableColumn {
             ColumnKind::ExecutedQty => text(&row.order.executed_qty).into(),
             ColumnKind::ReduceOnly => text(row.order.reduce_only.to_string()).into(),
             ColumnKind::TimeInForce => text(&row.order.time_in_force).into(),
+            ColumnKind::CancelOrder => button("X").on_press(Message::CancelOrder(row.order.order_id.to_string())).into(),
         };
 
         container(content)
