@@ -29,6 +29,7 @@ pub enum Event {
     Connected(Connection),
     Disconnected,
     LimitOrder(LimitOrder),
+    CancelOrder(OrderTradeUpdate),
     TestEvent(String),
 }
 
@@ -82,16 +83,30 @@ pub fn connect_user_stream(listen_key: String) -> Subscription<Event> {
                                         match parsed_message {
                                             Ok(data) => {
                                                 dbg!(&data);
+                                                let event;
                                                 if data["e"] == "ACCOUNT_UPDATE" {
-                                                    let event = Event::TestEvent("Account Update".to_string());
-                                                    let _ = output.send(event).await;
+                                                    event = Event::TestEvent("Account Update".to_string());
+
                                                 } else if data["e"] == "ORDER_TRADE_UPDATE" {
-                                                    let event = Event::TestEvent("Order Trade Update".to_string());
-                                                    let _ = output.send(event).await;
+                                                    if let Some(order_trade_update) = data["o"].as_object() {
+                                                        let order_trade_update: OrderTradeUpdate = serde_json::from_value(json!(order_trade_update)).unwrap();
+                                                        if order_trade_update.exec_type == "NEW" {
+                                                            event = Event::TestEvent("New Order".to_string());
+                                                        } else if order_trade_update.exec_type == "TRADE" {
+                                                            event = Event::TestEvent("Trade".to_string());
+                                                        } else if order_trade_update.exec_type == "CANCELED" {
+                                                            event = Event::CancelOrder(order_trade_update);
+                                                        } else {
+                                                            event = Event::TestEvent("Unknown".to_string());
+                                                        }
+                                                    } else {
+                                                        event = Event::TestEvent("Unknown".to_string());
+                                                    }
+
                                                 } else {
-                                                    let event = Event::TestEvent("Unknown".to_string());
-                                                    let _ = output.send(event).await;
+                                                    event = Event::TestEvent("Unknown".to_string());
                                                 }
+                                                let _ = output.send(event).await;
                                             },
                                             Err(e) => {
                                                 dbg!(e, message);
@@ -117,6 +132,30 @@ pub fn connect_user_stream(listen_key: String) -> Subscription<Event> {
 pub enum EventType {
     AccountUpdate,
     OrderTradeUpdate,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OrderTradeUpdate {
+    #[serde(rename = "s")]
+    pub symbol: String,
+    #[serde(rename = "S")]
+    pub side: String,
+    #[serde(rename = "o")]
+    pub order_type: String,
+    #[serde(rename = "x")]
+    pub exec_type: String,
+    #[serde(rename = "X")]
+    pub order_status: String,
+    #[serde(rename = "f")]
+    pub time_in_force: String,
+    #[serde(rename = "wt")]
+    pub working_type: String,
+    #[serde(rename = "i")]
+    pub order_id: i64,
+    #[serde(rename = "p")]
+    pub price: String,
+    #[serde(rename = "q")]
+    pub orig_qty: String,
 }
 
 #[derive(Debug)]

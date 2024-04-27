@@ -105,12 +105,16 @@ fn main() {
 
 #[derive(Debug, Clone)]
 enum Message {
+    // Market&User data stream
+    UserListenKey(String),
+    UserWsEvent(user_ws_binance::Event),
     TickerSelected(Ticker),
     TimeframeSelected(&'static str),
     WsEvent(ws_binance::Event),
-    UserWsEvent(user_ws_binance::Event),
     WsToggle(),
     FetchEvent(Result<Vec<ws_binance::Kline>, std::string::String>),
+    
+    // Pane grid
     Split(pane_grid::Axis, pane_grid::Pane),
     Clicked(pane_grid::Pane),
     Dragged(pane_grid::DragEvent),
@@ -121,20 +125,21 @@ enum Message {
     Close(pane_grid::Pane),
     CloseFocused,
     ToggleLayoutLock,
+
+    // Trading order form
     LimitOrder(String),
     CancelOrder(String),
     InputChanged((String, String)),
     OrderCreated(user_ws_binance::LimitOrder),
     OrdersFetched(Vec<user_ws_binance::LimitOrder>),
     OrderFailed(String),
+
+    // Trading table
     SyncHeader(scrollable::AbsoluteOffset),
     TableResizing(usize, f32),
     TableResized,
-    TableResizeColumnsEnabled(bool),
     FooterEnabled(bool),
     MinWidthEnabled(bool),
-    Delete(usize),
-    UserListenKey(String),
 }
 
 struct State {
@@ -349,15 +354,18 @@ impl Application for State {
                     user_ws_binance::Event::Disconnected => {
                         self.user_ws_state = UserWsState::Disconnected;
                     }
-                    user_ws_binance::Event::TestEvent(message) => {
-                        dbg!(message);
+                    user_ws_binance::Event::CancelOrder(order_trade_update) => {
+                        TableRow::remove_row(order_trade_update.order_id, &mut self.rows);
                     }
                     user_ws_binance::Event::LimitOrder(order) => {
                         dbg!(order);
                     }
+                    user_ws_binance::Event::TestEvent(msg) => {
+                        dbg!(msg);
+                    }
                 }
                 Command::none()
-            }
+            },
             Message::UserListenKey(listen_key) => {
                 if listen_key != "" {
                     self.listen_key = listen_key;
@@ -430,6 +438,7 @@ impl Application for State {
             Message::ToggleLayoutLock => {
                 self.focus = None;
                 self.pane_lock = !self.pane_lock;
+                self.resize_columns_enabled = !self.pane_lock;
                 Command::none()
             },
             Message::LimitOrder(side) => {
@@ -512,10 +521,6 @@ impl Application for State {
                 });
                 Command::none()
             },
-            Message::TableResizeColumnsEnabled(enabled) => {
-                self.resize_columns_enabled = enabled;
-                Command::none()
-            },
             Message::FooterEnabled(enabled) => {
                 self.footer_enabled = enabled;
                 Command::none()
@@ -524,10 +529,6 @@ impl Application for State {
                 self.min_width_enabled = enabled;
                 Command::none()
             },
-            Message::Delete(index) => {
-                self.rows.remove(index);
-                Command::none()
-            }
         }
     }
 
@@ -553,6 +554,8 @@ impl Application for State {
                     &self.body,
                     &self.columns,
                     &self.rows,
+                    &self.min_width_enabled,
+                    &self.resize_columns_enabled,
                 )
             }));
     
@@ -683,6 +686,8 @@ fn view_content<'a, 'b: 'a>(
     body: &'b scrollable::Id,
     columns: &'b Vec<TableColumn>,
     rows: &'b Vec<TableRow>,
+    min_width_enabled: &'b bool,
+    resize_columns_enabled: &'b bool,
 ) -> Element<'a, Message> {
     let content = match pane_id.as_str() {
         "0" => trades_chart.as_ref().map(LineChart::view).unwrap_or_else(|| Text::new("No data").into()),
@@ -705,14 +710,19 @@ fn view_content<'a, 'b: 'a>(
             let price_input = text_input("Price...", price_input_val.as_deref().unwrap_or(""))
                 .on_input(|input| Message::InputChanged(("price".to_string(), input)));
 
-            let table = responsive(move |_size| {
-                let table = table(
+            let table = responsive(move |size| {
+                let mut table = table(
                     header.clone(),
                     body.clone(),
                     columns,
                     rows,
                     Message::SyncHeader,
                 );
+                if *min_width_enabled { table = table.min_width(size.width); }
+                if *resize_columns_enabled {
+                    table = table.on_column_resize(Message::TableResizing, Message::TableResized);
+                }
+
                 Container::new(table).padding(10).into()
             });
 
@@ -1159,7 +1169,7 @@ impl TableColumn {
             ColumnKind::ExecutedQty => 80.0,
             ColumnKind::ReduceOnly => 100.0,
             ColumnKind::TimeInForce => 50.0,
-            ColumnKind::CancelOrder => 50.0,
+            ColumnKind::CancelOrder => 60.0,
         };
 
         Self {
@@ -1191,6 +1201,14 @@ impl TableRow {
     fn add_row(order: user_ws_binance::LimitOrder) -> Self {
         Self {
             order,
+        }
+    }
+    fn update_row(&mut self, order: user_ws_binance::LimitOrder) {
+        self.order = order;
+    }
+    fn remove_row(order_id: i64, rows: &mut Vec<TableRow>) {
+        if let Some(index) = rows.iter().position(|r| r.order.order_id == order_id) {
+            rows.remove(index);
         }
     }
 }
