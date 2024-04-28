@@ -183,6 +183,43 @@ pub struct Position {
     pub pos_side: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct FetchedPosition {
+    #[serde(rename = "s")]
+    pub symbol: String,
+    #[serde(with = "string_to_f32", rename = "pa")]
+    pub pos_amt: f32,
+    #[serde(with = "string_to_f32", rename = "ep")]
+    pub entry_price: f32,
+    #[serde(with = "string_to_f32", rename = "bep")]
+    pub breakeven_price: f32,
+    #[serde(with = "string_to_f32", rename = "cr")]
+    pub cum_realized_pnl: f32,
+    #[serde(with = "string_to_f32", rename = "up")]
+    pub unrealized_pnl: f32,
+    #[serde(rename = "mt")]
+    pub margin_type: String,
+    #[serde(with = "string_to_f32", rename = "iw")]
+    pub isolated_wallet: f32,
+    #[serde(rename = "ps")]
+    pub pos_side: String,
+    // Additional fields
+    #[serde(with = "string_to_f32", rename = "leverage")]
+    pub leverage: f32,
+    #[serde(with = "string_to_f32", rename = "liquidationPrice")]
+    pub liquidation_price: f32,
+    #[serde(with = "string_to_f32", rename = "markPrice")]
+    pub mark_price: f32,
+    #[serde(with = "string_to_f32", rename = "maxNotionalValue")]
+    pub max_notional_value: f32,
+    #[serde(with = "string_to_f32", rename = "notional")]
+    pub notional: f32,
+    #[serde(rename = "isAutoAddMargin")]
+    pub is_auto_add_margin: String,
+    #[serde(rename = "updateTime")]
+    pub update_time: i64,
+}
+
 pub enum EventType {
     AccountUpdate,
     OrderTradeUpdate,
@@ -332,6 +369,23 @@ pub async fn fetch_open_orders(symbol: String, api_key: &str, secret_key: &str) 
 
     let open_orders: Vec<NewOrder> = res.json().await?;
     Ok(open_orders)
+}
+
+pub async fn fetch_open_positions(api_key: &str, secret_key: &str) -> Result<Vec<Position>, BinanceError> {
+    let params = format!("timestamp={}", Utc::now().timestamp_millis());
+    let signature = sign_params(&params, secret_key);
+
+    let url = format!("https://testnet.binancefuture.com/fapi/v1/positionRisk?{}&signature={}", params, signature);
+
+    let mut headers = HeaderMap::new();
+    headers.insert("X-MBX-APIKEY", HeaderValue::from_str(api_key).unwrap());
+
+    let client = reqwest::Client::new();
+    let res = client.get(&url).headers(headers).send().await?;
+
+    let positions: Vec<Position> = res.json().await?;
+
+    Ok(positions)
 }
 
 pub async fn get_listen_key(api_key: &str, secret_key: &str) -> Result<String, reqwest::Error> {
