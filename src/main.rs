@@ -1,7 +1,14 @@
-mod ws_binance;
-mod user_ws_binance;
+mod data_providers;
+use data_providers::binance::{user_data, market_data};
+
+mod charts;
+use charts::{heatmap, candlesticks};
+
+use crate::heatmap::LineChart;
+use crate::candlesticks::CandlestickChart;
+
 use std::{cell::RefCell, collections::BTreeMap};
-use chrono::{DateTime, Utc, Duration, TimeZone, LocalResult};
+use chrono::{DateTime, Utc, TimeZone};
 use iced::{
     executor, widget::{
         button, canvas::{path::lyon_path::geom::euclid::num::Round, Cache, Frame, Geometry}, pick_list, text_input, Column, Container, Row, Space, Text, horizontal_space, checkbox
@@ -14,14 +21,7 @@ use iced::widget::{
 use iced_aw::{TabBar, TabLabel};
 use iced_table::table;
 use futures::TryFutureExt;
-use plotters::prelude::ChartBuilder;
-use plotters_backend::DrawingBackend;
-use plotters_iced::{
-    sample::lttb::DataPoint,
-    Chart, ChartWidget, Renderer as plottersRenderer,
-};
-use plotters::prelude::full_palette::GREY;
-use std::collections::VecDeque;
+use plotters_iced::sample::lttb::DataPoint;
 struct Wrapper<'a>(&'a DateTime<Utc>, &'a f32);
 impl DataPoint for Wrapper<'_> {
     #[inline]
@@ -63,7 +63,7 @@ const API_KEY: &str = "d5811ebf135cc577a5d657216adaafb0b8631cdc85d6a1122f04438ff
 const SECRET_KEY: &str = "fd4b4e3286245d1eb6eda3c4538b52a3159dd35a3647ea8744a5f1d7d83a3bb5";
 
 enum WsState {
-    Connected(ws_binance::Connection),
+    Connected(market_data::Connection),
     Disconnected,
 }
 impl Default for WsState {
@@ -73,7 +73,7 @@ impl Default for WsState {
 }
 
 enum UserWsState {
-    Connected(user_ws_binance::Connection),
+    Connected(user_data::Connection),
     Disconnected,
 }
 impl Default for UserWsState {
@@ -106,15 +106,15 @@ fn main() {
 }
 
 #[derive(Debug, Clone)]
-enum Message {
+pub enum Message {
     // Market&User data stream
     UserListenKey(String),
-    UserWsEvent(user_ws_binance::Event),
+    UserWsEvent(user_data::Event),
     TickerSelected(Ticker),
     TimeframeSelected(&'static str),
-    WsEvent(ws_binance::Event),
+    WsEvent(market_data::Event),
     WsToggle(),
-    FetchEvent(Result<Vec<ws_binance::Kline>, std::string::String>),
+    FetchEvent(Result<Vec<market_data::Kline>, std::string::String>),
     
     // Pane grid
     Split(pane_grid::Axis, pane_grid::Pane),
@@ -135,9 +135,9 @@ enum Message {
     MarketOrder(String),
     CancelOrder(String),
     InputChanged((String, String)),
-    OrderCreated(user_ws_binance::NewOrder),
-    MarketOrderCreated(user_ws_binance::NewOrder),
-    OrdersFetched(Vec<user_ws_binance::NewOrder>),
+    OrderCreated(user_data::NewOrder),
+    MarketOrderCreated(user_data::NewOrder),
+    OrdersFetched(Vec<user_data::NewOrder>),
     OrderFailed(String),
 
     // Trading table
@@ -153,8 +153,8 @@ struct State {
     table_active_tab: usize,
     tabs: Vec<(String, String)>,
 
-    trades_chart: Option<LineChart>,
-    candlestick_chart: Option<CandlestickChart>,
+    trades_chart: Option<heatmap::LineChart>,
+    candlestick_chart: Option<candlesticks::CandlestickChart>,
     selected_ticker: Option<Ticker>,
     selected_timeframe: Option<&'static str>,
     ws_state: WsState,
@@ -167,7 +167,7 @@ struct State {
     pane_lock: bool,
     qty_input_val: RefCell<Option<String>>,
     price_input_val: RefCell<Option<String>>,
-    open_orders: Vec<user_ws_binance::NewOrder>,
+    open_orders: Vec<user_data::NewOrder>,
     orders_header: scrollable::Id,
     orders_body: scrollable::Id,
     orders_footer: scrollable::Id,
@@ -250,7 +250,7 @@ impl Application for State {
                     ("Tab 2".to_string(), "Content 2".to_string()),
                 ],
             },
-            Command::perform(user_ws_binance::get_listen_key(API_KEY, SECRET_KEY), |res| {
+            Command::perform(user_data::get_listen_key(API_KEY, SECRET_KEY), |res| {
                 match res {
                     Ok(listen_key) => {
                         Message::UserListenKey(listen_key)
@@ -292,14 +292,14 @@ impl Application for State {
                 if self.ws_running {
                     self.trades_chart = Some(LineChart::new());
                     let fetch_klines = Command::perform(
-                        ws_binance::fetch_klines(self.selected_ticker.unwrap().to_string(), self.selected_timeframe.unwrap().to_string())
+                        market_data::fetch_klines(self.selected_ticker.unwrap().to_string(), self.selected_timeframe.unwrap().to_string())
                             .map_err(|err| format!("{}", err)), 
                         |klines| {
                             Message::FetchEvent(klines)
                         }
                     );
                     let fetch_open_orders = Command::perform(
-                        user_ws_binance::fetch_open_orders(self.selected_ticker.unwrap().to_string(), API_KEY, SECRET_KEY)
+                        user_data::fetch_open_orders(self.selected_ticker.unwrap().to_string(), API_KEY, SECRET_KEY)
                             .map_err(|err| format!("{}", err)),
                         |orders| {
                             match orders {
@@ -313,12 +313,12 @@ impl Application for State {
                         }
                     );
                     let fetch_open_positions = Command::perform(
-                        user_ws_binance::fetch_open_positions(API_KEY, SECRET_KEY)
+                        user_data::fetch_open_positions(API_KEY, SECRET_KEY)
                             .map_err(|err| format!("{:?}", err)),
                         |positions| {
                             match positions {
                                 Ok(positions) => {
-                                    Message::UserWsEvent(user_ws_binance::Event::NewPositions(positions))
+                                    Message::UserWsEvent(user_data::Event::NewPositions(positions))
                                 },
                                 Err(err) => {
                                     Message::OrderFailed(format!("{}", err))
@@ -382,21 +382,21 @@ impl Application for State {
                 Command::none()
             },
             Message::WsEvent(event) => match event {
-                ws_binance::Event::Connected(connection) => {
+                market_data::Event::Connected(connection) => {
                     self.ws_state = WsState::Connected(connection);
                     Command::none()
                 }
-                ws_binance::Event::Disconnected => {
+                market_data::Event::Disconnected => {
                     self.ws_state = WsState::Disconnected;
                     Command::none()
                 }
-                ws_binance::Event::DepthReceived(depth_update, bids, asks, trades_buffer) => {
+                market_data::Event::DepthReceived(depth_update, bids, asks, trades_buffer) => {
                     if let Some(chart) = &mut self.trades_chart {
                         chart.update(depth_update, trades_buffer, bids, asks);
                     }
                     Command::none()
                 }
-                ws_binance::Event::KlineReceived(kline) => {
+                market_data::Event::KlineReceived(kline) => {
                     if let Some(chart) = &mut self.candlestick_chart {
                         chart.update(kline);
                     }
@@ -405,22 +405,22 @@ impl Application for State {
             }, 
             Message::UserWsEvent(event) => {
                 match event {
-                    user_ws_binance::Event::Connected(connection) => {
+                    user_data::Event::Connected(connection) => {
                         self.user_ws_state = UserWsState::Connected(connection);
                     }
-                    user_ws_binance::Event::Disconnected => {
+                    user_data::Event::Disconnected => {
                         self.user_ws_state = UserWsState::Disconnected;
                     }
-                    user_ws_binance::Event::CancelOrder(order_trade_update) => {
+                    user_data::Event::CancelOrder(order_trade_update) => {
                         TableRow::remove_row(order_trade_update.order_id, &mut self.orders_rows);
                     }
-                    user_ws_binance::Event::NewOrder(order) => {
+                    user_data::Event::NewOrder(order) => {
                         dbg!(order);
                     }
-                    user_ws_binance::Event::TestEvent(msg) => {
+                    user_data::Event::TestEvent(msg) => {
                         dbg!(msg);
                     }
-                    user_ws_binance::Event::NewPositions(positions) => {
+                    user_data::Event::NewPositions(positions) => {
                         self.position_rows.clear();
 
                         for position in positions {
@@ -510,16 +510,16 @@ impl Application for State {
             },
             Message::LimitOrder(side) => {
                 Command::perform(
-                    user_ws_binance::create_limit_order(side, self.qty_input_val.borrow().as_ref().unwrap().to_string(), self.price_input_val.borrow().as_ref().unwrap().to_string(), API_KEY, SECRET_KEY),
+                    user_data::create_limit_order(side, self.qty_input_val.borrow().as_ref().unwrap().to_string(), self.price_input_val.borrow().as_ref().unwrap().to_string(), API_KEY, SECRET_KEY),
                     |res| {
                         match res {
                             Ok(res) => {
                                 Message::OrderCreated(res)
                             },
-                            Err(user_ws_binance::BinanceError::Reqwest(err)) => {
+                            Err(user_data::BinanceError::Reqwest(err)) => {
                                 Message::OrderFailed(format!("Network error: {}", err))
                             },
-                            Err(user_ws_binance::BinanceError::BinanceAPI(err_msg)) => {
+                            Err(user_data::BinanceError::BinanceAPI(err_msg)) => {
                                 Message::OrderFailed(format!("Binance API error: {}", err_msg))
                             }
                         }
@@ -528,16 +528,16 @@ impl Application for State {
             },
             Message::MarketOrder(side) => {
                 Command::perform(
-                    user_ws_binance::create_market_order(side, self.qty_input_val.borrow().as_ref().unwrap().to_string(), API_KEY, SECRET_KEY),
+                    user_data::create_market_order(side, self.qty_input_val.borrow().as_ref().unwrap().to_string(), API_KEY, SECRET_KEY),
                     |res| {
                         match res {
                             Ok(res) => {
                                 Message::MarketOrderCreated(res)
                             },
-                            Err(user_ws_binance::BinanceError::Reqwest(err)) => {
+                            Err(user_data::BinanceError::Reqwest(err)) => {
                                 Message::OrderFailed(format!("Network error: {}", err))
                             },
-                            Err(user_ws_binance::BinanceError::BinanceAPI(err_msg)) => {
+                            Err(user_data::BinanceError::BinanceAPI(err_msg)) => {
                                 Message::OrderFailed(format!("Binance API error: {}", err_msg))
                             }
                         }
@@ -546,16 +546,16 @@ impl Application for State {
             },
             Message::CancelOrder(order_id) => {
                 Command::perform(
-                    user_ws_binance::cancel_order(order_id, API_KEY, SECRET_KEY),
+                    user_data::cancel_order(order_id, API_KEY, SECRET_KEY),
                     |res| {
                         match res {
                             Ok(_) => {
                                 Message::OrderFailed("Order cancelled".to_string())
                             },
-                            Err(user_ws_binance::BinanceError::Reqwest(err)) => {
+                            Err(user_data::BinanceError::Reqwest(err)) => {
                                 Message::OrderFailed(format!("Network error: {}", err))
                             },
-                            Err(user_ws_binance::BinanceError::BinanceAPI(err_msg)) => {
+                            Err(user_data::BinanceError::BinanceAPI(err_msg)) => {
                                 Message::OrderFailed(format!("Binance API error: {}", err_msg))
                             }
                         }
@@ -773,12 +773,12 @@ impl Application for State {
     
         if let Some(selected_ticker) = &self.selected_ticker {
             if self.ws_running {
-                let binance_market_stream = ws_binance::connect_market_stream(selected_ticker.to_string(), self.selected_timeframe.unwrap().to_string()).map(Message::WsEvent);
+                let binance_market_stream = market_data::connect_market_stream(selected_ticker.to_string(), self.selected_timeframe.unwrap().to_string()).map(Message::WsEvent);
                 subscriptions.push(binance_market_stream);
             }
         }
         if self.listen_key != "" {
-            let binance_user_stream = user_ws_binance::connect_user_stream(self.listen_key.clone()).map(Message::UserWsEvent);
+            let binance_user_stream = user_data::connect_user_stream(self.listen_key.clone()).map(Message::UserWsEvent);
             subscriptions.push(binance_user_stream);
         }
         Subscription::batch(subscriptions)
@@ -1026,316 +1026,6 @@ mod style {
         }
     }
 }
-
-struct CandlestickChart {
-    cache: Cache,
-    data_points: BTreeMap<DateTime<Utc>, (f32, f32, f32, f32)>,
-    timeframe_in_minutes: i16,
-}
-impl CandlestickChart {
-    fn new(klines: Vec<ws_binance::Kline>, timeframe_in_minutes: i16) -> Self {
-        let mut data_points = BTreeMap::new();
-
-        for kline in klines {
-            let time = match Utc.timestamp_opt(kline.time as i64 / 1000, 0) {
-                LocalResult::Single(dt) => dt,
-                _ => continue, 
-            };
-            let open = kline.open;
-            let high = kline.high;
-            let low = kline.low;
-            let close = kline.close;
-            data_points.insert(time, (open, high, low, close));
-        }
-
-        Self {
-            cache: Cache::new(),
-            data_points,
-            timeframe_in_minutes,
-        }
-    }
-
-    fn update(&mut self, kline: ws_binance::Kline) {
-        let time = match Utc.timestamp_opt(kline.time as i64 / 1000, 0) {
-            LocalResult::Single(dt) => dt,
-            _ => return,
-        };
-        let open = kline.open;
-        let high = kline.high;
-        let low = kline.low;
-        let close = kline.close;
-        self.data_points.insert(time, (open, high, low, close));
-
-        self.cache.clear();
-    }
-
-    fn view(&self) -> Element<Message> {
-        let chart = ChartWidget::new(self)
-            .width(Length::Fill)
-            .height(Length::Fill);
-
-        chart.into()
-    }
-}
-impl Chart<Message> for CandlestickChart {
-    type State = ();
-    #[inline]
-    fn draw<R: plottersRenderer, F: Fn(&mut Frame)>(
-        &self,
-        renderer: &R,
-        bounds: Size,
-        draw_fn: F,
-    ) -> Geometry {
-        renderer.draw_cache(&self.cache, bounds, draw_fn)
-    }
-
-    fn build_chart<DB: DrawingBackend>(&self, _state: &Self::State, mut chart: ChartBuilder<DB>) {
-        use plotters::prelude::*;
-
-        let drawing_area;
-        {
-            let dummy_chart = chart
-                .build_cartesian_2d(0..1, 0..1) 
-                .expect("failed to build dummy chart");
-            drawing_area = dummy_chart.plotting_area().dim_in_pixel();
-        }
-        let newest_time = *self.data_points.keys().last().unwrap_or(&Utc::now());
-        let cutoff_number = (drawing_area.0 as i64 / 12).round();
-        let oldest_time = newest_time - Duration::minutes((cutoff_number*self.timeframe_in_minutes as i64).max(1));
-        
-        let visible_data_points: Vec<_> = self.data_points.iter().filter(|&(time, _)| {
-            time >= &oldest_time && time <= &newest_time
-        }).collect();
-
-        let mut y_min = f32::MAX;
-        let mut y_max = f32::MIN;
-        for (_time, (_open, high, low, _close)) in &visible_data_points {
-            y_min = y_min.min(*low);
-            y_max = y_max.max(*high);
-        }
-
-        let mut chart = chart
-            .x_label_area_size(20)
-            .y_label_area_size(32)
-            .margin(20)
-            .build_cartesian_2d(oldest_time..newest_time, y_min..y_max)
-            .expect("failed to build chart");
-
-        chart
-            .configure_mesh()
-            .bold_line_style(GREY.mix(0.05))
-            .light_line_style(GREY.mix(0.02))
-            .axis_style(ShapeStyle::from(GREY.mix(0.45)).stroke_width(1))
-            .y_labels(10)
-            .y_label_style(
-                ("Noto Sans", 12)
-                    .into_font()
-                    .color(&GREY.mix(0.65))
-                    .transform(FontTransform::Rotate90),
-            )
-            .y_label_formatter(&|y| format!("{}", y))
-            .x_labels(8) 
-            .x_label_style(
-                ("Noto Sans", 12)
-                    .into_font()
-                    .color(&GREY.mix(0.65))
-            )
-            .x_label_formatter(&|x| {
-                x.format("%H:%M").to_string()
-            })
-            .draw()
-            .expect("failed to draw chart mesh");
-
-        chart.draw_series(
-            visible_data_points.iter().map(|(time, (open, high, low, close))| {
-                CandleStick::new(**time, *open, *high, *low, *close, RGBColor(81, 205, 160).filled(), RGBColor(192, 80, 77).filled(), 8)
-            }),
-        ).expect("failed to draw chart data");
-    }
-}
-struct LineChart {
-    cache: Cache,
-    data_points: VecDeque<(DateTime<Utc>, f32, f32, bool)>,
-    depth: VecDeque<(DateTime<Utc>, Vec<(f32, f32)>, Vec<(f32, f32)>)>,
-}
-impl LineChart {
-    fn new() -> Self {
-        Self {
-            cache: Cache::new(),
-            data_points: VecDeque::new(),
-            depth: VecDeque::new(),
-        }
-    }
-
-    fn update(&mut self, depth_update: u64, mut trades_buffer: Vec<ws_binance::Trade>, bids: Vec<(f32, f32)>, asks: Vec<(f32, f32)>) {
-        let aggregate_time = 100; 
-        let seconds = (depth_update / 1000) as i64;
-        let nanoseconds = ((depth_update % 1000) / aggregate_time * aggregate_time * 1_000_000) as u32;
-        let depth_update_time = match Utc.timestamp_opt(seconds, nanoseconds) {
-            LocalResult::Single(dt) => dt,
-            _ => return, 
-        };
-
-        for trade in trades_buffer.drain(..) {
-            self.data_points.push_back((depth_update_time, trade.price, trade.qty, trade.is_sell));
-        }
-        if let Some((time, _, _)) = self.depth.back() {
-            if *time == depth_update_time {
-                self.depth.pop_back();
-            }
-        }
-        self.depth.push_back((depth_update_time, bids, asks));
-
-        while self.data_points.len() > 6000 {
-            self.data_points.pop_front();
-        }
-        while self.depth.len() > 1000 {
-            self.depth.pop_front();
-        }
-
-        self.cache.clear();
-    }
-
-    fn view(&self) -> Element<Message> {
-        let chart = ChartWidget::new(self)
-            .width(Length::Fill)
-            .height(Length::Fill);
-
-        chart.into()
-    }
-}
-impl Chart<Message> for LineChart {
-    type State = ();
-    #[inline]
-    fn draw<R: plottersRenderer, F: Fn(&mut Frame)>(
-        &self,
-        renderer: &R,
-        bounds: Size,
-        draw_fn: F,
-    ) -> Geometry {
-        renderer.draw_cache(&self.cache, bounds, draw_fn)
-    }
-
-    fn build_chart<DB: DrawingBackend>(&self, _state: &Self::State, mut chart: ChartBuilder<DB>) {
-        use plotters::prelude::*;
-        
-        if self.data_points.len() > 1 {
-            // x-axis range, acquire time range
-            let drawing_area;
-            {
-                let dummy_chart = chart
-                    .build_cartesian_2d(0..1, 0..1) 
-                    .expect("failed to build dummy chart");
-                drawing_area = dummy_chart.plotting_area().dim_in_pixel();
-            }
-            let newest_time = self.depth.back().unwrap().0 + Duration::milliseconds(200);
-            let oldest_time = newest_time - Duration::seconds(drawing_area.0 as i64 / 30);
-        
-            // y-axis range, acquire price range within the time range
-            let mut y_min = f32::MAX;
-            let mut y_max = f32::MIN;
-            let recent_data_points: Vec<_> = self.data_points.iter().filter_map(|&(time, price, qty, bool)| {
-                if time >= oldest_time && time <= newest_time {
-                    Some((time, price, qty, bool))
-                } else {
-                    None
-                }
-            }).collect();
-
-            let recent_depth: Vec<_> = self.depth.iter().filter_map(|(time, bids, asks)| {
-                if time >= &oldest_time && time <= &newest_time {
-                    if let Some((bid_price, _)) = bids.last() {
-                        y_min = y_min.min(*bid_price);
-                    } 
-                    if let Some((ask_price, _)) = asks.last() {
-                        y_max = y_max.max(*ask_price);
-                    }
-                    Some((time, bids, asks))
-                } else {
-                    None
-                }
-            }).collect();
-
-            let mut chart = chart
-                .x_label_area_size(20)
-                .y_label_area_size(32)
-                .margin(20)
-                .build_cartesian_2d(oldest_time..newest_time, y_min..y_max)
-                .expect("failed to build chart");
-
-            chart
-                .configure_mesh()
-                .bold_line_style(GREY.mix(0.04))
-                .light_line_style(GREY.mix(0.01))
-                .axis_style(ShapeStyle::from(GREY.mix(0.45)).stroke_width(1))
-                .y_labels(10)
-                .y_label_style(
-                    ("Noto Sans", 12)
-                        .into_font()
-                        .color(&GREY.mix(0.65))
-                        .transform(FontTransform::Rotate90),
-                )
-                .y_label_formatter(&|y| format!("{}", y))
-                .x_labels(8)
-                .x_label_style(
-                    ("Noto Sans", 12)
-                        .into_font()
-                        .color(&GREY.mix(0.65))
-                )
-                .x_label_formatter(&|x| {
-                    x.format("%M:%S").to_string()
-                })
-                .draw()
-                .expect("failed to draw chart mesh");
-
-            let max_order_quantity = recent_depth.iter()
-                .map(|(_, bids, asks)| {
-                bids.iter().map(|(_, qty)| qty).chain(asks.iter().map(|(_, qty)| qty)).fold(f32::MIN, |current_max: f32, qty: &f32| f32::max(current_max, *qty))
-            }).fold(f32::MIN, f32::max);
-            for i in 0..20 { 
-                let bids_i: Vec<(DateTime<Utc>, f32, f32)> = recent_depth.iter()
-                    .map(|&(time, bid, _ask)| ((*time).clone(), bid[i].0, bid[i].1)).collect();
-                let asks_i: Vec<(DateTime<Utc>, f32, f32)> = recent_depth.iter()
-                    .map(|&(time, _bid, ask)| ((*time).clone(), ask[i].0, ask[i].1)).collect();
-            
-                chart
-                    .draw_series(
-                        bids_i.iter().map(|&(time, price, quantity)| {
-                            let alpha = 0.1 + 0.9 * (quantity / max_order_quantity);
-                            Pixel::new((time, price), RGBAColor(0, 144, 144, alpha.into()))
-                        }),
-                    )
-                    .expect(&format!("failed to draw bids_{}", i));
-            
-                chart
-                    .draw_series(
-                        asks_i.iter().map(|&(time, price, quantity)| {
-                            let alpha = 0.1 + 0.9 * (quantity / max_order_quantity);
-                            Pixel::new((time, price), RGBAColor(192, 0, 192, alpha.into()))
-                        }),
-                    )
-                    .expect(&format!("failed to draw asks_{}", i));
-            }
-            
-            let (qty_min, qty_max) = recent_data_points.iter()
-                .map(|&(_, _, qty, _)| qty)
-                .fold((f32::MAX, f32::MIN), |(min, max), qty| (f32::min(min, qty), f32::max(max, qty)));
-            chart
-                .draw_series(
-                    recent_data_points.iter().map(|&(time, price, qty, is_sell)| {
-                        let radius = 1.0 + (qty - qty_min) * (35.0 - 1.0) / (qty_max - qty_min);
-                        let color = if is_sell { RGBColor(192, 80, 77) } else { RGBColor(81, 205, 160)};
-                        Circle::new(
-                            (time, price), 
-                            radius as i32,
-                            ShapeStyle::from(color).filled(),
-                        )
-                    }),
-                )
-                .expect("failed to draw circles");
-        }
-    }
-}
 struct TableColumn {
     kind: ColumnKind,
     width: f32,
@@ -1376,15 +1066,15 @@ enum ColumnKind {
     CancelOrder
 }
 struct TableRow {
-    order: user_ws_binance::NewOrder,
+    order: user_data::NewOrder,
 }
 impl TableRow {
-    fn add_row(order: user_ws_binance::NewOrder) -> Self {
+    fn add_row(order: user_data::NewOrder) -> Self {
         Self {
             order,
         }
     }
-    fn update_row(&mut self, order: user_ws_binance::NewOrder) {
+    fn update_row(&mut self, order: user_data::NewOrder) {
         self.order = order;
     }
     fn remove_row(order_id: i64, rows: &mut Vec<TableRow>) {
@@ -1485,15 +1175,15 @@ enum PosColumnKind {
 }
 #[derive(Debug, Clone)]
 struct PosTableRow {
-    trade: user_ws_binance::Position,
+    trade: user_data::Position,
 }
 impl PosTableRow {
-    fn add_row(trade: user_ws_binance::Position) -> Self {
+    fn add_row(trade: user_data::Position) -> Self {
         Self {
             trade,
         }
     }
-    fn update_row(&mut self, trade: user_ws_binance::Position) {
+    fn update_row(&mut self, trade: user_data::Position) {
         self.trade = trade;
     }
     fn remove_row(symbol: String, rows: &mut Vec<PosTableRow>) {
