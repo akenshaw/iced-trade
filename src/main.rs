@@ -1,6 +1,5 @@
 mod data_providers;
 use data_providers::binance::{user_data, market_data};
-
 mod charts;
 use charts::{heatmap, candlesticks};
 
