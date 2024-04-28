@@ -11,6 +11,7 @@ use iced::widget::pane_grid::{self, PaneGrid};
 use iced::widget::{
     column, container, row, scrollable, text, responsive
 };
+use iced_aw::{TabBar, TabLabel};
 use iced_table::table;
 use futures::TryFutureExt;
 use plotters::prelude::ChartBuilder;
@@ -57,6 +58,7 @@ impl Ticker {
     const ALL: [Ticker; 4] = [Ticker::BTCUSDT, Ticker::ETHUSDT, Ticker::SOLUSDT, Ticker::LTCUSDT];
 }
 
+// binance testnet api keys
 const API_KEY: &str = "d5811ebf135cc577a5d657216adaafb0b8631cdc85d6a1122f04438ffdb17af1";
 const SECRET_KEY: &str = "fd4b4e3286245d1eb6eda3c4538b52a3159dd35a3647ea8744a5f1d7d83a3bb5";
 
@@ -126,12 +128,16 @@ enum Message {
     CloseFocused,
     ToggleLayoutLock,
 
+    TabSelected(usize, String),
+
     // Trading order form
     LimitOrder(String),
+    MarketOrder(String),
     CancelOrder(String),
     InputChanged((String, String)),
-    OrderCreated(user_ws_binance::LimitOrder),
-    OrdersFetched(Vec<user_ws_binance::LimitOrder>),
+    OrderCreated(user_ws_binance::NewOrder),
+    MarketOrderCreated(user_ws_binance::NewOrder),
+    OrdersFetched(Vec<user_ws_binance::NewOrder>),
     OrderFailed(String),
 
     // Trading table
@@ -143,6 +149,10 @@ enum Message {
 }
 
 struct State {
+    order_form_active_tab: usize,
+    table_active_tab: usize,
+    tabs: Vec<(String, String)>,
+
     trades_chart: Option<LineChart>,
     candlestick_chart: Option<CandlestickChart>,
     selected_ticker: Option<Ticker>,
@@ -157,12 +167,17 @@ struct State {
     pane_lock: bool,
     qty_input_val: RefCell<Option<String>>,
     price_input_val: RefCell<Option<String>>,
-    open_orders: Vec<user_ws_binance::LimitOrder>,
-    header: scrollable::Id,
-    body: scrollable::Id,
-    footer: scrollable::Id,
-    columns: Vec<TableColumn>,
-    rows: Vec<TableRow>,
+    open_orders: Vec<user_ws_binance::NewOrder>,
+    orders_header: scrollable::Id,
+    orders_body: scrollable::Id,
+    orders_footer: scrollable::Id,
+    orders_columns: Vec<TableColumn>,
+    orders_rows: Vec<TableRow>,
+    pos_header: scrollable::Id,
+    pos_body: scrollable::Id,
+    pos_footer: scrollable::Id,
+    position_columns: Vec<PosTableColumn>,
+    position_rows: Vec<PosTableRow>,
     resize_columns_enabled: bool,
     footer_enabled: bool,
     min_width_enabled: bool,
@@ -194,13 +209,16 @@ impl Application for State {
                 qty_input_val: RefCell::new(None),
                 price_input_val: RefCell::new(None),
                 open_orders: vec![],
-                header: scrollable::Id::unique(),
-                body: scrollable::Id::unique(),
-                footer: scrollable::Id::unique(),
+                orders_header: scrollable::Id::unique(),
+                orders_body: scrollable::Id::unique(),
+                orders_footer: scrollable::Id::unique(),
+                pos_header: scrollable::Id::unique(),
+                pos_body: scrollable::Id::unique(),
+                pos_footer: scrollable::Id::unique(),
                 resize_columns_enabled: true,
                 footer_enabled: true,
                 min_width_enabled: true,
-                columns: vec![
+                orders_columns: vec![
                     TableColumn::new(ColumnKind::UpdateTime),
                     TableColumn::new(ColumnKind::Symbol),
                     TableColumn::new(ColumnKind::OrderType),
@@ -212,8 +230,25 @@ impl Application for State {
                     TableColumn::new(ColumnKind::TimeInForce),
                     TableColumn::new(ColumnKind::CancelOrder),
                 ],
-                rows: vec![],
+                orders_rows: vec![],
+                position_columns: vec![
+                    PosTableColumn::new(PosColumnKind::Symbol),
+                    PosTableColumn::new(PosColumnKind::PosAmount),
+                    PosTableColumn::new(PosColumnKind::EntryPrice),
+                    PosTableColumn::new(PosColumnKind::Breakeven),
+                    PosTableColumn::new(PosColumnKind::UnrealizedPnl),
+                    PosTableColumn::new(PosColumnKind::MarginType),
+                    PosTableColumn::new(PosColumnKind::IsolatedWall),
+                    PosTableColumn::new(PosColumnKind::PosSide),
+                ],
+                position_rows: vec![],
                 listen_key: "".to_string(),
+                order_form_active_tab: 0,
+                table_active_tab: 0,
+                tabs: vec![
+                    ("Tab 1".to_string(), "Content 1".to_string()),
+                    ("Tab 2".to_string(), "Content 2".to_string()),
+                ],
             },
             Command::perform(user_ws_binance::get_listen_key(API_KEY, SECRET_KEY), |res| {
                 match res {
@@ -235,6 +270,15 @@ impl Application for State {
 
     fn update(&mut self, message: Self::Message) -> Command<Self::Message> {
         match message {
+            Message::TabSelected(index, tab_type) => {
+                if tab_type == "order_form" {
+                    self.order_form_active_tab = index;
+                } else if tab_type == "table" {
+                    self.table_active_tab = index;
+                }
+                Command::none()
+            },
+
             Message::TickerSelected(ticker) => {
                 self.selected_ticker = Some(ticker);
                 Command::none()
@@ -298,7 +342,7 @@ impl Application for State {
                     self.trades_chart = None;
                     self.candlestick_chart = None;
                     self.open_orders.clear();
-                    self.rows.clear();
+                    self.orders_rows.clear();
 
                     dbg!(&self.open_orders);
                     Command::none()
@@ -355,13 +399,23 @@ impl Application for State {
                         self.user_ws_state = UserWsState::Disconnected;
                     }
                     user_ws_binance::Event::CancelOrder(order_trade_update) => {
-                        TableRow::remove_row(order_trade_update.order_id, &mut self.rows);
+                        TableRow::remove_row(order_trade_update.order_id, &mut self.orders_rows);
                     }
-                    user_ws_binance::Event::LimitOrder(order) => {
+                    user_ws_binance::Event::NewOrder(order) => {
                         dbg!(order);
                     }
                     user_ws_binance::Event::TestEvent(msg) => {
                         dbg!(msg);
+                    }
+                    user_ws_binance::Event::NewPositions(positions) => {
+                        self.position_rows.clear();
+
+                        for position in positions {
+                            dbg!(&position);
+                            if position.pos_amt != 0.0 {
+                                self.position_rows.push(PosTableRow::add_row(position));
+                            }
+                        }
                     }
                 }
                 Command::none()
@@ -384,31 +438,31 @@ impl Application for State {
 
                 self.panes_created += 1;
                 Command::none()
-            }
+            },
             Message::Clicked(pane) => {
                 self.focus = Some(pane);
                 Command::none()
-            }
+            },
             Message::Resized(pane_grid::ResizeEvent { split, ratio }) => {
                 self.panes.resize(split, ratio);
                 Command::none()
-            }
+            },
             Message::Dragged(pane_grid::DragEvent::Dropped {
                 pane,
                 target,
             }) => {
                 self.panes.drop(pane, target);
                 Command::none()
-            }
+            },
             Message::Dragged(_) => {
                 Command::none()
-            }
+            },
             Message::TogglePin(pane) => {
                 if let Some(Pane { is_pinned, .. }) = self.panes.get_mut(pane) {
                     *is_pinned = !*is_pinned;
                 }
                 Command::none()
-            }
+            },
             Message::Maximize(pane) => {
                 self.panes.maximize(pane);
                 Command::none()
@@ -416,13 +470,13 @@ impl Application for State {
             Message::Restore => {
                 self.panes.restore();
                 Command::none()
-            }
+            },
             Message::Close(pane) => {
                 if let Some((_, sibling)) = self.panes.close(pane) {
                     self.focus = Some(sibling);
                 }
                 Command::none()
-            }
+            },
             Message::CloseFocused => {
                 if let Some(pane) = self.focus {
                     if let Some(Pane { is_pinned, .. }) = self.panes.get(pane) {
@@ -434,7 +488,7 @@ impl Application for State {
                     }
                 }
                 Command::none()
-            }
+            },
             Message::ToggleLayoutLock => {
                 self.focus = None;
                 self.pane_lock = !self.pane_lock;
@@ -448,6 +502,24 @@ impl Application for State {
                         match res {
                             Ok(res) => {
                                 Message::OrderCreated(res)
+                            },
+                            Err(user_ws_binance::BinanceError::Reqwest(err)) => {
+                                Message::OrderFailed(format!("Network error: {}", err))
+                            },
+                            Err(user_ws_binance::BinanceError::BinanceAPI(err_msg)) => {
+                                Message::OrderFailed(format!("Binance API error: {}", err_msg))
+                            }
+                        }
+                    }
+                )
+            },
+            Message::MarketOrder(side) => {
+                Command::perform(
+                    user_ws_binance::create_market_order(side, self.qty_input_val.borrow().as_ref().unwrap().to_string(), API_KEY, SECRET_KEY),
+                    |res| {
+                        match res {
+                            Ok(res) => {
+                                Message::MarketOrderCreated(res)
                             },
                             Err(user_ws_binance::BinanceError::Reqwest(err)) => {
                                 Message::OrderFailed(format!("Network error: {}", err))
@@ -480,13 +552,17 @@ impl Application for State {
             Message::OrdersFetched(orders) => {
                 for order in orders {
                     self.open_orders.push(order.clone());
-                    self.rows.push(TableRow::add_row(order));
+                    self.orders_rows.push(TableRow::add_row(order));
                 }
                 Command::none()
             },
             Message::OrderCreated(order) => {
-                self.rows.push(TableRow::add_row(order.clone()));
+                self.orders_rows.push(TableRow::add_row(order.clone()));
                 self.open_orders.push(order);
+                Command::none()
+            },
+            Message::MarketOrderCreated(order) => {
+                dbg!(order);
                 Command::none()
             },
             Message::OrderFailed(err) => {
@@ -502,23 +578,45 @@ impl Application for State {
                 Command::none()
             },
             Message::SyncHeader(offset) => {
-                return Command::batch(vec![
-                    scrollable::scroll_to(self.header.clone(), offset),
-                    scrollable::scroll_to(self.footer.clone(), offset),
-                ])
+                let orders_batch = Command::batch(vec![
+                    scrollable::scroll_to(self.orders_header.clone(), offset),
+                    scrollable::scroll_to(self.orders_footer.clone(), offset),
+                ]);
+                let positions_batch = Command::batch(vec![
+                    scrollable::scroll_to(self.pos_header.clone(), offset),
+                    scrollable::scroll_to(self.pos_footer.clone(), offset),
+                ]);
+
+                if self.table_active_tab == 0 {
+                    orders_batch
+                } else if self.table_active_tab == 1 {
+                    positions_batch
+                } else {
+                    Command::none()
+                }
             },
             Message::TableResizing(index, offset) => {
-                if let Some(column) = self.columns.get_mut(index) {
-                    column.resize_offset = Some(offset);
+                if self.table_active_tab == 0 {
+                    self.orders_columns[index].resize_offset = Some(offset);
+                } else if self.table_active_tab == 1 {
+                    self.position_columns[index].resize_offset = Some(offset);
                 }
                 Command::none()
             },
             Message::TableResized => {
-                self.columns.iter_mut().for_each(|column| {
-                    if let Some(offset) = column.resize_offset.take() {
-                        column.width += offset;
-                    }
-                });
+                if self.table_active_tab == 0 {
+                    self.orders_columns.iter_mut().for_each(|column| {
+                        if let Some(offset) = column.resize_offset.take() {
+                            column.width += offset;
+                        }
+                    });
+                } else if self.table_active_tab == 1 {
+                    self.position_columns.iter_mut().for_each(|column| {
+                        if let Some(offset) = column.resize_offset.take() {
+                            column.width += offset;
+                        }
+                    });
+                }
                 Command::none()
             },
             Message::FooterEnabled(enabled) => {
@@ -550,12 +648,18 @@ impl Application for State {
                     &self.candlestick_chart, 
                     self.qty_input_val.borrow().clone(), 
                     self.price_input_val.borrow().clone(),
-                    &self.header,
-                    &self.body,
-                    &self.columns,
-                    &self.rows,
+                    &self.orders_header,
+                    &self.orders_body,
+                    &self.pos_header,
+                    &self.pos_body,
+                    &self.orders_columns,
+                    &self.orders_rows,
+                    &self.position_columns,
+                    &self.position_rows,
                     &self.min_width_enabled,
                     &self.resize_columns_enabled,
+                    &self.order_form_active_tab,
+                    &self.table_active_tab,
                 )
             }));
     
@@ -682,63 +786,142 @@ fn view_content<'a, 'b: 'a>(
     candlestick_chart: &'a Option<CandlestickChart>,
     qty_input_val: Option<String>,
     price_input_val: Option<String>, 
-    header: &'b scrollable::Id,
-    body: &'b scrollable::Id,
-    columns: &'b Vec<TableColumn>,
-    rows: &'b Vec<TableRow>,
+    orders_header: &'b scrollable::Id,
+    orders_body: &'b scrollable::Id,
+    pos_header: &'b scrollable::Id,
+    pos_body: &'b scrollable::Id,
+    orders_columns: &'b Vec<TableColumn>,
+    orders_rows: &'b Vec<TableRow>,
+    position_columns: &'b Vec<PosTableColumn>,
+    position_rows: &'b Vec<PosTableRow>,
     min_width_enabled: &'b bool,
     resize_columns_enabled: &'b bool,
+    order_form_active_tab: &'b usize,
+    table_active_tab: &'b usize,
 ) -> Element<'a, Message> {
     let content = match pane_id.as_str() {
         "0" => trades_chart.as_ref().map(LineChart::view).unwrap_or_else(|| Text::new("No data").into()),
         "1" => candlestick_chart.as_ref().map(CandlestickChart::view).unwrap_or_else(|| Text::new("No data").into()),
         "2" => {
-            let buy_button = button("Buy")
-                .on_press(Message::LimitOrder("BUY".to_string()));
-            let sell_button = button("Sell")
-                .on_press(Message::LimitOrder("SELL".to_string()));
+            let form_button_0 = button("Limit Order")
+                .on_press(Message::TabSelected(0, "order_form".to_string()));
+            let form_button_1 = button("Market Order") 
+                .on_press(Message::TabSelected(1, "order_form".to_string()));
 
+            // order form
+            let (buy_button, sell_button) = match *order_form_active_tab {
+                0 => ("Limit Buy", "Limit Sell"),
+                1 => ("Market Buy", "Market Sell"), 
+                _ => ("Buy", "Sell"),
+            };
+        
+            let buy_button = match *order_form_active_tab {
+                0 => button(buy_button)
+                    .on_press(Message::LimitOrder("BUY".to_string())),  
+                1 => button(buy_button)
+                    .on_press(Message::MarketOrder("BUY".to_string())),
+                _ => button(buy_button)
+                    .on_press(Message::LimitOrder("BUY".to_string())),
+            };
+            let sell_button = match *order_form_active_tab {
+                0 => button(sell_button)
+                    .on_press(Message::LimitOrder("SELL".to_string())),
+                1 => button(sell_button)
+                    .on_press(Message::MarketOrder("SELL".to_string())),
+                _ => button(sell_button)
+                    .on_press(Message::LimitOrder("SELL".to_string())),
+            };
+        
             let buttons = Row::new()
                 .push(buy_button)
                 .push(sell_button)
                 .align_items(Alignment::Center)
                 .padding(10)
                 .spacing(5);
-
+        
             let qty_input = text_input("Quantity...", qty_input_val.as_deref().unwrap_or(""))
                 .on_input(|input| Message::InputChanged(("qty".to_string(), input)));
-            let price_input = text_input("Price...", price_input_val.as_deref().unwrap_or(""))
-                .on_input(|input| Message::InputChanged(("price".to_string(), input)));
+        
+            let inputs = if *order_form_active_tab == 0 {
+                let price_input = text_input("Price...", price_input_val.as_deref().unwrap_or(""))
+                    .on_input(|input| Message::InputChanged(("price".to_string(), input)));
+        
+                Row::new()
+                    .push(qty_input)
+                    .push(price_input)
+                    .align_items(Alignment::Center)
+                    .padding(10)
+                    .spacing(5)
+            } else {
+                Row::new()
+                    .push(qty_input)
+                    .align_items(Alignment::Center)
+                    .padding(10)
+                    .spacing(5)
+            };
+        
+            // positions/orders table
+            let table_select_button_1 = button("Orders")
+                .on_press(Message::TabSelected(0, "table".to_string()));
+            let table_select_button_2 = button("Positions")
+                .on_press(Message::TabSelected(1, "table".to_string()));
 
-            let table = responsive(move |size| {
-                let mut table = table(
-                    header.clone(),
-                    body.clone(),
-                    columns,
-                    rows,
-                    Message::SyncHeader,
-                );
-                if *min_width_enabled { table = table.min_width(size.width); }
-                if *resize_columns_enabled {
-                    table = table.on_column_resize(Message::TableResizing, Message::TableResized);
-                }
-
-                Container::new(table).padding(10).into()
-            });
-
-            let inputs = Row::new()
-                .push(qty_input)
-                .push(price_input)
+            let tab_select = Row::new()
+                .push(table_select_button_1)
+                .push(table_select_button_2)
+                .push(form_button_0)
+                .push(form_button_1)
+                .spacing(10)
                 .align_items(Alignment::Center)
-                .padding(10)
-                .spacing(5);
+                .padding(10);
+
+            if *table_active_tab == 0 {
+                let table = responsive(move |size| {
+                    let mut table = table(
+                        orders_header.clone(),
+                        orders_body.clone(),
+                        &orders_columns,
+                        &orders_rows,
+                        Message::SyncHeader,
+                    );
+                    if *min_width_enabled { table = table.min_width(size.width); }
+                    if *resize_columns_enabled {
+                        table = table.on_column_resize(Message::TableResizing, Message::TableResized);
+                    }
             
-            Column::new()
+                    Container::new(table).padding(10).into()
+                });
+                Column::new()
+                .push(tab_select)
                 .push(buttons)
                 .push(inputs)
                 .push(table)
                 .align_items(Alignment::Center)
                 .into()
+            } else {
+                let table = responsive(move |size| {
+                    let mut table = table(
+                        pos_header.clone(),
+                        pos_body.clone(),
+                        &position_columns,
+                        &position_rows,
+                        Message::SyncHeader,
+                    );
+                    if *min_width_enabled { table = table.min_width(size.width); }
+                    if *resize_columns_enabled {
+                        table = table.on_column_resize(Message::TableResizing, Message::TableResized);
+                    }
+            
+                    Container::new(table).padding(10).into()
+                });
+                Column::new()
+                .push(tab_select)
+                .push(buttons)
+                .push(inputs)
+                .push(table)
+                .align_items(Alignment::Center)
+                .into()
+            }        
         },
         _ => Text::new("No data").into(),
     };
@@ -1194,16 +1377,16 @@ enum ColumnKind {
 }
 
 struct TableRow {
-    order: user_ws_binance::LimitOrder,
+    order: user_ws_binance::NewOrder,
 }
 
 impl TableRow {
-    fn add_row(order: user_ws_binance::LimitOrder) -> Self {
+    fn add_row(order: user_ws_binance::NewOrder) -> Self {
         Self {
             order,
         }
     }
-    fn update_row(&mut self, order: user_ws_binance::LimitOrder) {
+    fn update_row(&mut self, order: user_ws_binance::NewOrder) {
         self.order = order;
     }
     fn remove_row(order_id: i64, rows: &mut Vec<TableRow>) {
@@ -1250,6 +1433,116 @@ impl<'a> table::Column<'a, Message, Theme, Renderer> for TableColumn {
             ColumnKind::ReduceOnly => text(row.order.reduce_only.to_string()).into(),
             ColumnKind::TimeInForce => text(&row.order.time_in_force).into(),
             ColumnKind::CancelOrder => button("X").on_press(Message::CancelOrder(row.order.order_id.to_string())).into(),
+        };
+
+        container(content)
+            .width(Length::Fill)
+            .height(32)
+            .center_y()
+            .into()
+    }
+
+    fn width(&self) -> f32 {
+        self.width
+    }
+
+    fn resize_offset(&self) -> Option<f32> {
+        self.resize_offset
+    }
+}
+
+struct PosTableColumn {
+    kind: PosColumnKind,
+    width: f32,
+    resize_offset: Option<f32>,
+}
+
+impl PosTableColumn {
+    fn new(kind: PosColumnKind) -> Self {
+        let width = match kind {
+            PosColumnKind::Symbol => 90.0,
+            PosColumnKind::PosAmount => 80.0,
+            PosColumnKind::EntryPrice => 90.0,
+            PosColumnKind::Breakeven => 100.0,
+            PosColumnKind::UnrealizedPnl => 100.0,
+            PosColumnKind::MarginType => 100.0,
+            PosColumnKind::IsolatedWall => 80.0,
+            PosColumnKind::PosSide => 60.0,
+        };
+
+        Self {
+            kind,
+            width,
+            resize_offset: None,
+        }
+    }
+}
+
+enum PosColumnKind {
+    Symbol,
+    PosAmount,
+    EntryPrice,
+    Breakeven,
+    UnrealizedPnl,
+    MarginType,
+    IsolatedWall,
+    PosSide
+}
+
+#[derive(Debug, Clone)]
+struct PosTableRow {
+    trade: user_ws_binance::Position,
+}
+
+impl PosTableRow {
+    fn add_row(trade: user_ws_binance::Position) -> Self {
+        Self {
+            trade,
+        }
+    }
+    fn update_row(&mut self, trade: user_ws_binance::Position) {
+        self.trade = trade;
+    }
+    fn remove_row(symbol: String, rows: &mut Vec<PosTableRow>) {
+        if let Some(index) = rows.iter().position(|r| r.trade.symbol == symbol) {
+            rows.remove(index);
+        }
+    }
+}
+
+impl<'a> table::Column<'a, Message, Theme, Renderer> for PosTableColumn {
+    type Row = PosTableRow;
+
+    fn header(&'a self, _col_index: usize) -> Element<'a, Message> {
+        let content = match self.kind {
+            PosColumnKind::Symbol => "Symbol",
+            PosColumnKind::PosAmount => "Amount",
+            PosColumnKind::EntryPrice => "Entry Price",
+            PosColumnKind::Breakeven => "Breakeven",
+            PosColumnKind::UnrealizedPnl => "uPnL",
+            PosColumnKind::MarginType => "Margin Type",
+            PosColumnKind::IsolatedWall => "Isolated Wall",
+            PosColumnKind::PosSide => "Side",
+        };
+
+        container(text(content)).height(24).center_y().into()
+    }
+
+    fn cell(
+        &'a self,
+        _col_index: usize,
+        row_index: usize,
+        row: &'a Self::Row,
+    ) -> Element<'a, Message> {
+        let content: Element<_> = match self.kind {
+            PosColumnKind::Symbol => text(row.trade.symbol.to_string()).into(),
+            PosColumnKind::PosAmount => text(&row.trade.pos_amt).into(),
+            PosColumnKind::EntryPrice => text(&row.trade.entry_price).into(),
+            PosColumnKind::Breakeven => text(&row.trade.breakeven_price).into(),
+            PosColumnKind::UnrealizedPnl => text(&row.trade.unrealized_pnl).into(),
+            PosColumnKind::MarginType => text(row.trade.margin_type.to_string()).into(),
+            PosColumnKind::IsolatedWall => text(&row.trade.isolated_wallet).into(),
+            PosColumnKind::PosSide => text(&row.trade.pos_side).into(),
         };
 
         container(content)
