@@ -347,7 +347,7 @@ impl Application for State {
                         |positions| {
                             match positions {
                                 Ok(positions) => {
-                                    Message::UserWsEvent(user_data::Event::NewPositions(positions))
+                                    Message::UserWsEvent(user_data::Event::FetchedPositions(positions))
                                 },
                                 Err(err) => {
                                     Message::OrderFailed(format!("{}", err))
@@ -450,15 +450,36 @@ impl Application for State {
                         dbg!(msg);
                     }
                     user_data::Event::NewPositions(positions) => {
-                        self.position_rows.clear();
-
                         for position in positions {
-                            dbg!(&position);
+                            PosTableRow::remove_row(position.symbol.clone(), &mut self.position_rows);
                             if position.pos_amt != 0.0 {
                                 self.position_rows.push(PosTableRow::add_row(position));
                             }
                         }
-                    }
+                    },
+                    user_data::Event::FetchedPositions(positions) => {
+                        self.position_rows.clear();
+                    
+                        for fetched_position in positions {
+                            if fetched_position.pos_amt != 0.0 {
+                                dbg!(&fetched_position);
+                    
+                                let position = user_data::Position {
+                                    symbol: fetched_position.symbol.clone(),
+                                    pos_amt: fetched_position.pos_amt,
+                                    entry_price: fetched_position.entry_price,
+                                    breakeven_price: fetched_position.breakeven_price,
+                                    cum_realized_pnl: String::from("test"),
+                                    unrealized_pnl: fetched_position.unrealized_pnl.to_string(),
+                                    margin_type: fetched_position.margin_type.clone(),
+                                    isolated_wallet: String::from("test"),
+                                    pos_side: String::from("test"),
+                                };
+                    
+                                self.position_rows.push(PosTableRow::add_row(position));
+                            }
+                        }
+                    },
                 }
                 Command::none()
             },
@@ -1213,9 +1234,6 @@ impl PosTableRow {
         Self {
             trade,
         }
-    }
-    fn update_row(&mut self, trade: user_data::Position) {
-        self.trade = trade;
     }
     fn remove_row(symbol: String, rows: &mut Vec<PosTableRow>) {
         if let Some(index) = rows.iter().position(|r| r.trade.symbol == symbol) {
