@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 plotters-iced = "0.10"
-iced = { version = "0.12.1", features = ["canvas", "tokio", "lazy"] }
+iced = { version = "0.12.1", features = ["canvas", "tokio", "lazy", "image"] }
 plotters="0.3"
 chrono = "0.4.37"
 plotters-backend = "0.3.5"

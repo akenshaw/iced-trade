@@ -6,18 +6,17 @@ use charts::{heatmap, candlesticks};
 use crate::heatmap::LineChart;
 use crate::candlesticks::CandlestickChart;
 
-use std::{cell::RefCell, collections::BTreeMap};
-use chrono::{DateTime, Utc, TimeZone};
+use std::cell::RefCell;
+use chrono::{DateTime, Utc};
 use iced::{
-    executor, widget::{
-        button, canvas::{path::lyon_path::geom::euclid::num::Round, Cache, Frame, Geometry}, pick_list, text_input, Column, Container, Row, Space, Text, horizontal_space, checkbox
-    }, Alignment, Application, Color, Command, Element, Font, Length, Settings, Size, Subscription, Theme, Renderer
+    font, executor, widget::{
+        button, pick_list, text_input, Column, Container, Row, Space, Text,
+    }, window::icon, Alignment, Application, Command, Element, Length, Renderer, Settings, Size, Subscription, Theme, Font
 };
 use iced::widget::pane_grid::{self, PaneGrid};
 use iced::widget::{
     column, container, row, scrollable, text, responsive
 };
-use iced_aw::{TabBar, TabLabel};
 use iced_table::table;
 use futures::TryFutureExt;
 use plotters_iced::sample::lttb::DataPoint;
@@ -47,7 +46,7 @@ impl std::fmt::Display for Ticker {
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Ticker {
+pub enum Ticker {
     BTCUSDT,
     ETHUSDT,
     SOLUSDT,
@@ -60,6 +59,27 @@ impl Ticker {
 // binance testnet api keys
 const API_KEY: &str = "d5811ebf135cc577a5d657216adaafb0b8631cdc85d6a1122f04438ffdb17af1";
 const SECRET_KEY: &str = "fd4b4e3286245d1eb6eda3c4538b52a3159dd35a3647ea8744a5f1d7d83a3bb5";
+
+const ICON_BYTES: &[u8] = include_bytes!("fonts/icons.ttf");
+const ICON: Font = Font::with_name("icons");
+
+enum Icon {
+    Locked,
+    Unlocked,
+    ResizeFull,
+    ResizeSmall
+}
+
+impl From<Icon> for char {
+    fn from(icon: Icon) -> Self {
+        match icon {
+            Icon::Unlocked => '\u{E800}',
+            Icon::Locked => '\u{E801}',
+            Icon::ResizeFull => '\u{E802}',
+            Icon::ResizeSmall => '\u{E803}',
+        }
+    }
+}
 
 enum WsState {
     Connected(market_data::Connection),
@@ -98,7 +118,6 @@ impl Pane {
 fn main() {
     State::run(Settings {
         antialiasing: true,
-        default_font: Font::with_name("Noto Sans"),
         ..Settings::default()
     })
     .unwrap();
@@ -127,8 +146,6 @@ pub enum Message {
     CloseFocused,
     ToggleLayoutLock,
 
-    TabSelected(usize, String),
-
     // Trading order form
     LimitOrder(String),
     MarketOrder(String),
@@ -140,32 +157,43 @@ pub enum Message {
     OrderFailed(String),
 
     // Trading table
+    TabSelected(usize, String),
     SyncHeader(scrollable::AbsoluteOffset),
     TableResizing(usize, f32),
     TableResized,
     FooterEnabled(bool),
     MinWidthEnabled(bool),
+
+    // Font
+    FontLoaded(Result<(), font::Error>),
 }
 
 struct State {
-    order_form_active_tab: usize,
-    table_active_tab: usize,
-    tabs: Vec<(String, String)>,
-
     trades_chart: Option<heatmap::LineChart>,
     candlestick_chart: Option<candlesticks::CandlestickChart>,
+
+    // data streams
+    listen_key: String,
     selected_ticker: Option<Ticker>,
     selected_timeframe: Option<&'static str>,
     ws_state: WsState,
     user_ws_state: UserWsState,
     ws_running: bool,
+
+    // pane grid
     panes: pane_grid::State<Pane>,
     panes_created: usize,
     focus: Option<pane_grid::Pane>,
     first_pane: pane_grid::Pane,
     pane_lock: bool,
+
+    // order form
     qty_input_val: RefCell<Option<String>>,
     price_input_val: RefCell<Option<String>>,
+
+    // table
+    order_form_active_tab: usize,
+    table_active_tab: usize,
     open_orders: Vec<user_data::NewOrder>,
     orders_header: scrollable::Id,
     orders_body: scrollable::Id,
@@ -180,7 +208,6 @@ struct State {
     resize_columns_enabled: bool,
     footer_enabled: bool,
     min_width_enabled: bool,
-    listen_key: String,
 }
 
 impl Application for State {
@@ -195,6 +222,7 @@ impl Application for State {
             Self { 
                 trades_chart: None,
                 candlestick_chart: None,
+                listen_key: "".to_string(),
                 selected_ticker: None,
                 selected_timeframe: Some("1m"),
                 ws_state: WsState::Disconnected,
@@ -207,6 +235,8 @@ impl Application for State {
                 pane_lock: false,
                 qty_input_val: RefCell::new(None),
                 price_input_val: RefCell::new(None),
+                order_form_active_tab: 0,
+                table_active_tab: 0,
                 open_orders: vec![],
                 orders_header: scrollable::Id::unique(),
                 orders_body: scrollable::Id::unique(),
@@ -241,25 +271,21 @@ impl Application for State {
                     PosTableColumn::new(PosColumnKind::uPnL),
                 ],
                 position_rows: vec![],
-                listen_key: "".to_string(),
-                order_form_active_tab: 0,
-                table_active_tab: 0,
-                tabs: vec![
-                    ("Tab 1".to_string(), "Content 1".to_string()),
-                    ("Tab 2".to_string(), "Content 2".to_string()),
-                ],
             },
-            Command::perform(user_data::get_listen_key(API_KEY, SECRET_KEY), |res| {
-                match res {
-                    Ok(listen_key) => {
-                        Message::UserListenKey(listen_key)
-                    },
-                    Err(err) => {
-                        eprintln!("Error getting listen key: {}", err);
-                        Message::UserListenKey("".to_string())
+            Command::batch(vec![
+                font::load(ICON_BYTES).map(Message::FontLoaded),
+                Command::perform(user_data::get_listen_key(API_KEY, SECRET_KEY), |res| {
+                    match res {
+                        Ok(listen_key) => {
+                            Message::UserListenKey(listen_key)
+                        },
+                        Err(err) => {
+                            eprintln!("Error getting listen key: {}", err);
+                            Message::UserListenKey("".to_string())
+                        }
                     }
-                }
-            }),
+                }),
+            ]),
         )
     }
 
@@ -283,6 +309,10 @@ impl Application for State {
             },
             Message::TimeframeSelected(timeframe) => {
                 self.selected_timeframe = Some(timeframe);
+                Command::none()
+            },
+            Message::FontLoaded(_) => {
+                dbg!("Font loaded");
                 Command::none()
             },
             Message::WsToggle() => {
@@ -717,7 +747,10 @@ impl Application for State {
 
         let ws_button = button(if self.ws_running { "Disconnect" } else { "Connect" })
             .on_press(Message::WsToggle());
-        let layout_lock = button(if self.pane_lock { "Unlock Layout" } else { "Lock Layout" })
+
+        let locked_alt_text = text(char::from(Icon::Locked).to_string()).font(ICON);
+        let unlocked_alt_text = text(char::from(Icon::Unlocked).to_string()).font(ICON);
+        let layout_lock_button = button(if self.pane_lock { locked_alt_text } else { unlocked_alt_text })
             .on_press(Message::ToggleLayoutLock);
 
         let mut ws_controls = Row::new()
@@ -754,7 +787,7 @@ impl Application for State {
                 Row::new()
                     .push(ws_controls)
                     .push(Space::with_width(Length::Fill))
-                    .push(layout_lock)
+                    .push(layout_lock_button)
             )
             .push(pane_grid);
 
@@ -826,25 +859,24 @@ fn view_content<'a, 'b: 'a>(
                 .on_press(Message::TabSelected(1, "table".to_string()));
 
             let (buy_button, sell_button) = match *order_form_active_tab {
-                0 => ("Limit Buy", "Limit Sell"),
-                1 => ("Market Buy", "Market Sell"), 
-                _ => ("Buy", "Sell"),
-            };
-            let buy_button = match *order_form_active_tab {
-                0 => button(buy_button)
-                    .on_press(Message::LimitOrder("BUY".to_string())),  
-                1 => button(buy_button)
-                    .on_press(Message::MarketOrder("BUY".to_string())),
-                _ => button(buy_button)
-                    .on_press(Message::LimitOrder("BUY".to_string())),
-            };
-            let sell_button = match *order_form_active_tab {
-                0 => button(sell_button)
-                    .on_press(Message::LimitOrder("SELL".to_string())),
-                1 => button(sell_button)
-                    .on_press(Message::MarketOrder("SELL".to_string())),
-                _ => button(sell_button)
-                    .on_press(Message::LimitOrder("SELL".to_string())),
+                0 => {
+                    (
+                        button("Limit Buy").on_press(Message::LimitOrder("BUY".to_string())),
+                        button("Limit Sell").on_press(Message::LimitOrder("SELL".to_string()))
+                    )
+                },
+                1 => {
+                    (
+                        button("Market Buy").on_press(Message::MarketOrder("BUY".to_string())),
+                        button("Market Sell").on_press(Message::MarketOrder("SELL".to_string()))
+                    )
+                },
+                _ => {
+                    (
+                        button("Buy").on_press(Message::LimitOrder("BUY".to_string())),
+                        button("Sell").on_press(Message::LimitOrder("SELL".to_string()))
+                    )
+                },
             };
             let order_buttons = Row::new()
                 .push(buy_button)
@@ -862,8 +894,8 @@ fn view_content<'a, 'b: 'a>(
         
                 Row::new()
                     .push(form_select_1_button)
-                    .push(qty_input)
-                    .push(price_input)        
+                    .push(price_input)
+                    .push(qty_input)                       
                     .push(order_buttons)
                     .align_items(Alignment::Center)
                     .padding(10)
@@ -944,21 +976,21 @@ fn view_controls<'a>(
     if total_panes > 1 {
         let buttons = if is_maximized {
             vec![
-                ("Restore", Message::Restore),
+                (text(char::from(Icon::ResizeSmall).to_string()).font(ICON).size(14), Message::Restore),
                 //("Split Horizontally", Message::Split(pane_grid::Axis::Horizontal, pane)),
                 //("Split Vertically", Message::Split(pane_grid::Axis::Vertical, pane))
             ]
         } else {
             vec![
-                ("Maximize", Message::Maximize(pane)),
+                (text(char::from(Icon::ResizeFull).to_string()).font(ICON).size(14), Message::Maximize(pane)),
                 //("Split Horizontally", Message::Split(pane_grid::Axis::Horizontal, pane)),
                 //("Split Vertically", Message::Split(pane_grid::Axis::Vertical, pane))
             ]
         };
 
-        for (content, message) in buttons {
+        for (content, message) in buttons {        
             row = row.push(
-                button(text(content).size(14))
+                button(content)
                     .padding(3)
                     .on_press(message),
             );
