@@ -157,7 +157,7 @@ pub enum Message {
     FetchEvent(Result<Vec<market_data::Kline>, std::string::String>),
     
     // Pane grid
-    Split(pane_grid::Axis, PaneId),
+    Split(pane_grid::Axis, pane_grid::Pane, PaneId),
     Clicked(pane_grid::Pane),
     Dragged(pane_grid::DragEvent),
     Resized(pane_grid::ResizeEvent),
@@ -205,7 +205,6 @@ struct State {
     // pane grid
     panes_open: HashMap<PaneId, bool>,
     panes: pane_grid::State<Pane>,
-    panes_created: usize,
     focus: Option<pane_grid::Pane>,
     first_pane: pane_grid::Pane,
     pane_lock: bool,
@@ -258,7 +257,6 @@ impl Application for State {
                 ws_running: false,
                 panes,
                 panes_open,
-                panes_created: 1,
                 focus: None,
                 first_pane,
                 pane_lock: false,
@@ -391,8 +389,8 @@ impl Application for State {
                                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                                 (pane_grid::Axis::Horizontal, first_pane) 
                             },
-                            |(axis, _pane)| {
-                                Message::Split(axis, PaneId::HeatmapChart)
+                            |(axis, pane)| {
+                                Message::Split(axis, pane, PaneId::HeatmapChart)
                             }
                         );
                         let split_pane_again = Command::perform(
@@ -400,8 +398,8 @@ impl Application for State {
                                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                                 (pane_grid::Axis::Vertical, first_pane) 
                             },
-                            |(axis, _pane)| {
-                                Message::Split(axis, PaneId::Candlesticks)
+                            |(axis, pane)| {
+                                Message::Split(axis, pane, PaneId::Candlesticks)
                             }
                         );
                         self.panes_open.insert(PaneId::HeatmapChart, true);
@@ -520,11 +518,9 @@ impl Application for State {
                 }
                 Command::none()
             },
-            Message::Split(axis, pane_id) => {
-                let existing_pane = self.focus.unwrap_or(self.first_pane);
-
+            Message::Split(axis, pane, pane_id) => {
                 let result =
-                    self.panes.split(axis, existing_pane, Pane::new(pane_id));
+                    self.panes.split(axis, self.first_pane, Pane::new(pane_id));
 
                 if let Some((pane, _)) = result {
                     self.focus = Some(pane);
@@ -532,7 +528,6 @@ impl Application for State {
 
                 self.panes_open.insert(pane_id, true);
 
-                self.panes_created += 1;
                 Command::none()
             },
             Message::Clicked(pane) => {
@@ -738,8 +733,7 @@ impl Application for State {
                 self.min_width_enabled = enabled;
                 Command::none()
             },
-            Message::Debug(msg) => {
-                dbg!(msg);
+            Message::Debug(_msg) => {
                 Command::none()
             },
         }
@@ -829,17 +823,13 @@ impl Application for State {
         let layout_lock_button = button(if self.pane_lock { locked_alt_text } else { unlocked_alt_text })
             .on_press(Message::ToggleLayoutLock);
 
-        //let add_new_pane_button = button("+")
-        //    .on_press(Message::Split(pane_grid::Axis::Horizontal, self.first_pane));
-
         let menu_tpl_1 = |items| Menu::new(items).max_width(180.0).offset(15.0).spacing(5.0);
-
         let mb = menu_bar!(
             (debug_button_s("New Pane"), {
                 menu_tpl_1(menu_items!(
-                    (debug_button(PaneId::HeatmapChart, self.panes_open.get(&PaneId::HeatmapChart).unwrap_or(&false)))
-                    (debug_button(PaneId::Candlesticks, self.panes_open.get(&PaneId::Candlesticks).unwrap_or(&false)))
-                    (debug_button(PaneId::TradePanel, self.panes_open.get(&PaneId::TradePanel).unwrap_or(&false)))
+                    (debug_button(PaneId::HeatmapChart, self.panes_open.get(&PaneId::HeatmapChart).unwrap_or(&false), self.first_pane))
+                    (debug_button(PaneId::Candlesticks, self.panes_open.get(&PaneId::Candlesticks).unwrap_or(&false), self.first_pane))
+                    (debug_button(PaneId::TradePanel, self.panes_open.get(&PaneId::TradePanel).unwrap_or(&false), self.first_pane))
                 )).width(200.0)
             })
         );
@@ -914,11 +904,11 @@ impl Application for State {
     }
 }
 
-fn debug_button<'a>(label: PaneId, is_open: &bool) -> button::Button<'a, Message, iced::Theme, iced::Renderer> {
+fn debug_button<'a>(label: PaneId, is_open: &bool, pane_to_split: pane_grid::Pane) -> button::Button<'a, Message, iced::Theme, iced::Renderer> {
     if *is_open {
         disabled_labeled_button(&format!("{:?}", label))
     } else {
-        labeled_button(&format!("{:?}", label), Message::Split(pane_grid::Axis::Horizontal, label))
+        labeled_button(&format!("{:?}", label), Message::Split(pane_grid::Axis::Horizontal, pane_to_split, label))
     }
 }
 fn debug_button_s<'a>(label: &str) -> button::Button<'a, Message, iced::Theme, iced::Renderer> {
