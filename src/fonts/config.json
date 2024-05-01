@@ -29,6 +29,18 @@
       "css": "resize-small",
       "code": 59395,
       "src": "fontawesome"
+    },
+    {
+      "uid": "5211af474d3a9848f67f945e2ccaf143",
+      "css": "cancel",
+      "code": 59396,
+      "src": "fontawesome"
+    },
+    {
+      "uid": "1a5cfa186647e8c929c2b17b9fc4dac1",
+      "css": "plus-squared",
+      "code": 61694,
+      "src": "fontawesome"
     }
   ]
 }
