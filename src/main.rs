@@ -157,7 +157,7 @@ pub enum Message {
     FetchEvent(Result<Vec<market_data::Kline>, std::string::String>),
     
     // Pane grid
-    Split(pane_grid::Axis, pane_grid::Pane, PaneId),
+    Split(pane_grid::Axis, PaneId),
     Clicked(pane_grid::Pane),
     Dragged(pane_grid::DragEvent),
     Resized(pane_grid::ResizeEvent),
@@ -391,8 +391,8 @@ impl Application for State {
                                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                                 (pane_grid::Axis::Horizontal, first_pane) 
                             },
-                            |(axis, pane)| {
-                                Message::Split(axis, pane, PaneId::HeatmapChart)
+                            |(axis, _pane)| {
+                                Message::Split(axis, PaneId::HeatmapChart)
                             }
                         );
                         let split_pane_again = Command::perform(
@@ -400,8 +400,8 @@ impl Application for State {
                                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                                 (pane_grid::Axis::Vertical, first_pane) 
                             },
-                            |(axis, pane)| {
-                                Message::Split(axis, pane, PaneId::Candlesticks)
+                            |(axis, _pane)| {
+                                Message::Split(axis, PaneId::Candlesticks)
                             }
                         );
                         self.panes_open.insert(PaneId::HeatmapChart, true);
@@ -520,9 +520,11 @@ impl Application for State {
                 }
                 Command::none()
             },
-            Message::Split(axis, pane, pane_id) => {
+            Message::Split(axis, pane_id) => {
+                let existing_pane = self.focus.unwrap_or(self.first_pane);
+
                 let result =
-                    self.panes.split(axis, pane, Pane::new(pane_id));
+                    self.panes.split(axis, existing_pane, Pane::new(pane_id));
 
                 if let Some((pane, _)) = result {
                     self.focus = Some(pane);
@@ -582,6 +584,7 @@ impl Application for State {
                 
                 if let Some((_, sibling)) = self.panes.close(pane) {
                     self.focus = Some(sibling);
+                    self.first_pane = sibling;
                 }
                 Command::none()
             },
@@ -834,9 +837,9 @@ impl Application for State {
         let mb = menu_bar!(
             (debug_button_s("New Pane"), {
                 menu_tpl_1(menu_items!(
-                    (debug_button(self.first_pane, PaneId::HeatmapChart, self.panes_open.get(&PaneId::HeatmapChart).unwrap_or(&false)))
-                    (debug_button(self.first_pane, PaneId::Candlesticks, self.panes_open.get(&PaneId::Candlesticks).unwrap_or(&false)))
-                    (debug_button(self.first_pane, PaneId::TradePanel, self.panes_open.get(&PaneId::TradePanel).unwrap_or(&false)))
+                    (debug_button(PaneId::HeatmapChart, self.panes_open.get(&PaneId::HeatmapChart).unwrap_or(&false)))
+                    (debug_button(PaneId::Candlesticks, self.panes_open.get(&PaneId::Candlesticks).unwrap_or(&false)))
+                    (debug_button(PaneId::TradePanel, self.panes_open.get(&PaneId::TradePanel).unwrap_or(&false)))
                 )).width(200.0)
             })
         );
@@ -911,11 +914,11 @@ impl Application for State {
     }
 }
 
-fn debug_button<'a>(pane_to_split: pane_grid::Pane, label: PaneId, is_open: &bool) -> button::Button<'a, Message, iced::Theme, iced::Renderer> {
+fn debug_button<'a>(label: PaneId, is_open: &bool) -> button::Button<'a, Message, iced::Theme, iced::Renderer> {
     if *is_open {
         disabled_labeled_button(&format!("{:?}", label))
     } else {
-        labeled_button(&format!("{:?}", label), Message::Split(pane_grid::Axis::Horizontal, pane_to_split, label))
+        labeled_button(&format!("{:?}", label), Message::Split(pane_grid::Axis::Horizontal, label))
     }
 }
 fn debug_button_s<'a>(label: &str) -> button::Button<'a, Message, iced::Theme, iced::Renderer> {
