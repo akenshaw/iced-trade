@@ -10,9 +10,11 @@ use std::cell::RefCell;
 use chrono::{DateTime, Utc};
 use iced::{
     font, executor, widget::{
-        button, pick_list, text_input, Column, Container, Row, Space, Text,
-    }, window::icon, Alignment, Application, Command, Element, Length, Renderer, Settings, Size, Subscription, Theme, Font
+        button, pick_list, text_input, Column, Container, Row, Space, Text, horizontal_space
+    }, window::icon, Alignment, Application, Command, Element, Length, Renderer, Settings, Size, Subscription, Theme, Font, alignment, Border
 };
+use iced::widget::{column as col, vertical_space};
+
 use iced::widget::pane_grid::{self, PaneGrid};
 use iced::widget::{
     column, container, row, scrollable, text, responsive
@@ -20,6 +22,13 @@ use iced::widget::{
 use iced_table::table;
 use futures::TryFutureExt;
 use plotters_iced::sample::lttb::DataPoint;
+
+use iced_aw::menu::{self, Item, Menu, StyleSheet};
+use iced_aw::style::MenuBarStyle;
+use iced_aw::{menu_bar, menu_items};
+
+use std::collections::HashMap;
+
 struct Wrapper<'a>(&'a DateTime<Utc>, &'a f32);
 impl DataPoint for Wrapper<'_> {
     #[inline]
@@ -67,7 +76,9 @@ enum Icon {
     Locked,
     Unlocked,
     ResizeFull,
-    ResizeSmall
+    ResizeSmall,
+    Close,
+    Add
 }
 
 impl From<Icon> for char {
@@ -77,6 +88,8 @@ impl From<Icon> for char {
             Icon::Locked => '\u{E801}',
             Icon::ResizeFull => '\u{E802}',
             Icon::ResizeSmall => '\u{E803}',
+            Icon::Close => '\u{E804}',
+            Icon::Add => '\u{F0FE}',
         }
     }
 }
@@ -101,19 +114,26 @@ impl Default for UserWsState {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
+#[derive(Eq, Hash, PartialEq)]
+pub enum PaneId {
+    HeatmapChart,
+    Candlesticks,
+    TradePanel,
+}
+
+#[derive(Debug, Clone, Copy)]
 struct Pane {
-    id: usize,
+    id: PaneId,
     pub is_pinned: bool,
 }
+
 impl Pane {
-    fn new(id: usize) -> Self {
-        Self {
-            id,
-            is_pinned: false,
-        }
+    fn new(id: PaneId) -> Self {
+        Self { id, is_pinned: false }
     }
 }
+
 
 fn main() {
     State::run(Settings {
@@ -125,6 +145,8 @@ fn main() {
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    Debug(String),
+
     // Market&User data stream
     UserListenKey(String),
     UserWsEvent(user_data::Event),
@@ -135,7 +157,7 @@ pub enum Message {
     FetchEvent(Result<Vec<market_data::Kline>, std::string::String>),
     
     // Pane grid
-    Split(pane_grid::Axis, pane_grid::Pane),
+    Split(pane_grid::Axis, pane_grid::Pane, PaneId),
     Clicked(pane_grid::Pane),
     Dragged(pane_grid::DragEvent),
     Resized(pane_grid::ResizeEvent),
@@ -181,6 +203,7 @@ struct State {
     ws_running: bool,
 
     // pane grid
+    panes_open: HashMap<PaneId, bool>,
     panes: pane_grid::State<Pane>,
     panes_created: usize,
     focus: Option<pane_grid::Pane>,
@@ -217,7 +240,12 @@ impl Application for State {
     type Theme = Theme;
 
     fn new(_flags: Self::Flags) -> (Self, Command<Self::Message>) {
-        let (panes, first_pane) = pane_grid::State::new(Pane::new(0));
+        let (panes, first_pane) = pane_grid::State::new(Pane::new(PaneId::TradePanel));
+
+        let mut panes_open = HashMap::new();
+        panes_open.insert(PaneId::HeatmapChart, false);
+        panes_open.insert(PaneId::Candlesticks, false);
+        panes_open.insert(PaneId::TradePanel, true);
         (
             Self { 
                 trades_chart: None,
@@ -229,6 +257,7 @@ impl Application for State {
                 user_ws_state: UserWsState::Disconnected,
                 ws_running: false,
                 panes,
+                panes_open,
                 panes_created: 1,
                 focus: None,
                 first_pane,
@@ -363,7 +392,7 @@ impl Application for State {
                                 (pane_grid::Axis::Horizontal, first_pane) 
                             },
                             |(axis, pane)| {
-                                Message::Split(axis, pane)
+                                Message::Split(axis, pane, PaneId::HeatmapChart)
                             }
                         );
                         let split_pane_again = Command::perform(
@@ -372,9 +401,11 @@ impl Application for State {
                                 (pane_grid::Axis::Vertical, first_pane) 
                             },
                             |(axis, pane)| {
-                                Message::Split(axis, pane)
+                                Message::Split(axis, pane, PaneId::Candlesticks)
                             }
                         );
+                        self.panes_open.insert(PaneId::HeatmapChart, true);
+                        self.panes_open.insert(PaneId::Candlesticks, true);
                 
                         Command::batch(vec![fetch_klines, fetch_open_orders, fetch_open_positions, split_pane, split_pane_again])
                     } else {
@@ -462,8 +493,6 @@ impl Application for State {
                     
                         for fetched_position in positions {
                             if fetched_position.pos_amt != 0.0 {
-                                dbg!(&fetched_position);
-                    
                                 let position = user_data::Position {
                                     symbol: fetched_position.symbol.clone(),
                                     pos_amt: fetched_position.pos_amt,
@@ -491,13 +520,15 @@ impl Application for State {
                 }
                 Command::none()
             },
-            Message::Split(axis, pane) => {
+            Message::Split(axis, pane, pane_id) => {
                 let result =
-                    self.panes.split(axis, pane, Pane::new(self.panes_created));
+                    self.panes.split(axis, pane, Pane::new(pane_id));
 
                 if let Some((pane, _)) = result {
                     self.focus = Some(pane);
                 }
+
+                self.panes_open.insert(pane_id, true);
 
                 self.panes_created += 1;
                 Command::none()
@@ -535,6 +566,20 @@ impl Application for State {
                 Command::none()
             },
             Message::Close(pane) => {
+                self.panes.get(pane).map(|pane| {
+                    match pane.id {
+                        PaneId::HeatmapChart => {
+                            self.panes_open.insert(PaneId::HeatmapChart, false);
+                        },
+                        PaneId::Candlesticks => {
+                            self.panes_open.insert(PaneId::Candlesticks, false);
+                        },
+                        PaneId::TradePanel => {
+                            self.panes_open.insert(PaneId::TradePanel, false);
+                        },
+                    }
+                });
+                
                 if let Some((_, sibling)) = self.panes.close(pane) {
                     self.focus = Some(sibling);
                 }
@@ -690,6 +735,10 @@ impl Application for State {
                 self.min_width_enabled = enabled;
                 Command::none()
             },
+            Message::Debug(msg) => {
+                dbg!(msg);
+                Command::none()
+            },
         }
     }
 
@@ -701,12 +750,17 @@ impl Application for State {
             let is_focused = focus == Some(id);
     
             let content: pane_grid::Content<'_, Message, _, Renderer> = pane_grid::Content::new(responsive(move |size| {
+                let pane_id = match pane.id {
+                    PaneId::HeatmapChart => PaneId::HeatmapChart,
+                    PaneId::Candlesticks => PaneId::Candlesticks,
+                    PaneId::TradePanel => PaneId::TradePanel,
+                };
                 view_content(
                     id, 
                     total_panes, 
                     pane.is_pinned, 
                     size, 
-                    pane.id.to_string(), 
+                    pane_id, 
                     &self.trades_chart, 
                     &self.candlestick_chart, 
                     self.qty_input_val.borrow().clone(), 
@@ -736,13 +790,11 @@ impl Application for State {
                 style::pane_active
             });
     
-            let title = if pane.id == 0 {
-                "Heatmap Chart"
-            } else if pane.id == 1 {
-                "Candlestick Chart"
-            } else {
-                "Trading Panel"
-            };
+            let title = match pane.id {
+                PaneId::HeatmapChart => "Heatmap Chart",
+                PaneId::Candlesticks => "Candlestick Chart",
+                PaneId::TradePanel => "Trading Panel",
+            };            
     
             if is_focused {
                 let title_bar = pane_grid::TitleBar::new(title)
@@ -774,8 +826,23 @@ impl Application for State {
         let layout_lock_button = button(if self.pane_lock { locked_alt_text } else { unlocked_alt_text })
             .on_press(Message::ToggleLayoutLock);
 
+        //let add_new_pane_button = button("+")
+        //    .on_press(Message::Split(pane_grid::Axis::Horizontal, self.first_pane));
+
+        let menu_tpl_1 = |items| Menu::new(items).max_width(180.0).offset(15.0).spacing(5.0);
+
+        let mb = menu_bar!(
+            (debug_button_s("New Pane"), {
+                menu_tpl_1(menu_items!(
+                    (debug_button(self.first_pane, PaneId::HeatmapChart, self.panes_open.get(&PaneId::HeatmapChart).unwrap_or(&false)))
+                    (debug_button(self.first_pane, PaneId::Candlesticks, self.panes_open.get(&PaneId::Candlesticks).unwrap_or(&false)))
+                    (debug_button(self.first_pane, PaneId::TradePanel, self.panes_open.get(&PaneId::TradePanel).unwrap_or(&false)))
+                )).width(200.0)
+            })
+        );
+
         let mut ws_controls = Row::new()
-            .spacing(20)
+            .spacing(10)
             .align_items(Alignment::Center)
             .push(ws_button);
 
@@ -806,8 +873,10 @@ impl Application for State {
             .height(Length::Fill)
             .push(
                 Row::new()
+                    .spacing(10)
                     .push(ws_controls)
                     .push(Space::with_width(Length::Fill))
+                    .push(mb)                
                     .push(layout_lock_button)
             )
             .push(pane_grid);
@@ -842,12 +911,48 @@ impl Application for State {
     }
 }
 
+fn debug_button<'a>(pane_to_split: pane_grid::Pane, label: PaneId, is_open: &bool) -> button::Button<'a, Message, iced::Theme, iced::Renderer> {
+    if *is_open {
+        disabled_labeled_button(&format!("{:?}", label))
+    } else {
+        labeled_button(&format!("{:?}", label), Message::Split(pane_grid::Axis::Horizontal, pane_to_split, label))
+    }
+}
+fn debug_button_s<'a>(label: &str) -> button::Button<'a, Message, iced::Theme, iced::Renderer> {
+    labeled_button(label, Message::Debug(label.into())).width(Length::Shrink)
+}
+fn labeled_button<'a>(
+    label: &str,
+    msg: Message,
+) -> button::Button<'a, Message, iced::Theme, iced::Renderer> {
+    base_button(
+        text(label).vertical_alignment(alignment::Vertical::Center),
+        msg,
+    )
+}
+fn disabled_labeled_button<'a>(
+    label: &str,
+) -> button::Button<'a, Message, iced::Theme, iced::Renderer> {
+    let content = text(label)
+        .vertical_alignment(alignment::Vertical::Center);
+    button(content)
+        .padding([4, 8])
+}
+fn base_button<'a>(
+    content: impl Into<Element<'a, Message, iced::Theme, iced::Renderer>>,
+    msg: Message,
+) -> button::Button<'a, Message, iced::Theme, iced::Renderer> {
+    button(content)
+        .padding([4, 8])
+        .on_press(msg)
+}
+
 fn view_content<'a, 'b: 'a>(
     _pane: pane_grid::Pane,
     _total_panes: usize,
     _is_pinned: bool,
     _size: Size,
-    pane_id: String,
+    pane_id: PaneId,
     trades_chart: &'a Option<LineChart>,
     candlestick_chart: &'a Option<CandlestickChart>,
     qty_input_val: Option<String>,
@@ -865,10 +970,10 @@ fn view_content<'a, 'b: 'a>(
     order_form_active_tab: &'b usize,
     table_active_tab: &'b usize,
 ) -> Element<'a, Message> {
-    let content = match pane_id.as_str() {
-        "0" => trades_chart.as_ref().map(LineChart::view).unwrap_or_else(|| Text::new("No data").into()),
-        "1" => candlestick_chart.as_ref().map(CandlestickChart::view).unwrap_or_else(|| Text::new("No data").into()),
-        "2" => {
+    let content = match pane_id {
+        PaneId::HeatmapChart => trades_chart.as_ref().map(LineChart::view).unwrap_or_else(|| Text::new("No data").into()),
+        PaneId::Candlesticks => candlestick_chart.as_ref().map(CandlestickChart::view).unwrap_or_else(|| Text::new("No data").into()),
+        PaneId::TradePanel => {
             let form_select_0_button = button("Market Order")
                 .on_press(Message::TabSelected(0, "order_form".to_string()));
             let form_select_1_button = button("Limit Order") 
@@ -998,12 +1103,14 @@ fn view_controls<'a>(
         let buttons = if is_maximized {
             vec![
                 (text(char::from(Icon::ResizeSmall).to_string()).font(ICON).size(14), Message::Restore),
+                (text(char::from(Icon::Close).to_string()).font(ICON).size(14), Message::Close(pane)),
                 //("Split Horizontally", Message::Split(pane_grid::Axis::Horizontal, pane)),
                 //("Split Vertically", Message::Split(pane_grid::Axis::Vertical, pane))
             ]
         } else {
             vec![
                 (text(char::from(Icon::ResizeFull).to_string()).font(ICON).size(14), Message::Maximize(pane)),
+                (text(char::from(Icon::Close).to_string()).font(ICON).size(14), Message::Close(pane)),
                 //("Split Horizontally", Message::Split(pane_grid::Axis::Horizontal, pane)),
                 //("Split Vertically", Message::Split(pane_grid::Axis::Vertical, pane))
             ]
@@ -1017,15 +1124,6 @@ fn view_controls<'a>(
             );
         }
     }
-
-    //let close = button(text("Close").size(14))
-    //    .padding(3)
-    //    .on_press_maybe(if total_panes > 1 && !is_pinned {
-    //        Some(Message::Close(pane))
-    //    } else {
-    //        None
-    //    });
-    //row.push(close).into()
     row.into()
 }
 
