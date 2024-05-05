@@ -6,6 +6,7 @@ use charts::{heatmap, candlesticks};
 use crate::heatmap::LineChart;
 use crate::candlesticks::CandlestickChart;
 
+use futures::FutureExt;
 use std::cell::RefCell;
 use chrono::{DateTime, Utc};
 use iced::{
@@ -155,6 +156,7 @@ pub enum Message {
     WsEvent(market_data::Event),
     WsToggle(),
     FetchEvent(Result<Vec<market_data::Kline>, std::string::String>),
+    UpdateAccInfo(user_data::FetchedBalance),
     
     // Pane grid
     Split(pane_grid::Axis, pane_grid::Pane, PaneId),
@@ -230,6 +232,9 @@ struct State {
     resize_columns_enabled: bool,
     footer_enabled: bool,
     min_width_enabled: bool,
+
+    
+    account_info_usdt: Option<user_data::FetchedBalance>,
 }
 
 impl Application for State {
@@ -295,9 +300,10 @@ impl Application for State {
                     PosTableColumn::new(PosColumnKind::MarkPrice),
                     PosTableColumn::new(PosColumnKind::LiqPrice),
                     PosTableColumn::new(PosColumnKind::MarginAmt),
-                    PosTableColumn::new(PosColumnKind::uPnL),
+                    PosTableColumn::new(PosColumnKind::UnrealPnL),
                 ],
                 position_rows: vec![],
+                account_info_usdt: None,
             },
             Command::batch(vec![
                 font::load(ICON_BYTES).map(Message::FontLoaded),
@@ -382,6 +388,27 @@ impl Application for State {
                             }
                         }
                     );
+                    let fetch_balance = Command::perform(
+                        user_data::fetch_acc_balance(API_KEY, SECRET_KEY)
+                            .map_err(|err| format!("{:?}", err)),
+                        |balance| {
+                            match balance {
+                                Ok(balance) => {
+                                    let mut message = Message::OrderFailed("No USDT balance found".to_string());
+                                    for asset in balance {
+                                        if asset.asset == "USDT" {
+                                            message = Message::UpdateAccInfo(asset);
+                                            break;
+                                        }
+                                    }
+                                    message
+                                },
+                                Err(err) => {
+                                    Message::OrderFailed(format!("{}", err))
+                                }
+                            }
+                        }
+                    );
                     if self.panes.len() == 1 {
                         let first_pane = self.first_pane;
                         let split_pane = Command::perform(
@@ -405,9 +432,9 @@ impl Application for State {
                         self.panes_open.insert(PaneId::HeatmapChart, true);
                         self.panes_open.insert(PaneId::Candlesticks, true);
                 
-                        Command::batch(vec![fetch_klines, fetch_open_orders, fetch_open_positions, split_pane, split_pane_again])
+                        Command::batch(vec![fetch_klines, fetch_open_orders, fetch_open_positions, fetch_balance, split_pane, split_pane_again])
                     } else {
-                        Command::batch(vec![fetch_klines, fetch_open_orders, fetch_open_positions])
+                        Command::batch(vec![fetch_klines, fetch_open_orders, fetch_open_positions, fetch_balance])
                     }
                 } else {
                     self.trades_chart = None;
@@ -482,7 +509,18 @@ impl Application for State {
                         for position in positions {
                             PosTableRow::remove_row(position.symbol.clone(), &mut self.position_rows);
                             if position.pos_amt != 0.0 {
-                                self.position_rows.push(PosTableRow::add_row(position));
+                                let position_in_table = user_data::PositionInTable { 
+                                    symbol: position.symbol.clone(),
+                                    size: position.pos_amt,
+                                    entry_price: position.entry_price,
+                                    breakeven_price: position.breakeven_price,
+                                    mark_price: 0.0, 
+                                    liquidation_price: 0.0,
+                                    margin_amt: 0.0, 
+                                    unrealized_pnl: 0.0,
+                                };
+
+                                self.position_rows.push(PosTableRow::add_row(position_in_table));
                             }
                         }
                     },
@@ -491,19 +529,26 @@ impl Application for State {
                     
                         for fetched_position in positions {
                             if fetched_position.pos_amt != 0.0 {
-                                let position = user_data::Position {
+                                let position_in_table = user_data::PositionInTable { 
                                     symbol: fetched_position.symbol.clone(),
-                                    pos_amt: fetched_position.pos_amt,
+                                    size: fetched_position.pos_amt,
                                     entry_price: fetched_position.entry_price,
                                     breakeven_price: fetched_position.breakeven_price,
-                                    cum_realized_pnl: String::from("test"),
-                                    unrealized_pnl: fetched_position.unrealized_pnl.to_string(),
-                                    margin_type: fetched_position.margin_type.clone(),
-                                    isolated_wallet: String::from("test"),
-                                    pos_side: String::from("test"),
+                                    mark_price: fetched_position.mark_price,
+                                    liquidation_price: fetched_position.liquidation_price,
+                                    margin_amt: 0.0,
+                                    unrealized_pnl: fetched_position.unrealized_pnl,
                                 };
                     
-                                self.position_rows.push(PosTableRow::add_row(position));
+                                self.position_rows.push(PosTableRow::add_row(position_in_table));
+                            }
+                        }
+                    },
+                    user_data::Event::FetchedBalance(balance) => {
+                        for asset in balance {
+                            if asset.asset == "USDT" {
+                                self.account_info_usdt = Some(asset);
+                                break;
                             }
                         }
                     },
@@ -736,6 +781,10 @@ impl Application for State {
             Message::Debug(_msg) => {
                 Command::none()
             },
+            Message::UpdateAccInfo(acc_info) => {
+                self.account_info_usdt = Some(acc_info);
+                Command::none()
+            },
         }
     }
 
@@ -774,6 +823,7 @@ impl Application for State {
                     &self.resize_columns_enabled,
                     &self.order_form_active_tab,
                     &self.table_active_tab,
+                    &self.account_info_usdt,
                 )
             }));
     
@@ -895,6 +945,9 @@ impl Application for State {
         if self.listen_key != "" {
             let binance_user_stream = user_data::connect_user_stream(self.listen_key.clone()).map(Message::UserWsEvent);
             subscriptions.push(binance_user_stream);
+
+            let fetch_positions = user_data::fetch_user_stream(API_KEY, SECRET_KEY).map(Message::UserWsEvent);
+            subscriptions.push(fetch_positions);
         }
         Subscription::batch(subscriptions)
     }    
@@ -962,6 +1015,7 @@ fn view_content<'a, 'b: 'a>(
     resize_columns_enabled: &'b bool,
     order_form_active_tab: &'b usize,
     table_active_tab: &'b usize,
+    account_info_usdt: &'b Option<user_data::FetchedBalance>,
 ) -> Element<'a, Message> {
     let content = match pane_id {
         PaneId::HeatmapChart => trades_chart.as_ref().map(LineChart::view).unwrap_or_else(|| Text::new("No data").into()),
@@ -1047,7 +1101,15 @@ fn view_content<'a, 'b: 'a>(
                 });
                 Column::new()
                     .push(inputs)
-                    .push(table_select_1_button)
+                    .push(
+                        Row::new()
+                            .push(table_select_1_button)
+                            .push(Space::with_width(Length::Fill)) 
+                            .push(account_info_usdt.as_ref().map(|info| {
+                                Text::new(format!("USDT: {:.2}", info.balance))
+                            }).unwrap_or_else(|| Text::new("").size(16)))
+                            .padding(10)
+                    )
                     .push(table)
                     .align_items(Alignment::Center)
                     .into()
@@ -1069,7 +1131,15 @@ fn view_content<'a, 'b: 'a>(
                 });
                 Column::new()
                     .push(inputs)
-                    .push(table_select_0_button)
+                    .push(
+                        Row::new()
+                            .push(table_select_0_button)
+                            .push(Space::with_width(Length::Fill)) 
+                            .push(account_info_usdt.as_ref().map(|info| {
+                                Text::new(format!("USDT: {:.2}", info.balance))
+                            }).unwrap_or_else(|| Text::new("").size(16)))
+                            .padding(10)
+                    )
                     .push(table)
                     .align_items(Alignment::Center)
                     .into()
@@ -1296,7 +1366,7 @@ impl PosTableColumn {
             PosColumnKind::MarkPrice => 100.0,
             PosColumnKind::LiqPrice => 100.0,
             PosColumnKind::MarginAmt => 100.0,
-            PosColumnKind::uPnL => 100.0,
+            PosColumnKind::UnrealPnL => 100.0,
         };
 
         Self {
@@ -1314,20 +1384,20 @@ enum PosColumnKind {
     MarkPrice,
     LiqPrice,
     MarginAmt,
-    uPnL,
+    UnrealPnL,
 }
 #[derive(Debug, Clone)]
 struct PosTableRow {
-    trade: user_data::Position,
+    position: user_data::PositionInTable,
 }
 impl PosTableRow {
-    fn add_row(trade: user_data::Position) -> Self {
+    fn add_row(position: user_data::PositionInTable) -> Self {
         Self {
-            trade,
+            position,
         }
     }
     fn remove_row(symbol: String, rows: &mut Vec<PosTableRow>) {
-        if let Some(index) = rows.iter().position(|r| r.trade.symbol == symbol) {
+        if let Some(index) = rows.iter().position(|r| r.position.symbol == symbol) {
             rows.remove(index);
         }
     }
@@ -1344,7 +1414,7 @@ impl<'a> table::Column<'a, Message, Theme, Renderer> for PosTableColumn {
             PosColumnKind::MarkPrice => "Mark Price",
             PosColumnKind::LiqPrice => "Liq Price",
             PosColumnKind::MarginAmt => "Margin",
-            PosColumnKind::uPnL => "uPnL",
+            PosColumnKind::UnrealPnL => "PnL",
         };
 
         container(text(content)).height(24).center_y().into()
@@ -1357,14 +1427,14 @@ impl<'a> table::Column<'a, Message, Theme, Renderer> for PosTableColumn {
         row: &'a Self::Row,
     ) -> Element<'a, Message> {
         let content: Element<_> = match self.kind {
-            PosColumnKind::Symbol => text(row.trade.symbol.to_string()).into(),
-            PosColumnKind::PosSize => text(&row.trade.pos_amt).into(),
-            PosColumnKind::EntryPrice => text(&row.trade.entry_price).into(),
-            PosColumnKind::Breakeven => text(&row.trade.breakeven_price).into(),
-            PosColumnKind::MarkPrice => text("test").into(),
-            PosColumnKind::LiqPrice => text("test").into(),
-            PosColumnKind::MarginAmt => text("test").into(),
-            PosColumnKind::uPnL => text(&row.trade.unrealized_pnl).into(),
+            PosColumnKind::Symbol => text(row.position.symbol.to_string()).into(),
+            PosColumnKind::PosSize => text(&row.position.size).into(),
+            PosColumnKind::EntryPrice => text(&row.position.entry_price).into(),
+            PosColumnKind::Breakeven => text(&row.position.breakeven_price).into(),
+            PosColumnKind::MarkPrice => text(&row.position.mark_price).into(),
+            PosColumnKind::LiqPrice => text(&row.position.liquidation_price).into(),
+            PosColumnKind::MarginAmt => text(&row.position.margin_amt).into(),
+            PosColumnKind::UnrealPnL => text(&row.position.unrealized_pnl).into(),
         };
 
         container(content)
