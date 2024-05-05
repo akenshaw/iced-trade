@@ -1026,11 +1026,6 @@ fn view_content<'a, 'b: 'a>(
             let form_select_1_button = button("Limit Order") 
                 .on_press(Message::TabSelected(1, "order_form".to_string()));
 
-            let table_select_0_button = button("Positions")
-                .on_press(Message::TabSelected(0, "table".to_string()));
-            let table_select_1_button = button("Orders")
-                .on_press(Message::TabSelected(1, "table".to_string()));
-
             let (buy_button, sell_button) = match *order_form_active_tab {
                 0 => {
                     (
@@ -1055,7 +1050,6 @@ fn view_content<'a, 'b: 'a>(
                 .push(buy_button)
                 .push(sell_button)
                 .align_items(Alignment::Center)
-                .padding(10)
                 .spacing(5);
         
             let qty_input = text_input("Quantity...", qty_input_val.as_deref().unwrap_or(""))
@@ -1071,7 +1065,7 @@ fn view_content<'a, 'b: 'a>(
                     .push(qty_input)                       
                     .push(order_buttons)
                     .align_items(Alignment::Center)
-                    .padding(10)
+                    .padding([20, 10])
                     .spacing(5)
             } else {
                 Row::new()
@@ -1079,7 +1073,7 @@ fn view_content<'a, 'b: 'a>(
                     .push(qty_input)
                     .push(order_buttons)
                     .align_items(Alignment::Center)
-                    .padding(10)
+                    .padding([20, 10])
                     .spacing(5)
             };
 
@@ -1103,12 +1097,18 @@ fn view_content<'a, 'b: 'a>(
                     .push(inputs)
                     .push(
                         Row::new()
-                            .push(table_select_1_button)
+                            .push(
+                                button("Positions")
+                                .on_press(Message::TabSelected(1, "table".to_string()))
+                            )
+                            .push(
+                                button("Open Orders")
+                            )
                             .push(Space::with_width(Length::Fill)) 
                             .push(account_info_usdt.as_ref().map(|info| {
                                 Text::new(format!("USDT: {:.2}", info.balance))
                             }).unwrap_or_else(|| Text::new("").size(16)))
-                            .padding(10)
+                            .padding([0, 10, 0, 10])
                     )
                     .push(table)
                     .align_items(Alignment::Center)
@@ -1133,19 +1133,24 @@ fn view_content<'a, 'b: 'a>(
                     .push(inputs)
                     .push(
                         Row::new()
-                            .push(table_select_0_button)
+                            .push(
+                                button("Positions")
+                            )
+                            .push(
+                                button("Open Orders")
+                                .on_press(Message::TabSelected(0, "table".to_string()))
+                            )
                             .push(Space::with_width(Length::Fill)) 
                             .push(account_info_usdt.as_ref().map(|info| {
                                 Text::new(format!("USDT: {:.2}", info.balance))
                             }).unwrap_or_else(|| Text::new("").size(16)))
-                            .padding(10)
+                            .padding([0, 10, 0, 10])
                     )
                     .push(table)
                     .align_items(Alignment::Center)
                     .into()
             }        
         },
-        _ => Text::new("No data").into(),
     };
 
     container(content)
