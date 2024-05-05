@@ -10,7 +10,7 @@ use futures::stream::StreamExt;
 use chrono::Utc;
 use serde::Deserialize;
 use serde_json::json;
-
+use futures::FutureExt;
 use async_tungstenite::tungstenite;
 
 mod string_to_f32 {
@@ -45,6 +45,7 @@ pub enum Event {
     TestEvent(String),
     NewPositions(Vec<Position>),
     FetchedPositions(Vec<FetchedPosition>),
+    FetchedBalance(Vec<FetchedBalance>),
 }
 
 #[derive(Debug, Clone)]
@@ -150,6 +151,48 @@ pub fn connect_user_stream(listen_key: String) -> Subscription<Event> {
     )
 }
 
+pub fn fetch_user_stream(api_key: &str, secret_key: &str) -> Subscription<Event> {
+    struct Connect;
+
+    let api_key = api_key.to_owned();
+    let secret_key = secret_key.to_owned();
+
+    subscription::channel(
+        std::any::TypeId::of::<Connect>(),
+        100,
+        move |mut output| {
+            tokio::spawn(async move {
+                loop {
+                    let fetch_positions = fetch_open_positions(&api_key, &secret_key);
+                    let fetch_balance = fetch_acc_balance(&api_key, &secret_key);
+
+                    let (fetched_positions, fetched_balance) = futures::join!(fetch_positions, fetch_balance);
+
+                    match fetched_positions {
+                        Ok(positions) => {
+                            let _ = output.send(Event::FetchedPositions(positions)).await;
+                        }
+                        Err(e) => {
+                            eprintln!("Error fetching positions: {:?}", e);
+                        }
+                    }
+
+                    match fetched_balance {
+                        Ok(balance) => {
+                            let _ = output.send(Event::FetchedBalance(balance)).await;
+                        }
+                        Err(e) => {
+                            eprintln!("Error fetching balance: {:?}", e);
+                        }
+                    }
+
+                    tokio::time::sleep(std::time::Duration::from_secs(19)).await;
+                }
+            })
+        }.map(|result| result.expect("Failed to join"))
+    )
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct AccBalance {
     #[serde(rename = "a")]
@@ -163,6 +206,19 @@ pub struct AccBalance {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct FetchedBalance {
+    pub asset: String,
+    #[serde(with = "string_to_f32", rename = "balance")]
+    pub balance: f32,
+    #[serde(with = "string_to_f32", rename = "crossWalletBalance")]
+    pub cross_bal: f32,
+    #[serde(with = "string_to_f32", rename = "crossUnPnl")]
+    pub cross_upnl: f32,
+    #[serde(with = "string_to_f32", rename = "availableBalance")]
+    pub available_bal: f32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct Position {
     #[serde(rename = "s")]
     pub symbol: String,
@@ -172,8 +228,6 @@ pub struct Position {
     pub entry_price: f32,
     #[serde(with = "string_to_f32", rename = "bep")]
     pub breakeven_price: f32,
-    #[serde(rename = "cr")]
-    pub cum_realized_pnl: String,
     #[serde(rename = "up")]
     pub unrealized_pnl: String,
     #[serde(rename = "mt")]
@@ -203,6 +257,18 @@ pub struct FetchedPosition {
     pub leverage: f32,
     #[serde(rename = "marginType")]
     pub margin_type: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PositionInTable {
+    pub symbol: String,
+    pub size: f32,
+    pub entry_price: f32,
+    pub breakeven_price: f32,
+    pub mark_price: f32,
+    pub liquidation_price: f32,
+    pub margin_amt: f32,
+    pub unrealized_pnl: f32,
 }
 
 pub enum EventType {
@@ -255,7 +321,6 @@ impl From<reqwest::Error> for BinanceError {
         BinanceError::Reqwest(err)
     }
 }
-
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct NewOrder {
@@ -371,6 +436,22 @@ pub async fn fetch_open_positions(api_key: &str, secret_key: &str) -> Result<Vec
     let positions: Vec<FetchedPosition> = res.json().await?;
 
     Ok(positions)
+}
+
+pub async fn fetch_acc_balance(api_key: &str, secret_key: &str) -> Result<Vec<FetchedBalance>, reqwest::Error> {
+    let params = format!("timestamp={}", Utc::now().timestamp_millis());
+    let signature = sign_params(&params, secret_key);
+
+    let url = format!("https://testnet.binancefuture.com/fapi/v2/balance?{}&signature={}", params, signature);
+
+    let mut headers = HeaderMap::new();
+    headers.insert("X-MBX-APIKEY", HeaderValue::from_str(api_key).unwrap());
+
+    let client = reqwest::Client::new();
+    let res = client.get(&url).headers(headers).send().await?;
+
+    let acc_balance: Vec<FetchedBalance> = res.json().await?;
+    Ok(acc_balance)
 }
 
 pub async fn get_listen_key(api_key: &str, secret_key: &str) -> Result<String, reqwest::Error> {
