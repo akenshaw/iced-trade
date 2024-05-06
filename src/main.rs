@@ -153,7 +153,7 @@ pub enum Message {
     UserWsEvent(user_data::Event),
     TickerSelected(Ticker),
     TimeframeSelected(&'static str),
-    WsEvent(market_data::Event),
+    MarketWsEvent(market_data::Event),
     WsToggle(),
     FetchEvent(Result<Vec<market_data::Kline>, std::string::String>),
     UpdateAccInfo(user_data::FetchedBalance),
@@ -163,11 +163,9 @@ pub enum Message {
     Clicked(pane_grid::Pane),
     Dragged(pane_grid::DragEvent),
     Resized(pane_grid::ResizeEvent),
-    TogglePin(pane_grid::Pane),
     Maximize(pane_grid::Pane),
     Restore,
     Close(pane_grid::Pane),
-    CloseFocused,
     ToggleLayoutLock,
 
     // Trading order form
@@ -328,24 +326,12 @@ impl Application for State {
 
     fn update(&mut self, message: Self::Message) -> Command<Self::Message> {
         match message {
-            Message::TabSelected(index, tab_type) => {
-                if tab_type == "order_form" {
-                    self.order_form_active_tab = index;
-                } else if tab_type == "table" {
-                    self.table_active_tab = index;
-                }
-                Command::none()
-            },
             Message::TickerSelected(ticker) => {
                 self.selected_ticker = Some(ticker);
                 Command::none()
             },
             Message::TimeframeSelected(timeframe) => {
                 self.selected_timeframe = Some(timeframe);
-                Command::none()
-            },
-            Message::FontLoaded(_) => {
-                dbg!("Font loaded");
                 Command::none()
             },
             Message::WsToggle() => {
@@ -411,9 +397,10 @@ impl Application for State {
                     );
                     if self.panes.len() == 1 {
                         let first_pane = self.first_pane;
+
                         let split_pane = Command::perform(
                             async move {
-                                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                                 (pane_grid::Axis::Horizontal, first_pane) 
                             },
                             |(axis, pane)| {
@@ -422,16 +409,13 @@ impl Application for State {
                         );
                         let split_pane_again = Command::perform(
                             async move {
-                                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
                                 (pane_grid::Axis::Vertical, first_pane) 
                             },
                             |(axis, pane)| {
                                 Message::Split(axis, pane, PaneId::Candlesticks)
                             }
                         );
-                        self.panes_open.insert(PaneId::HeatmapChart, true);
-                        self.panes_open.insert(PaneId::Candlesticks, true);
-                
                         Command::batch(vec![fetch_klines, fetch_open_orders, fetch_open_positions, fetch_balance, split_pane, split_pane_again])
                     } else {
                         Command::batch(vec![fetch_klines, fetch_open_orders, fetch_open_positions, fetch_balance])
@@ -466,7 +450,7 @@ impl Application for State {
                 }
                 Command::none()
             },
-            Message::WsEvent(event) => match event {
+            Message::MarketWsEvent(event) => match event {
                 market_data::Event::Connected(connection) => {
                     self.ws_state = WsState::Connected(connection);
                     Command::none()
@@ -563,6 +547,8 @@ impl Application for State {
                 }
                 Command::none()
             },
+
+            // Pane grid
             Message::Split(axis, pane, pane_id) => {
                 let result =
                     self.panes.split(axis, self.first_pane, Pane::new(pane_id));
@@ -591,12 +577,6 @@ impl Application for State {
                 Command::none()
             },
             Message::Dragged(_) => {
-                Command::none()
-            },
-            Message::TogglePin(pane) => {
-                if let Some(Pane { is_pinned, .. }) = self.panes.get_mut(pane) {
-                    *is_pinned = !*is_pinned;
-                }
                 Command::none()
             },
             Message::Maximize(pane) => {
@@ -628,24 +608,14 @@ impl Application for State {
                 }
                 Command::none()
             },
-            Message::CloseFocused => {
-                if let Some(pane) = self.focus {
-                    if let Some(Pane { is_pinned, .. }) = self.panes.get(pane) {
-                        if !is_pinned {
-                            if let Some((_, sibling)) = self.panes.close(pane) {
-                                self.focus = Some(sibling);
-                            }
-                        }
-                    }
-                }
-                Command::none()
-            },
             Message::ToggleLayoutLock => {
                 self.focus = None;
                 self.pane_lock = !self.pane_lock;
                 self.resize_columns_enabled = !self.pane_lock;
                 Command::none()
             },
+
+            // Order form
             Message::LimitOrder(side) => {
                 Command::perform(
                     user_data::create_limit_order(side, self.qty_input_val.borrow().as_ref().unwrap().to_string(), self.price_input_val.borrow().as_ref().unwrap().to_string(), API_KEY, SECRET_KEY),
@@ -720,6 +690,7 @@ impl Application for State {
                 eprintln!("Error creating order: {}", err);
                 Command::none()
             },
+
             Message::InputChanged((field, new_value)) => {
                 if field == "price" {
                     *self.price_input_val.borrow_mut() = Some(new_value);
@@ -728,6 +699,12 @@ impl Application for State {
                 }
                 Command::none()
             },
+            Message::UpdateAccInfo(acc_info) => {
+                self.account_info_usdt = Some(acc_info);
+                Command::none()
+            },
+
+            // Table 
             Message::SyncHeader(offset) => {
                 let orders_batch = Command::batch(vec![
                     scrollable::scroll_to(self.orders_header.clone(), offset),
@@ -778,11 +755,20 @@ impl Application for State {
                 self.min_width_enabled = enabled;
                 Command::none()
             },
+            Message::TabSelected(index, tab_type) => {
+                if tab_type == "order_form" {
+                    self.order_form_active_tab = index;
+                } else if tab_type == "table" {
+                    self.table_active_tab = index;
+                }
+                Command::none()
+            },
+
             Message::Debug(_msg) => {
                 Command::none()
             },
-            Message::UpdateAccInfo(acc_info) => {
-                self.account_info_usdt = Some(acc_info);
+            Message::FontLoaded(_) => {
+                dbg!("Font loaded");
                 Command::none()
             },
         }
@@ -938,7 +924,7 @@ impl Application for State {
     
         if let Some(selected_ticker) = &self.selected_ticker {
             if self.ws_running {
-                let binance_market_stream = market_data::connect_market_stream(selected_ticker.to_string(), self.selected_timeframe.unwrap().to_string()).map(Message::WsEvent);
+                let binance_market_stream = market_data::connect_market_stream(selected_ticker.to_string(), self.selected_timeframe.unwrap().to_string()).map(Message::MarketWsEvent);
                 subscriptions.push(binance_market_stream);
             }
         }
