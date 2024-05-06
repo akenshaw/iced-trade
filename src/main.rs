@@ -6,26 +6,23 @@ use charts::{heatmap, candlesticks};
 use crate::heatmap::LineChart;
 use crate::candlesticks::CandlestickChart;
 
-use futures::FutureExt;
 use std::cell::RefCell;
 use chrono::{DateTime, Utc};
 use iced::{
     font, executor, widget::{
-        button, pick_list, text_input, Column, Container, Row, Space, Text, horizontal_space
-    }, window::icon, Alignment, Application, Command, Element, Length, Renderer, Settings, Size, Subscription, Theme, Font, alignment, Border
+        button, pick_list, text_input, Column, Container, Row, Space, Text,
+    }, Alignment, Application, Command, Element, Length, Renderer, Settings, Size, Subscription, Theme, Font, alignment,
 };
-use iced::widget::{column as col, vertical_space};
 
 use iced::widget::pane_grid::{self, PaneGrid};
 use iced::widget::{
-    column, container, row, scrollable, text, responsive
+    container, row, scrollable, text, responsive
 };
 use iced_table::table;
 use futures::TryFutureExt;
 use plotters_iced::sample::lttb::DataPoint;
 
-use iced_aw::menu::{self, Item, Menu, StyleSheet};
-use iced_aw::style::MenuBarStyle;
+use iced_aw::menu::{Item, Menu};
 use iced_aw::{menu_bar, menu_items};
 
 use std::collections::HashMap;
@@ -119,19 +116,18 @@ impl Default for UserWsState {
 #[derive(Eq, Hash, PartialEq)]
 pub enum PaneId {
     HeatmapChart,
-    Candlesticks,
+    CandlestickChart,
     TradePanel,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct Pane {
     id: PaneId,
-    pub is_pinned: bool,
 }
 
 impl Pane {
     fn new(id: PaneId) -> Self {
-        Self { id, is_pinned: false }
+        Self { id }
     }
 }
 
@@ -246,7 +242,7 @@ impl Application for State {
 
         let mut panes_open = HashMap::new();
         panes_open.insert(PaneId::HeatmapChart, false);
-        panes_open.insert(PaneId::Candlesticks, false);
+        panes_open.insert(PaneId::CandlestickChart, false);
         panes_open.insert(PaneId::TradePanel, true);
         (
             Self { 
@@ -413,7 +409,7 @@ impl Application for State {
                                 (pane_grid::Axis::Vertical, first_pane) 
                             },
                             |(axis, pane)| {
-                                Message::Split(axis, pane, PaneId::Candlesticks)
+                                Message::Split(axis, pane, PaneId::CandlestickChart)
                             }
                         );
                         Command::batch(vec![fetch_klines, fetch_open_orders, fetch_open_positions, fetch_balance, split_pane, split_pane_again])
@@ -450,28 +446,27 @@ impl Application for State {
                 }
                 Command::none()
             },
-            Message::MarketWsEvent(event) => match event {
-                market_data::Event::Connected(connection) => {
-                    self.ws_state = WsState::Connected(connection);
-                    Command::none()
-                }
-                market_data::Event::Disconnected => {
-                    self.ws_state = WsState::Disconnected;
-                    Command::none()
-                }
-                market_data::Event::DepthReceived(depth_update, bids, asks, trades_buffer) => {
-                    if let Some(chart) = &mut self.trades_chart {
-                        chart.update(depth_update, trades_buffer, bids, asks);
+            Message::MarketWsEvent(event) => {
+                match event {
+                    market_data::Event::Connected(connection) => {
+                        self.ws_state = WsState::Connected(connection);
                     }
-                    Command::none()
-                }
-                market_data::Event::KlineReceived(kline) => {
-                    if let Some(chart) = &mut self.candlestick_chart {
-                        chart.update(kline);
+                    market_data::Event::Disconnected => {
+                        self.ws_state = WsState::Disconnected;
                     }
-                    Command::none()
-                }
-            }, 
+                    market_data::Event::DepthReceived(depth_update, bids, asks, trades_buffer) => {
+                        if let Some(chart) = &mut self.trades_chart {
+                            chart.update(depth_update, trades_buffer, bids, asks);
+                        }
+                    }
+                    market_data::Event::KlineReceived(kline) => {
+                        if let Some(chart) = &mut self.candlestick_chart {
+                            chart.update(kline);
+                        }
+                    }
+                };
+                Command::none()
+            },
             Message::UserWsEvent(event) => {
                 match event {
                     user_data::Event::Connected(connection) => {
@@ -507,7 +502,7 @@ impl Application for State {
                                 self.position_rows.push(PosTableRow::add_row(position_in_table));
                             }
                         }
-                    },
+                    }
                     user_data::Event::FetchedPositions(positions) => {
                         self.position_rows.clear();
                     
@@ -527,7 +522,7 @@ impl Application for State {
                                 self.position_rows.push(PosTableRow::add_row(position_in_table));
                             }
                         }
-                    },
+                    }
                     user_data::Event::FetchedBalance(balance) => {
                         for asset in balance {
                             if asset.asset == "USDT" {
@@ -535,8 +530,8 @@ impl Application for State {
                                 break;
                             }
                         }
-                    },
-                }
+                    }
+                };
                 Command::none()
             },
             Message::UserListenKey(listen_key) => {
@@ -550,15 +545,18 @@ impl Application for State {
 
             // Pane grid
             Message::Split(axis, pane, pane_id) => {
-                let result =
-                    self.panes.split(axis, self.first_pane, Pane::new(pane_id));
+                let result = self.panes.split(axis, pane, Pane::new(pane_id));
 
                 if let Some((pane, _)) = result {
                     self.focus = Some(pane);
+                    self.panes_open.insert(pane_id, true);
+                } else {
+                    if let Some((&first_pane, _)) = self.panes.panes.iter().next() {
+                        self.focus = Some(first_pane);
+                        self.panes.split(axis, first_pane, Pane::new(pane_id));
+                        self.panes_open.insert(pane_id, true);
+                    }
                 }
-
-                self.panes_open.insert(pane_id, true);
-
                 Command::none()
             },
             Message::Clicked(pane) => {
@@ -593,8 +591,8 @@ impl Application for State {
                         PaneId::HeatmapChart => {
                             self.panes_open.insert(PaneId::HeatmapChart, false);
                         },
-                        PaneId::Candlesticks => {
-                            self.panes_open.insert(PaneId::Candlesticks, false);
+                        PaneId::CandlestickChart => {
+                            self.panes_open.insert(PaneId::CandlestickChart, false);
                         },
                         PaneId::TradePanel => {
                             self.panes_open.insert(PaneId::TradePanel, false);
@@ -604,7 +602,6 @@ impl Application for State {
                 
                 if let Some((_, sibling)) = self.panes.close(pane) {
                     self.focus = Some(sibling);
-                    self.first_pane = sibling;
                 }
                 Command::none()
             },
@@ -784,13 +781,12 @@ impl Application for State {
             let content: pane_grid::Content<'_, Message, _, Renderer> = pane_grid::Content::new(responsive(move |size| {
                 let pane_id = match pane.id {
                     PaneId::HeatmapChart => PaneId::HeatmapChart,
-                    PaneId::Candlesticks => PaneId::Candlesticks,
+                    PaneId::CandlestickChart => PaneId::CandlestickChart,
                     PaneId::TradePanel => PaneId::TradePanel,
                 };
                 view_content(
                     id, 
                     total_panes, 
-                    pane.is_pinned, 
                     size, 
                     pane_id, 
                     &self.trades_chart, 
@@ -825,7 +821,7 @@ impl Application for State {
     
             let title = match pane.id {
                 PaneId::HeatmapChart => "Heatmap Chart",
-                PaneId::Candlesticks => "Candlestick Chart",
+                PaneId::CandlestickChart => "Candlestick Chart",
                 PaneId::TradePanel => "Trading Panel",
             };            
     
@@ -834,7 +830,6 @@ impl Application for State {
                     .controls(view_controls(
                         id,
                         total_panes,
-                        pane.is_pinned,
                         is_maximized,
                     ))
                     .padding(4)
@@ -864,7 +859,7 @@ impl Application for State {
             (debug_button_s("New Pane"), {
                 menu_tpl_1(menu_items!(
                     (debug_button(PaneId::HeatmapChart, self.panes_open.get(&PaneId::HeatmapChart).unwrap_or(&false), self.first_pane))
-                    (debug_button(PaneId::Candlesticks, self.panes_open.get(&PaneId::Candlesticks).unwrap_or(&false), self.first_pane))
+                    (debug_button(PaneId::CandlestickChart, self.panes_open.get(&PaneId::CandlestickChart).unwrap_or(&false), self.first_pane))
                     (debug_button(PaneId::TradePanel, self.panes_open.get(&PaneId::TradePanel).unwrap_or(&false), self.first_pane))
                 )).width(200.0)
             })
@@ -947,7 +942,7 @@ fn debug_button<'a>(label: PaneId, is_open: &bool, pane_to_split: pane_grid::Pan
     if *is_open {
         disabled_labeled_button(&format!("{:?}", label))
     } else {
-        labeled_button(&format!("{:?}", label), Message::Split(pane_grid::Axis::Horizontal, pane_to_split, label))
+        labeled_button(&format!("{:?}", label), Message::Split(pane_grid::Axis::Vertical, pane_to_split, label))
     }
 }
 fn debug_button_s<'a>(label: &str) -> button::Button<'a, Message, iced::Theme, iced::Renderer> {
@@ -982,7 +977,6 @@ fn base_button<'a>(
 fn view_content<'a, 'b: 'a>(
     _pane: pane_grid::Pane,
     _total_panes: usize,
-    _is_pinned: bool,
     _size: Size,
     pane_id: PaneId,
     trades_chart: &'a Option<LineChart>,
@@ -1005,7 +999,7 @@ fn view_content<'a, 'b: 'a>(
 ) -> Element<'a, Message> {
     let content = match pane_id {
         PaneId::HeatmapChart => trades_chart.as_ref().map(LineChart::view).unwrap_or_else(|| Text::new("No data").into()),
-        PaneId::Candlesticks => candlestick_chart.as_ref().map(CandlestickChart::view).unwrap_or_else(|| Text::new("No data").into()),
+        PaneId::CandlestickChart => candlestick_chart.as_ref().map(CandlestickChart::view).unwrap_or_else(|| Text::new("No data").into()),
         PaneId::TradePanel => {
             let form_select_0_button = button("Market Order")
                 .on_press(Message::TabSelected(0, "order_form".to_string()));
@@ -1148,7 +1142,6 @@ fn view_content<'a, 'b: 'a>(
 fn view_controls<'a>(
     pane: pane_grid::Pane,
     total_panes: usize,
-    _is_pinned: bool,
     is_maximized: bool,
 ) -> Element<'a, Message> {
     let mut row = row![].spacing(5);
@@ -1158,15 +1151,11 @@ fn view_controls<'a>(
             vec![
                 (text(char::from(Icon::ResizeSmall).to_string()).font(ICON).size(14), Message::Restore),
                 (text(char::from(Icon::Close).to_string()).font(ICON).size(14), Message::Close(pane)),
-                //("Split Horizontally", Message::Split(pane_grid::Axis::Horizontal, pane)),
-                //("Split Vertically", Message::Split(pane_grid::Axis::Vertical, pane))
             ]
         } else {
             vec![
                 (text(char::from(Icon::ResizeFull).to_string()).font(ICON).size(14), Message::Maximize(pane)),
-                (text(char::from(Icon::Close).to_string()).font(ICON).size(14), Message::Close(pane)),
-                //("Split Horizontally", Message::Split(pane_grid::Axis::Horizontal, pane)),
-                //("Split Vertically", Message::Split(pane_grid::Axis::Vertical, pane))
+                (text(char::from(Icon::Close).to_string()).font(ICON).size(14), Message::Close(pane)), 
             ]
         };
 
