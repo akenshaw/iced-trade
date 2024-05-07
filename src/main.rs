@@ -7,7 +7,7 @@ use crate::heatmap::LineChart;
 use crate::candlesticks::CandlestickChart;
 
 use std::cell::RefCell;
-use chrono::{DateTime, Utc};
+use chrono::{offset::LocalResult, DateTime, Utc};
 use iced::{
     alignment, executor, font, theme, widget::{
         button, pick_list, space, text_input, tooltip, Column, Container, Row, Space, Text
@@ -119,6 +119,7 @@ impl Default for UserWsState {
 pub enum PaneId {
     HeatmapChart,
     CandlestickChart,
+    TimeAndSales,
     TradePanel,
 }
 
@@ -191,6 +192,7 @@ pub enum Message {
 struct State {
     trades_chart: Option<heatmap::LineChart>,
     candlestick_chart: Option<candlesticks::CandlestickChart>,
+    time_and_sales: Option<TimeAndSales>,
 
     // data streams
     listen_key: String,
@@ -245,11 +247,13 @@ impl Application for State {
         let mut panes_open = HashMap::new();
         panes_open.insert(PaneId::HeatmapChart, false);
         panes_open.insert(PaneId::CandlestickChart, false);
+        panes_open.insert(PaneId::TimeAndSales, false);
         panes_open.insert(PaneId::TradePanel, true);
         (
             Self { 
                 trades_chart: None,
                 candlestick_chart: None,
+                time_and_sales: None,
                 listen_key: "".to_string(),
                 selected_ticker: None,
                 selected_timeframe: Some("1m"),
@@ -421,6 +425,7 @@ impl Application for State {
                 } else {
                     self.trades_chart = None;
                     self.candlestick_chart = None;
+                    self.time_and_sales = None;
                     self.open_orders.clear();
                     self.orders_rows.clear();
                     self.position_rows.clear();
@@ -457,9 +462,12 @@ impl Application for State {
                         self.ws_state = WsState::Disconnected;
                     }
                     market_data::Event::DepthReceived(depth_update, bids, asks, trades_buffer) => {
+                        if let Some(time_and_sales) = &mut self.time_and_sales {
+                            time_and_sales.update(trades_buffer.clone());
+                        } 
                         if let Some(chart) = &mut self.trades_chart {
                             chart.update(depth_update, trades_buffer, bids, asks);
-                        }
+                        } 
                     }
                     market_data::Event::KlineReceived(kline) => {
                         if let Some(chart) = &mut self.candlestick_chart {
@@ -552,11 +560,25 @@ impl Application for State {
                 if let Some((pane, _)) = result {
                     self.focus = Some(pane);
                     self.panes_open.insert(pane_id, true);
+
+                    if pane_id == PaneId::TimeAndSales {
+                        self.time_and_sales = Some(TimeAndSales::new());
+                    }
+                    if pane_id == PaneId::HeatmapChart {
+                        self.trades_chart = Some(LineChart::new());
+                    }
                 } else {
                     if let Some((&first_pane, _)) = self.panes.panes.iter().next() {
                         self.focus = Some(first_pane);
                         self.panes.split(axis, first_pane, Pane::new(pane_id));
                         self.panes_open.insert(pane_id, true);
+
+                        if pane_id == PaneId::TimeAndSales {
+                            self.time_and_sales = Some(TimeAndSales::new());
+                        }
+                        if pane_id == PaneId::HeatmapChart {
+                            self.trades_chart = Some(LineChart::new());
+                        }
                     }
                 }
                 Command::none()
@@ -592,13 +614,18 @@ impl Application for State {
                     match pane.id {
                         PaneId::HeatmapChart => {
                             self.panes_open.insert(PaneId::HeatmapChart, false);
+                            self.trades_chart = None;
                         },
                         PaneId::CandlestickChart => {
                             self.panes_open.insert(PaneId::CandlestickChart, false);
                         },
+                        PaneId::TimeAndSales => {
+                            self.panes_open.insert(PaneId::TimeAndSales, false);
+                            self.time_and_sales = None;
+                        },
                         PaneId::TradePanel => {
                             self.panes_open.insert(PaneId::TradePanel, false);
-                        },
+                        },  
                     }
                 });
                 
@@ -784,6 +811,7 @@ impl Application for State {
                 let pane_id = match pane.id {
                     PaneId::HeatmapChart => PaneId::HeatmapChart,
                     PaneId::CandlestickChart => PaneId::CandlestickChart,
+                    PaneId::TimeAndSales => PaneId::TimeAndSales,
                     PaneId::TradePanel => PaneId::TradePanel,
                 };
                 view_content(
@@ -791,6 +819,7 @@ impl Application for State {
                     total_panes, 
                     size, 
                     pane_id, 
+                    &self.time_and_sales,
                     &self.trades_chart, 
                     &self.candlestick_chart, 
                     self.qty_input_val.borrow().clone(), 
@@ -824,6 +853,7 @@ impl Application for State {
             let title = match pane.id {
                 PaneId::HeatmapChart => "Heatmap Chart",
                 PaneId::CandlestickChart => "Candlestick Chart",
+                PaneId::TimeAndSales => "Time & Sales",
                 PaneId::TradePanel => "Trading Panel",
             };            
     
@@ -868,6 +898,7 @@ impl Application for State {
                 menu_tpl_1(menu_items!(
                     (debug_button(PaneId::HeatmapChart, self.panes_open.get(&PaneId::HeatmapChart).unwrap_or(&false), self.first_pane))
                     (debug_button(PaneId::CandlestickChart, self.panes_open.get(&PaneId::CandlestickChart).unwrap_or(&false), self.first_pane))
+                    (debug_button(PaneId::TimeAndSales, self.panes_open.get(&PaneId::TimeAndSales).unwrap_or(&false), self.first_pane))
                     (debug_button(PaneId::TradePanel, self.panes_open.get(&PaneId::TradePanel).unwrap_or(&false), self.first_pane))
                 )).width(200.0)
             })
@@ -988,6 +1019,7 @@ fn view_content<'a, 'b: 'a>(
     _total_panes: usize,
     _size: Size,
     pane_id: PaneId,
+    time_and_sales: &'a Option<TimeAndSales>,
     trades_chart: &'a Option<LineChart>,
     candlestick_chart: &'a Option<CandlestickChart>,
     qty_input_val: Option<String>,
@@ -1009,6 +1041,7 @@ fn view_content<'a, 'b: 'a>(
     let content = match pane_id {
         PaneId::HeatmapChart => trades_chart.as_ref().map(LineChart::view).unwrap_or_else(|| Text::new("No data").into()),
         PaneId::CandlestickChart => candlestick_chart.as_ref().map(CandlestickChart::view).unwrap_or_else(|| Text::new("No data").into()),
+        PaneId::TimeAndSales => time_and_sales.as_ref().map(TimeAndSales::view).unwrap_or_else(|| Text::new("No data").into()),
         PaneId::TradePanel => {
             let form_select_0_button = button("Market Order")
                 .on_press(Message::TabSelected(0, "order_form".to_string()));
@@ -1179,6 +1212,119 @@ fn view_controls<'a>(
     row.into()
 }
 
+use crate::market_data::Trade;
+use chrono::NaiveDateTime;
+
+struct ConvertedTrade {
+    time: NaiveDateTime,
+    price: f32,
+    qty: f32,
+    is_sell: bool,
+}
+struct TimeAndSales {
+    recent_trades: Vec<ConvertedTrade>,
+}
+impl TimeAndSales {
+    fn new() -> Self {
+        Self {
+            recent_trades: Vec::new(),
+        }
+    }
+    fn update(&mut self, trades_buffer: Vec<Trade>) {
+        for trade in trades_buffer {
+            let trade_time = NaiveDateTime::from_timestamp(trade.time as i64 / 1000, (trade.time % 1000) as u32 * 1_000_000);
+            let converted_trade = ConvertedTrade {
+                time: trade_time,
+                price: trade.price,
+                qty: trade.qty,
+                is_sell: trade.is_sell,
+            };
+            self.recent_trades.push(converted_trade);
+        }
+
+        if self.recent_trades.len() > 50 {
+            let drain_to = self.recent_trades.len() - 50;
+            self.recent_trades.drain(0..drain_to);
+        }
+    }
+    fn view(&self) -> Element<'_, Message> {
+        let mut trades_column = Column::new()
+            .spacing(5)
+            .align_items(Alignment::Start);
+    
+        if self.recent_trades.is_empty() {
+            trades_column = trades_column.push(Text::new("No data").size(16));
+        } else {
+            for trade in self.recent_trades.iter().rev() {
+                let trade_row = Row::new()
+                    .spacing(5)
+                    .align_items(Alignment::Center)
+                    .push(
+                        container(Text::new(format!("{}", trade.time.format("%M:%S.%3f"))).size(16))
+                            .width(Length::FillPortion(8)).center_x()
+                    )
+                    .push(
+                        container(Text::new(format!("{}", trade.price)).size(16))
+                            .width(Length::FillPortion(6))
+                    )
+                    .push(
+                        container(Text::new(if trade.is_sell { "Sell" } else { "Buy" }).size(16))
+                            .width(Length::FillPortion(4))
+                    )
+                    .push(
+                        container(Text::new(format!("{}", trade.qty)).size(16))
+                            .width(Length::FillPortion(4))
+                    );
+                trades_column = trades_column.push(container(trade_row).style(if trade.is_sell { style::sell_side_red } else { style::buy_side_green }));
+            }
+        }
+
+        let content = Column::new()
+            .spacing(10)
+            .align_items(Alignment::Start)
+            .push(
+                Column::new()
+                    .spacing(10)
+                    .align_items(Alignment::Start)          
+                    .push(
+                        Column::new()
+                            .spacing(5)
+                            .align_items(Alignment::Start)
+                            .push(
+                                Row::new()
+                                    .spacing(5)
+                                    .align_items(Alignment::Center)
+                                    .push(
+                                        container(Text::new("Time").size(16))
+                                        .width(Length::FillPortion(8)).center_x()
+                                    )
+                                    .push(
+                                        container(Text::new("Price").size(16))
+                                        .width(Length::FillPortion(6))
+                                    )
+                                    .push(
+                                        container(Text::new("Side").size(16))
+                                        .width(Length::FillPortion(4))
+                                    )
+                                    .push(
+                                        container(Text::new("Qty").size(16))
+                                        .width(Length::FillPortion(4))
+                                    ),
+                            )
+                            .push(trades_column),
+                    ),
+            );
+
+        Container::new(content)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(10)
+            .center_x()
+            .center_y()
+            .into()
+    }
+}
+
 mod style {
     use iced::widget::container;
     use iced::{Border, Theme};
@@ -1222,6 +1368,30 @@ mod style {
             border: Border {
                 width: 2.0,
                 color: palette.primary.strong.color,
+                ..Border::default()
+            },
+            ..Default::default()
+        }
+    }
+    pub fn sell_side_red(theme: &Theme) -> container::Appearance {
+        let palette = theme.extended_palette();
+
+        container::Appearance {
+            border: Border {
+                width: 2.0,
+                color: palette.danger.strong.color,
+                ..Border::default()
+            },
+            ..Default::default()
+        }
+    }
+    pub fn buy_side_green(theme: &Theme) -> container::Appearance {
+        let palette = theme.extended_palette();
+
+        container::Appearance {
+            border: Border {
+                width: 2.0,
+                color: palette.success.strong.color,
                 ..Border::default()
             },
             ..Default::default()
