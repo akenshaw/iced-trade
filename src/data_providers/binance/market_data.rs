@@ -1,6 +1,8 @@
 use iced::futures;  
 use iced::subscription::{self, Subscription};
 use serde::Deserialize;
+use serde_json::json;
+use hmac::{Hmac, Mac};
 
 mod string_to_f32 {
     use serde::{self, Deserialize, Deserializer};
@@ -59,7 +61,7 @@ pub struct Kline {
     pub taker_buy_base_asset_volume: f32,
 }
 
-pub fn connect(selected_ticker: String, timeframe: String) -> Subscription<Event> {
+pub fn connect_market_stream(selected_ticker: String, timeframe: String) -> Subscription<Event> {
     struct Connect;
 
     subscription::channel(
@@ -100,50 +102,64 @@ pub fn connect(selected_ticker: String, timeframe: String) -> Subscription<Event
                             received = fused_websocket.select_next_some() => {
                                 match received {
                                     Ok(tungstenite::Message::Text(message)) => {
-                                        let parsed_message: Result<StreamWrapper, _> = serde_json::from_str(&message);
+                                        let parsed_message: Result<serde_json::Value, _> = serde_json::from_str(&message);
                                         match parsed_message {
-                                            Ok(mut wrapper) => {
-                                                if wrapper.stream.contains("aggTrade") {
-                                                    let trade: Result<Trade, _> = serde_json::from_str(&wrapper.data.to_string());
-                                                    match trade {
-                                                        Ok(trade) => {
-                                                            trades_buffer.push(trade);
-                                                        },
-                                                        Err(e) => {
-                                                            dbg!(e);
-                                                        }
-                                                    }
-                                                } else if wrapper.stream.contains("depth") {
-                                                    let update_time = wrapper.data.get("T").unwrap().as_u64().unwrap();
-
-                                                    if let Some(bids_data) = wrapper.data.get_mut("b") {
-                                                        let bids: Vec<(String, String)> = serde_json::from_value(bids_data.take()).unwrap();
-                                                        let bids: Vec<(f32, f32)> = bids.into_iter().map(|(price, qty)| (price.parse().unwrap(), qty.parse().unwrap())).collect();
-                                                
-                                                        if let Some(asks_data) = wrapper.data.get_mut("a") {
-                                                            let asks: Vec<(String, String)> = serde_json::from_value(asks_data.take()).unwrap();
-                                                            let asks: Vec<(f32, f32)> = asks.into_iter().map(|(price, qty)| (price.parse().unwrap(), qty.parse().unwrap())).collect();
-                                                
-                                                            let _ = output.send(Event::DepthReceived(update_time, bids, asks, std::mem::take(&mut trades_buffer))).await;
-                                                        }
-                                                    }
-                                                } else if wrapper.stream.contains("kline") {
-                                                    if let Some(kline) = wrapper.data.get_mut("k") {
-                                                        let kline: Result<Kline, _> = serde_json::from_value(kline.take());
-                                                        match kline {
-                                                            Ok(kline) => {
-                                                                let _ = output.send(Event::KlineReceived(kline)).await;
+                                            Ok(data) => {
+                                                if let Some(inner_data) = data.get("data") {
+                                                    if let Some(event_type) = inner_data["e"].as_str() {
+                                                        match event_type {
+                                                            "aggTrade" => {
+                                                                let trade: Result<Trade, _> = serde_json::from_value(data["data"].clone());
+                                                                match trade {
+                                                                    Ok(trade) => {
+                                                                        trades_buffer.push(trade);
+                                                                    },
+                                                                    Err(e) => {
+                                                                        dbg!(e);
+                                                                    }
+                                                                }
                                                             },
-                                                            Err(e) => {
-                                                                dbg!(e);
-                                                            }
+                                                            "depthUpdate" => {
+                                                                let update_time = data["data"]["T"].as_u64().unwrap();
+
+                                                                if let Some(bids_data) = data["data"]["b"].as_array() {
+                                                                    let bids: Vec<(f32, f32)> = bids_data.iter().map(|bid| {
+                                                                        let price = bid[0].as_str().unwrap().parse().unwrap();
+                                                                        let qty = bid[1].as_str().unwrap().parse().unwrap();
+                                                                        (price, qty)
+                                                                    }).collect();
+
+                                                                    if let Some(asks_data) = data["data"]["a"].as_array() {
+                                                                        let asks: Vec<(f32, f32)> = asks_data.iter().map(|ask| {
+                                                                            let price = ask[0].as_str().unwrap().parse().unwrap();
+                                                                            let qty = ask[1].as_str().unwrap().parse().unwrap();
+                                                                            (price, qty)
+                                                                        }).collect();
+
+                                                                        let _ = output.send(Event::DepthReceived(update_time, bids, asks, std::mem::take(&mut trades_buffer))).await;
+                                                                    }
+                                                                }
+                                                            },
+                                                            "kline" => {
+                                                                if let Some(kline) = data["data"]["k"].as_object() {
+                                                                    let kline: Result<Kline, _> = serde_json::from_value(json!(kline));
+                                                                    match kline {
+                                                                        Ok(kline) => {
+                                                                            let _ = output.send(Event::KlineReceived(kline)).await;
+                                                                        },
+                                                                        Err(e) => {
+                                                                            dbg!(e);
+                                                                        }
+                                                                    }
+                                                                }
+                                                            },
+                                                            _ => {}
                                                         }
                                                     }
                                                 }
                                             },
                                             Err(e) => {
-                                                dbg!(e);
-                                                dbg!(message); 
+                                                dbg!(e, message);
                                             }
                                         }
                                     }
