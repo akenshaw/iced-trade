@@ -9,9 +9,9 @@ use crate::candlesticks::CandlestickChart;
 use std::cell::RefCell;
 use chrono::{DateTime, Utc};
 use iced::{
-    font, executor, widget::{
-        button, pick_list, text_input, Column, Container, Row, Space, Text,
-    }, Alignment, Application, Command, Element, Length, Renderer, Settings, Size, Subscription, Theme, Font, alignment,
+    alignment, executor, font, theme, widget::{
+        button, pick_list, space, text_input, tooltip, Column, Container, Row, Space, Text
+    }, Alignment, Application, Command, Element, Font, Length, Renderer, Settings, Size, Subscription, Theme
 };
 
 use iced::widget::pane_grid::{self, PaneGrid};
@@ -76,7 +76,8 @@ enum Icon {
     ResizeFull,
     ResizeSmall,
     Close,
-    Add
+    Add,
+    Layout,
 }
 
 impl From<Icon> for char {
@@ -88,6 +89,7 @@ impl From<Icon> for char {
             Icon::ResizeSmall => '\u{E803}',
             Icon::Close => '\u{E804}',
             Icon::Add => '\u{F0FE}',
+            Icon::Layout => '\u{E805}',
         }
     }
 }
@@ -851,12 +853,18 @@ impl Application for State {
 
         let locked_alt_text = text(char::from(Icon::Locked).to_string()).font(ICON);
         let unlocked_alt_text = text(char::from(Icon::Unlocked).to_string()).font(ICON);
-        let layout_lock_button = button(if self.pane_lock { locked_alt_text } else { unlocked_alt_text })
+        let layout_lock_button = button(
+            container(if self.pane_lock { locked_alt_text } else { unlocked_alt_text }).center_x().width(25))
             .on_press(Message::ToggleLayoutLock);
+
+        let add_alt_text = text(char::from(Icon::Layout).to_string()).font(ICON);
+        let add_pane_button = button(
+            container(add_alt_text).center_x().width(25))
+            .on_press(Message::Debug("Add Pane".to_string()));
 
         let menu_tpl_1 = |items| Menu::new(items).max_width(180.0).offset(15.0).spacing(5.0);
         let mb = menu_bar!(
-            (debug_button_s("New Pane"), {
+            (add_pane_button, {
                 menu_tpl_1(menu_items!(
                     (debug_button(PaneId::HeatmapChart, self.panes_open.get(&PaneId::HeatmapChart).unwrap_or(&false), self.first_pane))
                     (debug_button(PaneId::CandlestickChart, self.panes_open.get(&PaneId::CandlestickChart).unwrap_or(&false), self.first_pane))
@@ -901,7 +909,9 @@ impl Application for State {
                     .push(ws_controls)
                     .push(Space::with_width(Length::Fill))
                     .push(mb)                
-                    .push(layout_lock_button)
+                    .push(
+                        tooltip(layout_lock_button, "Layout Lock", tooltip::Position::Bottom).style(theme::Container::Box)
+                    )
             )
             .push(pane_grid);
 
@@ -945,9 +955,6 @@ fn debug_button<'a>(label: PaneId, is_open: &bool, pane_to_split: pane_grid::Pan
         labeled_button(&format!("{:?}", label), Message::Split(pane_grid::Axis::Vertical, pane_to_split, label))
     }
 }
-fn debug_button_s<'a>(label: &str) -> button::Button<'a, Message, iced::Theme, iced::Renderer> {
-    labeled_button(label, Message::Debug(label.into())).width(Length::Shrink)
-}
 fn labeled_button<'a>(
     label: &str,
     msg: Message,
@@ -964,6 +971,7 @@ fn disabled_labeled_button<'a>(
         .vertical_alignment(alignment::Vertical::Center);
     button(content)
         .padding([4, 8])
+        .width(150)
 }
 fn base_button<'a>(
     content: impl Into<Element<'a, Message, iced::Theme, iced::Renderer>>,
@@ -971,6 +979,7 @@ fn base_button<'a>(
 ) -> button::Button<'a, Message, iced::Theme, iced::Renderer> {
     button(content)
         .padding([4, 8])
+        .width(150)
         .on_press(msg)
 }
 

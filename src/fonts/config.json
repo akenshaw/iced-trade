@@ -41,6 +41,12 @@
       "css": "plus-squared",
       "code": 61694,
       "src": "fontawesome"
+    },
+    {
+      "uid": "5e9f01871d44e56b45ecbfd00f4dbc3a",
+      "css": "layout",
+      "code": 59397,
+      "src": "entypo"
     }
   ]
 }
