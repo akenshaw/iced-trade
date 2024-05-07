@@ -22,7 +22,7 @@ use iced_table::table;
 use futures::TryFutureExt;
 use plotters_iced::sample::lttb::DataPoint;
 
-use iced_aw::menu::{Item, Menu};
+use iced_aw::{menu::{Item, Menu}, split};
 use iced_aw::{menu_bar, menu_items};
 
 use std::collections::HashMap;
@@ -242,13 +242,13 @@ impl Application for State {
     type Theme = Theme;
 
     fn new(_flags: Self::Flags) -> (Self, Command<Self::Message>) {
-        let (panes, first_pane) = pane_grid::State::new(Pane::new(PaneId::TradePanel));
+        let (panes, first_pane) = pane_grid::State::new(Pane::new(PaneId::CandlestickChart));
 
         let mut panes_open = HashMap::new();
-        panes_open.insert(PaneId::HeatmapChart, false);
-        panes_open.insert(PaneId::CandlestickChart, false);
+        panes_open.insert(PaneId::HeatmapChart, true);
+        panes_open.insert(PaneId::CandlestickChart, true);
         panes_open.insert(PaneId::TimeAndSales, false);
-        panes_open.insert(PaneId::TradePanel, true);
+        panes_open.insert(PaneId::TradePanel, false);
         (
             Self { 
                 trades_chart: None,
@@ -318,6 +318,14 @@ impl Application for State {
                         }
                     }
                 }),
+                Command::perform(
+                    async move {
+                        (pane_grid::Axis::Horizontal, first_pane) 
+                    },
+                    move |(axis, pane)| {
+                        Message::Split(axis, pane, PaneId::HeatmapChart)
+                    }
+                ),
             ]),
         )
     }
@@ -338,9 +346,10 @@ impl Application for State {
             },
             Message::WsToggle() => {
                 self.ws_running =! self.ws_running;
-                dbg!(&self.ws_running);
-                if self.ws_running {
-                    self.trades_chart = Some(LineChart::new());
+
+                if self.ws_running {    
+                    let first_pane = self.first_pane;
+
                     let fetch_klines = Command::perform(
                         market_data::fetch_klines(self.selected_ticker.unwrap().to_string(), self.selected_timeframe.unwrap().to_string())
                             .map_err(|err| format!("{}", err)), 
@@ -397,35 +406,46 @@ impl Application for State {
                             }
                         }
                     );
-                    if self.panes.len() == 1 {
-                        let first_pane = self.first_pane;
 
-                        let split_pane = Command::perform(
-                            async move {
-                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                                (pane_grid::Axis::Horizontal, first_pane) 
-                            },
-                            |(axis, pane)| {
-                                Message::Split(axis, pane, PaneId::HeatmapChart)
+                    let mut commands = vec![fetch_klines, fetch_open_orders, fetch_open_positions, fetch_balance];
+                 
+                    for (pane_id, is_open) in &self.panes_open {
+                        if *is_open {
+                            if !self.panes.panes.values().any(|pane| pane.id == *pane_id) {
+                                let pane_id = *pane_id;
+                                let split_pane = Command::perform(
+                                    async move {
+                                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                        (pane_grid::Axis::Horizontal, first_pane) 
+                                    },
+                                    move |(axis, pane)| {
+                                        Message::Split(axis, pane, pane_id)
+                                    }
+                                );
+                                commands.push(split_pane);
                             }
-                        );
-                        let split_pane_again = Command::perform(
-                            async move {
-                                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-                                (pane_grid::Axis::Vertical, first_pane) 
-                            },
-                            |(axis, pane)| {
-                                Message::Split(axis, pane, PaneId::CandlestickChart)
+                            if *pane_id == PaneId::HeatmapChart {
+                                if self.trades_chart.is_none() {
+                                    self.trades_chart = Some(LineChart::new());
+                                }
                             }
-                        );
-                        Command::batch(vec![fetch_klines, fetch_open_orders, fetch_open_positions, fetch_balance, split_pane, split_pane_again])
-                    } else {
-                        Command::batch(vec![fetch_klines, fetch_open_orders, fetch_open_positions, fetch_balance])
+                            if *pane_id == PaneId::TimeAndSales {
+                                if self.time_and_sales.is_none() {
+                                    self.time_and_sales = Some(TimeAndSales::new());
+                                }
+                            }
+                        }
                     }
+
+                    Command::batch(commands)
+
                 } else {
+                    self.ws_state = WsState::Disconnected;
+
                     self.trades_chart = None;
                     self.candlestick_chart = None;
                     self.time_and_sales = None;
+
                     self.open_orders.clear();
                     self.orders_rows.clear();
                     self.position_rows.clear();
