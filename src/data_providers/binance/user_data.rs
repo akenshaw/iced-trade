@@ -205,7 +205,7 @@ pub struct AccBalance {
     pub balance_chg: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct FetchedBalance {
     pub asset: String,
     #[serde(with = "string_to_f32", rename = "balance")]
@@ -405,7 +405,7 @@ pub async fn cancel_order(order_id: String, api_key: &str, secret_key: &str) -> 
     }
 }
 
-pub async fn fetch_open_orders(symbol: String, api_key: &str, secret_key: &str) -> Result<Vec<NewOrder>, reqwest::Error> {
+pub async fn fetch_open_orders(symbol: String, api_key: &str, secret_key: &str) -> Result<Vec<NewOrder>, BinanceError> {
     let params = format!("timestamp={}&symbol={}", Utc::now().timestamp_millis(), symbol);
     let signature = sign_params(&params, secret_key);
 
@@ -438,7 +438,7 @@ pub async fn fetch_open_positions(api_key: &str, secret_key: &str) -> Result<Vec
     Ok(positions)
 }
 
-pub async fn fetch_acc_balance(api_key: &str, secret_key: &str) -> Result<Vec<FetchedBalance>, reqwest::Error> {
+pub async fn fetch_acc_balance(api_key: &str, secret_key: &str) -> Result<Vec<FetchedBalance>, BinanceError> {
     let params = format!("timestamp={}", Utc::now().timestamp_millis());
     let signature = sign_params(&params, secret_key);
 
@@ -454,7 +454,7 @@ pub async fn fetch_acc_balance(api_key: &str, secret_key: &str) -> Result<Vec<Fe
     Ok(acc_balance)
 }
 
-pub async fn get_listen_key(api_key: &str, secret_key: &str) -> Result<String, reqwest::Error> {
+pub async fn get_listen_key(api_key: &str, secret_key: &str) -> Result<String, BinanceError> {
     let params = format!("timestamp={}", Utc::now().timestamp_millis());
     let signature = sign_params(&params, secret_key);
 
@@ -467,7 +467,12 @@ pub async fn get_listen_key(api_key: &str, secret_key: &str) -> Result<String, r
     let res = client.post(&url).headers(headers).send().await?;
 
     let listen_key: serde_json::Value = res.json().await?;
-    Ok(listen_key["listenKey"].as_str().unwrap().to_string())
+    
+    if let Some(key) = listen_key.get("listenKey") {
+        Ok(key.as_str().unwrap().to_string())
+    } else {
+        Err(BinanceError::BinanceAPI("Failed to get listen key".to_string()))
+    }
 }
 
 fn sign_params(params: &str, secret_key: &str) -> String {
