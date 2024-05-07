@@ -64,8 +64,8 @@ impl Ticker {
 }
 
 // binance testnet api keys
-const API_KEY: &str = "d5811ebf135cc577a5d657216adaafb0b8631cdc85d6a1122f04438ffdb17af1";
-const SECRET_KEY: &str = "fd4b4e3286245d1eb6eda3c4538b52a3159dd35a3647ea8744a5f1d7d83a3bb5";
+const API_KEY: &str = "";
+const SECRET_KEY: &str = "";
 
 const ICON_BYTES: &[u8] = include_bytes!("fonts/icons.ttf");
 const ICON: Font = Font::with_name("icons");
@@ -148,7 +148,8 @@ pub enum Message {
     Debug(String),
 
     // Market&User data stream
-    UserListenKey(String),
+    UserKeySucceed(String),
+    UserKeyError,
     UserWsEvent(user_data::Event),
     TickerSelected(Ticker),
     TimeframeSelected(&'static str),
@@ -195,7 +196,7 @@ struct State {
     time_and_sales: Option<TimeAndSales>,
 
     // data streams
-    listen_key: String,
+    listen_key: Option<String>,
     selected_ticker: Option<Ticker>,
     selected_timeframe: Option<&'static str>,
     ws_state: WsState,
@@ -254,7 +255,7 @@ impl Application for State {
                 trades_chart: None,
                 candlestick_chart: None,
                 time_and_sales: None,
-                listen_key: "".to_string(),
+                listen_key: None,
                 selected_ticker: None,
                 selected_timeframe: Some("1m"),
                 ws_state: WsState::Disconnected,
@@ -307,17 +308,23 @@ impl Application for State {
             },
             Command::batch(vec![
                 font::load(ICON_BYTES).map(Message::FontLoaded),
-                Command::perform(user_data::get_listen_key(API_KEY, SECRET_KEY), |res| {
-                    match res {
-                        Ok(listen_key) => {
-                            Message::UserListenKey(listen_key)
-                        },
-                        Err(err) => {
-                            eprintln!("Error getting listen key: {}", err);
-                            Message::UserListenKey("".to_string())
+
+                if API_KEY != "" && SECRET_KEY != "" {
+                    Command::perform(user_data::get_listen_key(API_KEY, SECRET_KEY), |res| {
+                        match res {
+                            Ok(listen_key) => {
+                                Message::UserKeySucceed(listen_key)
+                            },
+                            Err(err) => {
+                                dbg!(err);
+                                Message::UserKeyError
+                            }
                         }
-                    }
-                }),
+                    })
+                } else {
+                    eprintln!("API keys not set");
+                    Command::none()
+                },
                 Command::perform(
                     async move {
                         (pane_grid::Axis::Horizontal, first_pane) 
@@ -357,58 +364,64 @@ impl Application for State {
                             Message::FetchEvent(klines)
                         }
                     );
-                    let fetch_open_orders = Command::perform(
-                        user_data::fetch_open_orders(self.selected_ticker.unwrap().to_string(), API_KEY, SECRET_KEY)
-                            .map_err(|err| format!("{}", err)),
-                        |orders| {
-                            match orders {
-                                Ok(orders) => {
-                                    Message::OrdersFetched(orders)
-                                },
-                                Err(err) => {
-                                    Message::OrderFailed(format!("{}", err))
-                                }
-                            }
-                        }
-                    );
-                    let fetch_open_positions = Command::perform(
-                        user_data::fetch_open_positions(API_KEY, SECRET_KEY)
-                            .map_err(|err| format!("{:?}", err)),
-                        |positions| {
-                            match positions {
-                                Ok(positions) => {
-                                    Message::UserWsEvent(user_data::Event::FetchedPositions(positions))
-                                },
-                                Err(err) => {
-                                    Message::OrderFailed(format!("{}", err))
-                                }
-                            }
-                        }
-                    );
-                    let fetch_balance = Command::perform(
-                        user_data::fetch_acc_balance(API_KEY, SECRET_KEY)
-                            .map_err(|err| format!("{:?}", err)),
-                        |balance| {
-                            match balance {
-                                Ok(balance) => {
-                                    let mut message = Message::OrderFailed("No USDT balance found".to_string());
-                                    for asset in balance {
-                                        if asset.asset == "USDT" {
-                                            message = Message::UpdateAccInfo(asset);
-                                            break;
-                                        }
-                                    }
-                                    message
-                                },
-                                Err(err) => {
-                                    Message::OrderFailed(format!("{}", err))
-                                }
-                            }
-                        }
-                    );
 
-                    let mut commands = vec![fetch_klines, fetch_open_orders, fetch_open_positions, fetch_balance];
-                 
+                    let mut commands = vec![fetch_klines];
+
+                    if let Some(_listen_key) = &self.listen_key {
+                        let fetch_open_orders = Command::perform(
+                            user_data::fetch_open_orders(self.selected_ticker.unwrap().to_string(), API_KEY, SECRET_KEY)
+                                .map_err(|err| format!("{:?}", err)),
+                            |orders| {
+                                match orders {
+                                    Ok(orders) => {
+                                        Message::OrdersFetched(orders)
+                                    },
+                                    Err(err) => {
+                                        Message::OrderFailed(format!("{}", err))
+                                    }
+                                }
+                            }
+                        );
+                        let fetch_open_positions = Command::perform(
+                            user_data::fetch_open_positions(API_KEY, SECRET_KEY)
+                                .map_err(|err| format!("{:?}", err)),
+                            |positions| {
+                                match positions {
+                                    Ok(positions) => {
+                                        Message::UserWsEvent(user_data::Event::FetchedPositions(positions))
+                                    },
+                                    Err(err) => {
+                                        Message::OrderFailed(format!("{}", err))
+                                    }
+                                }
+                            }
+                        );
+                        let fetch_balance = Command::perform(
+                            user_data::fetch_acc_balance(API_KEY, SECRET_KEY)
+                                .map_err(|err| format!("{:?}", err)),
+                            |balance| {
+                                match balance {
+                                    Ok(balance) => {
+                                        let mut message = Message::OrderFailed("No USDT balance found".to_string());
+                                        for asset in balance {
+                                            if asset.asset == "USDT" {
+                                                message = Message::UpdateAccInfo(asset);
+                                                break;
+                                            }
+                                        }
+                                        message
+                                    },
+                                    Err(err) => {
+                                        Message::OrderFailed(format!("{}", err))
+                                    }
+                                }
+                            }
+                        );
+                        commands.extend(vec![fetch_open_orders, fetch_open_positions, fetch_balance]);
+                    } else {
+                        eprintln!("No listen key found for user data fetch");
+                    }
+
                     for (pane_id, is_open) in &self.panes_open {
                         if *is_open {
                             if !self.panes.panes.values().any(|pane| pane.id == *pane_id) {
@@ -564,21 +577,27 @@ impl Application for State {
                 };
                 Command::none()
             },
-            Message::UserListenKey(listen_key) => {
-                if listen_key != "" {
-                    self.listen_key = listen_key;
-                } else {
-                    eprintln!("Error getting listen key");
-                }
+            Message::UserKeySucceed(listen_key) => {
+                self.listen_key = Some(listen_key);
+                Command::none()
+            },
+            Message::UserKeyError => {
+                eprintln!("Check API keys");
                 Command::none()
             },
 
             // Pane grid
             Message::Split(axis, pane, pane_id) => {
-                let result = self.panes.split(axis, pane, Pane::new(pane_id));
+                let focus_pane = if let Some((pane, _)) = self.panes.split(axis, pane, Pane::new(pane_id)) {
+                    Some(pane)
+                } else if let Some((&first_pane, _)) = self.panes.panes.iter().next() {
+                    self.panes.split(axis, first_pane, Pane::new(pane_id)).map(|(pane, _)| pane)
+                } else {
+                    None
+                };
 
-                if let Some((pane, _)) = result {
-                    self.focus = Some(pane);
+                if Some(focus_pane) != None {
+                    self.focus = focus_pane;
                     self.panes_open.insert(pane_id, true);
 
                     if pane_id == PaneId::TimeAndSales {
@@ -587,20 +606,8 @@ impl Application for State {
                     if pane_id == PaneId::HeatmapChart {
                         self.trades_chart = Some(LineChart::new());
                     }
-                } else {
-                    if let Some((&first_pane, _)) = self.panes.panes.iter().next() {
-                        self.focus = Some(first_pane);
-                        self.panes.split(axis, first_pane, Pane::new(pane_id));
-                        self.panes_open.insert(pane_id, true);
+                } 
 
-                        if pane_id == PaneId::TimeAndSales {
-                            self.time_and_sales = Some(TimeAndSales::new());
-                        }
-                        if pane_id == PaneId::HeatmapChart {
-                            self.trades_chart = Some(LineChart::new());
-                        }
-                    }
-                }
                 Command::none()
             },
             Message::Clicked(pane) => {
@@ -984,8 +991,8 @@ impl Application for State {
                 subscriptions.push(binance_market_stream);
             }
         }
-        if self.listen_key != "" {
-            let binance_user_stream = user_data::connect_user_stream(self.listen_key.clone()).map(Message::UserWsEvent);
+        if let Some(listen_key) = &self.listen_key {
+            let binance_user_stream = user_data::connect_user_stream(listen_key.to_string()).map(Message::UserWsEvent);
             subscriptions.push(binance_user_stream);
 
             let fetch_positions = user_data::fetch_user_stream(API_KEY, SECRET_KEY).map(Message::UserWsEvent);
@@ -1062,7 +1069,9 @@ fn view_content<'a, 'b: 'a>(
         PaneId::HeatmapChart => trades_chart.as_ref().map(LineChart::view).unwrap_or_else(|| Text::new("No data").into()),
         PaneId::CandlestickChart => candlestick_chart.as_ref().map(CandlestickChart::view).unwrap_or_else(|| Text::new("No data").into()),
         PaneId::TimeAndSales => time_and_sales.as_ref().map(TimeAndSales::view).unwrap_or_else(|| Text::new("No data").into()),
-        PaneId::TradePanel => {
+        PaneId::TradePanel => if account_info_usdt.is_none() {
+            Text::new("No account info").into()
+        } else {
             let form_select_0_button = button("Market Order")
                 .on_press(Message::TabSelected(0, "order_form".to_string()));
             let form_select_1_button = button("Limit Order") 
