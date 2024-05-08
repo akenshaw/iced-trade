@@ -1278,80 +1278,40 @@ impl TimeAndSales {
     }
     fn view(&self) -> Element<'_, Message> {
         let mut trades_column = Column::new()
-            .spacing(5)
-            .align_items(Alignment::Start);
+            .height(Length::Fill)
+            .padding(10);
     
         if self.recent_trades.is_empty() {
-            trades_column = trades_column.push(Text::new("No data").size(16));
+            trades_column = trades_column.push(Text::new("No trades").size(16));
         } else {
-            for trade in self.recent_trades.iter().rev() {
+            for trade in self.recent_trades.iter().rev().take(80) {
                 let trade_row = Row::new()
-                    .spacing(5)
-                    .align_items(Alignment::Center)
                     .push(
-                        container(Text::new(format!("{}", trade.time.format("%M:%S.%3f"))).size(16))
+                        container(Text::new(format!("{}", trade.time.format("%M:%S.%3f"))).size(14))
                             .width(Length::FillPortion(8)).center_x()
                     )
                     .push(
-                        container(Text::new(format!("{}", trade.price)).size(16))
+                        container(Text::new(format!("{}", trade.price)).size(14))
                             .width(Length::FillPortion(6))
                     )
                     .push(
-                        container(Text::new(if trade.is_sell { "Sell" } else { "Buy" }).size(16))
+                        container(Text::new(if trade.is_sell { "Sell" } else { "Buy" }).size(14))
                             .width(Length::FillPortion(4))
                     )
                     .push(
-                        container(Text::new(format!("{}", trade.qty)).size(16))
+                        container(Text::new(format!("{}", trade.qty)).size(14))
                             .width(Length::FillPortion(4))
                     );
-                trades_column = trades_column.push(container(trade_row).style(if trade.is_sell { style::sell_side_red } else { style::buy_side_green }));
+    
+                trades_column = trades_column.push(container(trade_row)
+                    .style(if trade.is_sell { style::sell_side_red } else { style::buy_side_green }));
+    
+                trades_column = trades_column.push(Container::new(Space::new(Length::Fixed(0.0), Length::Fixed(5.0))));
             }
         }
-
-        let content = Column::new()
-            .spacing(10)
-            .align_items(Alignment::Start)
-            .push(
-                Column::new()
-                    .spacing(10)
-                    .align_items(Alignment::Start)          
-                    .push(
-                        Column::new()
-                            .spacing(5)
-                            .align_items(Alignment::Start)
-                            .push(
-                                Row::new()
-                                    .spacing(5)
-                                    .align_items(Alignment::Center)
-                                    .push(
-                                        container(Text::new("Time").size(16))
-                                        .width(Length::FillPortion(8)).center_x()
-                                    )
-                                    .push(
-                                        container(Text::new("Price").size(16))
-                                        .width(Length::FillPortion(6))
-                                    )
-                                    .push(
-                                        container(Text::new("Side").size(16))
-                                        .width(Length::FillPortion(4))
-                                    )
-                                    .push(
-                                        container(Text::new("Qty").size(16))
-                                        .width(Length::FillPortion(4))
-                                    ),
-                            )
-                            .push(trades_column),
-                    ),
-            );
-
-        Container::new(content)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .padding(10)
-            .center_x()
-            .center_y()
-            .into()
-    }
+    
+        trades_column.into()  
+    }    
 }
 
 mod style {
@@ -1407,7 +1367,7 @@ mod style {
 
         container::Appearance {
             border: Border {
-                width: 2.0,
+                width: 1.0,
                 color: palette.danger.strong.color,
                 ..Border::default()
             },
@@ -1419,7 +1379,7 @@ mod style {
 
         container::Appearance {
             border: Border {
-                width: 2.0,
+                width: 1.0,
                 color: palette.success.strong.color,
                 ..Border::default()
             },
