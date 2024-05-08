@@ -11,7 +11,7 @@ use chrono::{NaiveDateTime, DateTime, Utc};
 use iced::{
     alignment, executor, font, theme, widget::{
         button, pick_list, text_input, tooltip, Column, Container, Row, Space, Text
-    }, Alignment, Application, Command, Element, Font, Length, Renderer, Settings, Size, Subscription, Theme
+    }, Alignment, Application, Command, Element, Font, Length, Renderer, Settings, Size, Subscription, Theme, Color
 };
 
 use iced::widget::pane_grid::{self, PaneGrid};
@@ -1276,6 +1276,8 @@ impl TimeAndSales {
         let mut trades_column = Column::new()
             .height(Length::Fill)
             .padding(10);
+
+        let max_qty = self.recent_trades.iter().map(|trade| trade.qty).fold(0.0, f32::max);
     
         if self.recent_trades.is_empty() {
             trades_column = trades_column.push(Text::new("No trades").size(16));
@@ -1298,9 +1300,11 @@ impl TimeAndSales {
                         container(Text::new(format!("{}", trade.qty)).size(14))
                             .width(Length::FillPortion(4))
                     );
+
+                let color_alpha = trade.qty / max_qty;
     
                 trades_column = trades_column.push(container(trade_row)
-                    .style(if trade.is_sell { style::sell_side_red } else { style::buy_side_green }));
+                    .style(if trade.is_sell { style::sell_side_red(color_alpha) } else { style::buy_side_green(color_alpha) }));
     
                 trades_column = trades_column.push(Container::new(Space::new(Length::Fixed(0.0), Length::Fixed(5.0))));
             }
@@ -1311,8 +1315,9 @@ impl TimeAndSales {
 }
 
 mod style {
+    use iced::advanced::graphics::color;
     use iced::widget::container;
-    use iced::{Border, Theme};
+    use iced::{Border, Color, Theme};
 
     pub fn title_bar_active(theme: &Theme) -> container::Appearance {
         let palette = theme.extended_palette();
@@ -1336,9 +1341,9 @@ mod style {
         let palette = theme.extended_palette();
 
         container::Appearance {
-            //background: Some(palette.background.weak.color.into()),
+            background: Some(Color::BLACK.into()),
             border: Border {
-                width: 2.0,
+                width: 1.0,
                 color: palette.background.strong.color,
                 ..Border::default()
             },
@@ -1349,34 +1354,36 @@ mod style {
         let palette = theme.extended_palette();
 
         container::Appearance {
-            //background: Some(palette.background.weak.color.into()),
+            background: Some(Color::BLACK.into()),
             border: Border {
-                width: 2.0,
+                width: 1.0,
                 color: palette.primary.strong.color,
                 ..Border::default()
             },
             ..Default::default()
         }
     }
-    pub fn sell_side_red(theme: &Theme) -> container::Appearance {
-        let palette = theme.extended_palette();
+    pub fn sell_side_red(color_alpha: f32) -> container::Appearance {
+        //let palette = theme.extended_palette();
 
         container::Appearance {
+            text_color: Color::from_rgba(192.0 / 255.0, 80.0 / 255.0, 77.0 / 255.0, 1.0).into(),
             border: Border {
                 width: 1.0,
-                color: palette.danger.strong.color,
+                color: Color::from_rgba(192.0 / 255.0, 80.0 / 255.0, 77.0 / 255.0, color_alpha).into(),
                 ..Border::default()
             },
             ..Default::default()
         }
     }
-    pub fn buy_side_green(theme: &Theme) -> container::Appearance {
-        let palette = theme.extended_palette();
+    pub fn buy_side_green(color_alpha: f32) -> container::Appearance {
+        //let palette = theme.extended_palette();
 
         container::Appearance {
+            text_color: Color::from_rgba(81.0 / 255.0, 205.0 / 255.0, 160.0 / 255.0, 1.0).into(),
             border: Border {
                 width: 1.0,
-                color: palette.success.strong.color,
+                color: Color::from_rgba(81.0 / 255.0, 205.0 / 255.0, 160.0 / 255.0, color_alpha).into(),
                 ..Border::default()
             },
             ..Default::default()
