@@ -7,10 +7,10 @@ use crate::heatmap::LineChart;
 use crate::candlesticks::CandlestickChart;
 
 use std::cell::RefCell;
-use chrono::{offset::LocalResult, DateTime, Utc};
+use chrono::{NaiveDateTime, DateTime, Utc};
 use iced::{
     alignment, executor, font, theme, widget::{
-        button, pick_list, space, text_input, tooltip, Column, Container, Row, Space, Text
+        button, pick_list, text_input, tooltip, Column, Container, Row, Space, Text
     }, Alignment, Application, Command, Element, Font, Length, Renderer, Settings, Size, Subscription, Theme
 };
 
@@ -22,7 +22,7 @@ use iced_table::table;
 use futures::TryFutureExt;
 use plotters_iced::sample::lttb::DataPoint;
 
-use iced_aw::{menu::{Item, Menu}, split};
+use iced_aw::menu::{Item, Menu};
 use iced_aw::{menu_bar, menu_items};
 
 use std::collections::HashMap;
@@ -76,7 +76,6 @@ enum Icon {
     ResizeFull,
     ResizeSmall,
     Close,
-    Add,
     Layout,
 }
 
@@ -88,7 +87,6 @@ impl From<Icon> for char {
             Icon::ResizeFull => '\u{E802}',
             Icon::ResizeSmall => '\u{E803}',
             Icon::Close => '\u{E804}',
-            Icon::Add => '\u{F0FE}',
             Icon::Layout => '\u{E805}',
         }
     }
@@ -1220,13 +1218,13 @@ fn view_controls<'a>(
     if total_panes > 1 {
         let buttons = if is_maximized {
             vec![
-                (text(char::from(Icon::ResizeSmall).to_string()).font(ICON).size(14), Message::Restore),
-                (text(char::from(Icon::Close).to_string()).font(ICON).size(14), Message::Close(pane)),
+                (container(text(char::from(Icon::ResizeSmall).to_string()).font(ICON).size(14)).center_x().center_y().width(30), Message::Restore),
+                (container(text(char::from(Icon::Close).to_string()).font(ICON).size(14)).center_x().center_y().width(30), Message::Close(pane)),
             ]
         } else {
             vec![
-                (text(char::from(Icon::ResizeFull).to_string()).font(ICON).size(14), Message::Maximize(pane)),
-                (text(char::from(Icon::Close).to_string()).font(ICON).size(14), Message::Close(pane)), 
+                (container(text(char::from(Icon::ResizeFull).to_string()).font(ICON).size(14)).center_x().center_y().width(30), Message::Maximize(pane)),
+                (container(text(char::from(Icon::Close).to_string()).font(ICON).size(14)).center_x().center_y().width(30), Message::Close(pane)), 
             ]
         };
 
@@ -1242,8 +1240,6 @@ fn view_controls<'a>(
 }
 
 use crate::market_data::Trade;
-use chrono::NaiveDateTime;
-
 struct ConvertedTrade {
     time: NaiveDateTime,
     price: f32,
@@ -1271,8 +1267,8 @@ impl TimeAndSales {
             self.recent_trades.push(converted_trade);
         }
 
-        if self.recent_trades.len() > 50 {
-            let drain_to = self.recent_trades.len() - 50;
+        if self.recent_trades.len() > 300 {
+            let drain_to = self.recent_trades.len() - 300;
             self.recent_trades.drain(0..drain_to);
         }
     }
