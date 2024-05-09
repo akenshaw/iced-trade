@@ -494,7 +494,7 @@ impl Application for State {
                     }
                     market_data::Event::DepthReceived(depth_update, bids, asks, trades_buffer) => {
                         if let Some(time_and_sales) = &mut self.time_and_sales {
-                            time_and_sales.update(trades_buffer.clone());
+                            time_and_sales.update(&trades_buffer);
                         } 
                         if let Some(chart) = &mut self.trades_chart {
                             chart.update(depth_update, trades_buffer, bids, asks);
@@ -527,7 +527,7 @@ impl Application for State {
                     }
                     user_data::Event::NewPositions(positions) => {
                         for position in positions {
-                            PosTableRow::remove_row(position.symbol.clone(), &mut self.position_rows);
+                            PosTableRow::remove_row(&position.symbol, &mut self.position_rows);
                             if position.pos_amt != 0.0 {
                                 let position_in_table = user_data::PositionInTable { 
                                     symbol: position.symbol.clone(),
@@ -1255,7 +1255,7 @@ impl TimeAndSales {
             recent_trades: Vec::new(),
         }
     }
-    fn update(&mut self, trades_buffer: Vec<Trade>) {
+    fn update(&mut self, trades_buffer: &Vec<Trade>) {
         for trade in trades_buffer {
             let trade_time = NaiveDateTime::from_timestamp(trade.time as i64 / 1000, (trade.time % 1000) as u32 * 1_000_000);
             let converted_trade = ConvertedTrade {
@@ -1547,8 +1547,8 @@ impl PosTableRow {
             position,
         }
     }
-    fn remove_row(symbol: String, rows: &mut Vec<PosTableRow>) {
-        if let Some(index) = rows.iter().position(|r| r.position.symbol == symbol) {
+    fn remove_row(symbol: &String, rows: &mut Vec<PosTableRow>) {
+        if let Some(index) = rows.iter().position(|r| r.position.symbol == *symbol) {
             rows.remove(index);
         }
     }
