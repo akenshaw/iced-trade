@@ -229,8 +229,6 @@ struct State {
     resize_columns_enabled: bool,
     footer_enabled: bool,
     min_width_enabled: bool,
-
-    
     account_info_usdt: Option<user_data::FetchedBalance>,
 }
 
@@ -833,17 +831,10 @@ impl Application for State {
             let is_focused = focus == Some(id);
     
             let content: pane_grid::Content<'_, Message, _, Renderer> = pane_grid::Content::new(responsive(move |size| {
-                let pane_id = match pane.id {
-                    PaneId::HeatmapChart => PaneId::HeatmapChart,
-                    PaneId::CandlestickChart => PaneId::CandlestickChart,
-                    PaneId::TimeAndSales => PaneId::TimeAndSales,
-                    PaneId::TradePanel => PaneId::TradePanel,
-                };
                 view_content(
-                    id, 
+                    pane.id, 
                     total_panes, 
                     size, 
-                    pane_id, 
                     &self.time_and_sales,
                     &self.trades_chart, 
                     &self.candlestick_chart, 
@@ -881,7 +872,6 @@ impl Application for State {
                 PaneId::TimeAndSales => "Time & Sales",
                 PaneId::TradePanel => "Trading Panel",
             };            
-    
             if is_focused {
                 let title_bar = pane_grid::TitleBar::new(title)
                     .controls(view_controls(
@@ -903,18 +893,22 @@ impl Application for State {
         .on_drag(Message::Dragged)
         .on_resize(10, Message::Resized);
 
-        let ws_button = button(if self.ws_running { "Disconnect" } else { "Connect" })
-            .on_press(Message::WsToggle());
-
-        let locked_alt_text = text(char::from(Icon::Locked).to_string()).font(ICON);
-        let unlocked_alt_text = text(char::from(Icon::Unlocked).to_string()).font(ICON);
         let layout_lock_button = button(
-            container(if self.pane_lock { locked_alt_text } else { unlocked_alt_text }).center_x().width(25))
+            container(
+                if self.pane_lock { 
+                    text(char::from(Icon::Locked).to_string()).font(ICON) 
+                } else { 
+                    text(char::from(Icon::Unlocked).to_string()).font(ICON) 
+                })
+                .center_x().width(25)
+            )
             .on_press(Message::ToggleLayoutLock);
 
-        let add_alt_text = text(char::from(Icon::Layout).to_string()).font(ICON);
         let add_pane_button = button(
-            container(add_alt_text).center_x().width(25))
+            container(
+                text(char::from(Icon::Layout).to_string()).font(ICON))
+                .center_x().width(25)
+            )
             .on_press(Message::Debug("Add Pane".to_string()));
 
         let menu_tpl_1 = |items| Menu::new(items).max_width(180.0).offset(15.0).spacing(5.0);
@@ -932,7 +926,9 @@ impl Application for State {
         let mut ws_controls = Row::new()
             .spacing(10)
             .align_items(Alignment::Center)
-            .push(ws_button);
+            .push(button(if self.ws_running { "Disconnect" } else { "Connect" })
+                .on_press(Message::WsToggle())
+            );
 
             if !self.ws_running {
                 let symbol_pick_list = pick_list(
@@ -1040,10 +1036,9 @@ fn base_button<'a>(
 }
 
 fn view_content<'a, 'b: 'a>(
-    _pane: pane_grid::Pane,
+    pane_id: PaneId,
     _total_panes: usize,
     _size: Size,
-    pane_id: PaneId,
     time_and_sales: &'a Option<TimeAndSales>,
     trades_chart: &'a Option<LineChart>,
     candlestick_chart: &'a Option<CandlestickChart>,
@@ -1216,17 +1211,15 @@ fn view_controls<'a>(
     let mut row = row![].spacing(5);
 
     if total_panes > 1 {
-        let buttons = if is_maximized {
-            vec![
-                (container(text(char::from(Icon::ResizeSmall).to_string()).font(ICON).size(14)).center_x().center_y().width(30), Message::Restore),
-                (container(text(char::from(Icon::Close).to_string()).font(ICON).size(14)).center_x().center_y().width(30), Message::Close(pane)),
-            ]
+        let (icon, message) = if is_maximized {
+            (Icon::ResizeSmall, Message::Restore)
         } else {
-            vec![
-                (container(text(char::from(Icon::ResizeFull).to_string()).font(ICON).size(14)).center_x().center_y().width(30), Message::Maximize(pane)),
-                (container(text(char::from(Icon::Close).to_string()).font(ICON).size(14)).center_x().center_y().width(30), Message::Close(pane)), 
-            ]
+            (Icon::ResizeFull, Message::Maximize(pane))
         };
+        let buttons = vec![
+            (container(text(char::from(icon).to_string()).font(ICON).size(14)).width(25).center_x(), message),
+            (container(text(char::from(Icon::Close).to_string()).font(ICON).size(14)).width(25).center_x(), Message::Close(pane)),
+        ];
 
         for (content, message) in buttons {        
             row = row.push(
@@ -1315,7 +1308,6 @@ impl TimeAndSales {
 }
 
 mod style {
-    use iced::advanced::graphics::color;
     use iced::widget::container;
     use iced::{Border, Color, Theme};
 
