@@ -8,11 +8,10 @@ use charts::{heatmap, candlesticks};
 use crate::heatmap::LineChart;
 use crate::candlesticks::CandlestickChart;
 
-use core::sync;
 use std::cell::RefCell;
 use chrono::{NaiveDateTime, DateTime, Utc};
 use iced::{
-    advanced::overlay, alignment, executor, font, theme, time, widget::{
+    alignment, executor, font, theme, widget::{
         button, checkbox, pick_list, text_input, tooltip, Column, Container, Row, Slider, Space, Text
     }, Alignment, Application, Color, Command, Element, Font, Length, Renderer, Settings, Size, Subscription, Theme
 };
