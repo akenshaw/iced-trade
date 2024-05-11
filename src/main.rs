@@ -374,22 +374,36 @@ impl Application for State {
             Message::WsToggle() => {
                 self.ws_running =! self.ws_running;
 
-                if self.ws_running {    
-                    let first_pane = self.first_pane;
-
+                if self.ws_running {
+                    let selected_ticker = match &self.selected_ticker {
+                        Some(ticker) => ticker,
+                        None => {
+                            eprintln!("No ticker selected");
+                            self.ws_running = false;
+                            return Command::none();
+                        }
+                    };
+                    let selected_timeframe = match &self.selected_timeframe {
+                        Some(timeframe) => timeframe,
+                        None => {
+                            eprintln!("No timeframe selected");
+                            self.ws_running = false;
+                            return Command::none();
+                        }
+                    };
+            
                     let fetch_klines = Command::perform(
-                        market_data::fetch_klines(self.selected_ticker.unwrap().to_string(), self.selected_timeframe.unwrap().to_string())
+                        market_data::fetch_klines(selected_ticker.to_string(), selected_timeframe.to_string())
                             .map_err(|err| format!("{}", err)), 
                         |klines| {
                             Message::FetchEvent(klines)
                         }
                     );
-
                     let mut commands = vec![fetch_klines];
 
                     if let Some(_listen_key) = &self.listen_key {
                         let fetch_open_orders = Command::perform(
-                            user_data::fetch_open_orders(self.selected_ticker.unwrap().to_string(), API_KEY, SECRET_KEY)
+                            user_data::fetch_open_orders(selected_ticker.to_string(), API_KEY, SECRET_KEY)
                                 .map_err(|err| format!("{:?}", err)),
                             |orders| {
                                 match orders {
@@ -442,6 +456,8 @@ impl Application for State {
                         eprintln!("No listen key found for user data fetch");
                     }
 
+                    let first_pane = self.first_pane;
+
                     for (pane_id, is_open) in &self.panes_open {
                         if *is_open {
                             if !self.panes.panes.values().any(|pane| pane.id == *pane_id) {
@@ -489,7 +505,7 @@ impl Application for State {
             Message::FetchEvent(klines) => {
                 match klines {
                     Ok(klines) => {
-                        let timeframe_in_minutes = match self.selected_timeframe.unwrap() {
+                        let timeframe_in_minutes = match self.selected_timeframe.unwrap_or_else(|| "1m") {
                             "1m" => 1,
                             "3m" => 3,
                             "5m" => 5,
@@ -997,32 +1013,36 @@ impl Application for State {
             })
         );
 
+        let ws_button = if self.selected_ticker.is_some() {
+            button(if self.ws_running { "Disconnect" } else { "Connect" })
+                .on_press(Message::WsToggle())
+        } else {
+            button(if self.ws_running { "Disconnect" } else { "Connect" })
+        };
         let mut ws_controls = Row::new()
             .spacing(10)
             .align_items(Alignment::Center)
-            .push(button(if self.ws_running { "Disconnect" } else { "Connect" })
-                .on_press(Message::WsToggle())
-            );
+            .push(ws_button);
 
-            if !self.ws_running {
-                let symbol_pick_list = pick_list(
-                    &Ticker::ALL[..],
-                    self.selected_ticker,
-                    Message::TickerSelected,
-                )
-                .placeholder("Choose a ticker...");
-            
-                let timeframe_pick_list = pick_list(
-                    &["1m", "3m", "5m", "15m", "30m"][..],
-                    self.selected_timeframe,
-                    Message::TimeframeSelected,
-                );
-            
-                ws_controls = ws_controls.push(timeframe_pick_list)
-                    .push(symbol_pick_list);
-            } else {
-                ws_controls = ws_controls.push(Text::new(self.selected_ticker.unwrap().to_string()).size(20));
-            }
+        if !self.ws_running {
+            let symbol_pick_list = pick_list(
+                &Ticker::ALL[..],
+                self.selected_ticker,
+                Message::TickerSelected,
+            )
+            .placeholder("Choose a ticker...");
+        
+            let timeframe_pick_list = pick_list(
+                &["1m", "3m", "5m", "15m", "30m"][..],
+                self.selected_timeframe,
+                Message::TimeframeSelected,
+            );
+        
+            ws_controls = ws_controls.push(timeframe_pick_list)
+                .push(symbol_pick_list);
+        } else {
+            ws_controls = ws_controls.push(Text::new(self.selected_ticker.unwrap_or_else(|| { dbg!("No ticker found"); Ticker::BTCUSDT } ).to_string()).size(20));
+        }
 
         let content = Column::new()
             .spacing(10)
@@ -1053,11 +1073,13 @@ impl Application for State {
     fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = Vec::new();
     
-        if let Some(selected_ticker) = &self.selected_ticker {
-            if self.ws_running {
-                let binance_market_stream = market_data::connect_market_stream(selected_ticker.to_string(), self.selected_timeframe.unwrap().to_string()).map(Message::MarketWsEvent);
-                subscriptions.push(binance_market_stream);
-            }
+        if self.ws_running {
+            self.selected_ticker.as_ref().and_then(|ticker| {
+                self.selected_timeframe.as_ref().map(|timeframe| {
+                    let binance_market_stream = market_data::connect_market_stream(ticker.to_string(), timeframe.to_string()).map(Message::MarketWsEvent);
+                    subscriptions.push(binance_market_stream);
+                })
+            });
         }
         if let Some(listen_key) = &self.listen_key {
             let binance_user_stream = user_data::connect_user_stream(listen_key.to_string()).map(Message::UserWsEvent);
@@ -1066,6 +1088,7 @@ impl Application for State {
             let fetch_positions = user_data::fetch_user_stream(API_KEY, SECRET_KEY).map(Message::UserWsEvent);
             subscriptions.push(fetch_positions);
         }
+        
         Subscription::batch(subscriptions)
     }    
 
