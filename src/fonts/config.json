@@ -37,15 +37,15 @@
       "src": "fontawesome"
     },
     {
-      "uid": "1a5cfa186647e8c929c2b17b9fc4dac1",
-      "css": "plus-squared",
-      "code": 61694,
-      "src": "fontawesome"
-    },
-    {
       "uid": "5e9f01871d44e56b45ecbfd00f4dbc3a",
       "css": "layout",
       "code": 59397,
+      "src": "entypo"
+    },
+    {
+      "uid": "bc64550dd022ce21604f97309b346cea",
+      "css": "cog",
+      "code": 59398,
       "src": "entypo"
     }
   ]
