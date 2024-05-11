@@ -19,6 +19,7 @@ pub struct LineChart {
     cache: Cache,
     data_points: VecDeque<(DateTime<Utc>, f32, f32, bool)>,
     depth: VecDeque<(DateTime<Utc>, Vec<(f32, f32)>, Vec<(f32, f32)>)>,
+    size_filter: f32,
 }
 impl LineChart {
     pub fn new() -> Self {
@@ -26,7 +27,11 @@ impl LineChart {
             cache: Cache::new(),
             data_points: VecDeque::new(),
             depth: VecDeque::new(),
+            size_filter: 0.0,
         }
+    }
+    pub fn set_size_filter(&mut self, size_filter: f32) {
+        self.size_filter = size_filter;
     }
 
     pub fn update(&mut self, depth_update: u64, mut trades_buffer: Vec<Trade>, bids: Vec<(f32, f32)>, asks: Vec<(f32, f32)>) {
@@ -97,7 +102,7 @@ impl Chart<Message> for LineChart {
             let mut y_min = f32::MAX;
             let mut y_max = f32::MIN;
             let recent_data_points: Vec<_> = self.data_points.iter().filter_map(|&(time, price, qty, bool)| {
-                if time >= oldest_time && time <= newest_time {
+                if time >= oldest_time && time <= newest_time && price*qty > self.size_filter {
                     Some((time, price, qty, bool))
                 } else {
                     None

@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 mod data_providers;
 use data_providers::binance::{user_data, market_data};
 mod charts;
@@ -6,12 +8,13 @@ use charts::{heatmap, candlesticks};
 use crate::heatmap::LineChart;
 use crate::candlesticks::CandlestickChart;
 
+use core::sync;
 use std::cell::RefCell;
 use chrono::{NaiveDateTime, DateTime, Utc};
 use iced::{
-    alignment, executor, font, theme, widget::{
-        button, pick_list, text_input, tooltip, Column, Container, Row, Space, Text
-    }, Alignment, Application, Command, Element, Font, Length, Renderer, Settings, Size, Subscription, Theme, Color
+    advanced::overlay, alignment, executor, font, theme, time, widget::{
+        button, checkbox, pick_list, text_input, tooltip, Column, Container, Row, Slider, Space, Text
+    }, Alignment, Application, Color, Command, Element, Font, Length, Renderer, Settings, Size, Subscription, Theme
 };
 
 use iced::widget::pane_grid::{self, PaneGrid};
@@ -23,7 +26,7 @@ use futures::TryFutureExt;
 use plotters_iced::sample::lttb::DataPoint;
 
 use iced_aw::menu::{Item, Menu};
-use iced_aw::{menu_bar, menu_items};
+use iced_aw::{menu_bar, menu_items, modal, Card};
 
 use std::collections::HashMap;
 
@@ -77,6 +80,7 @@ enum Icon {
     ResizeSmall,
     Close,
     Layout,
+    Cog,
 }
 
 impl From<Icon> for char {
@@ -88,6 +92,7 @@ impl From<Icon> for char {
             Icon::ResizeSmall => '\u{E803}',
             Icon::Close => '\u{E804}',
             Icon::Layout => '\u{E805}',
+            Icon::Cog => '\u{E806}',
         }
     }
 }
@@ -124,11 +129,15 @@ pub enum PaneId {
 #[derive(Debug, Clone, Copy)]
 struct Pane {
     id: PaneId,
+    show_modal: bool,
 }
 
 impl Pane {
     fn new(id: PaneId) -> Self {
-        Self { id }
+        Self { 
+            id,
+            show_modal: false,
+        }
     }
 }
 
@@ -186,6 +195,14 @@ pub enum Message {
 
     // Font
     FontLoaded(Result<(), font::Error>),
+
+    // Modal
+    OpenModal(pane_grid::Pane),
+    CloseModal,
+
+    // Slider
+    SliderChanged(PaneId, f32),
+    SyncWithHeatmap(bool),
 }
 
 struct State {
@@ -230,6 +247,10 @@ struct State {
     footer_enabled: bool,
     min_width_enabled: bool,
     account_info_usdt: Option<user_data::FetchedBalance>,
+
+    size_filter_timesales: f32,
+    size_filter_heatmap: f32,
+    sync_heatmap: bool,
 }
 
 impl Application for State {
@@ -248,6 +269,10 @@ impl Application for State {
         panes_open.insert(PaneId::TradePanel, false);
         (
             Self { 
+                size_filter_timesales: 0.0,
+                size_filter_heatmap: 0.0,
+                sync_heatmap: false,
+
                 trades_chart: None,
                 candlestick_chart: None,
                 time_and_sales: None,
@@ -820,6 +845,52 @@ impl Application for State {
                 dbg!("Font loaded");
                 Command::none()
             },
+
+            Message::OpenModal(pane) => {
+                self.panes.get_mut(pane).map(|pane| {
+                    pane.show_modal = true;
+                });
+                Command::none()
+            },
+            Message::CloseModal => {
+                for pane in self.panes.panes.values_mut() {
+                    pane.show_modal = false;
+                }
+                Command::none()
+            },
+
+            Message::SliderChanged(pane_id, value) => {
+                if pane_id == PaneId::TimeAndSales {
+                    self.size_filter_timesales = value;
+                    if self.sync_heatmap {
+                        self.size_filter_heatmap = value;
+                    }
+                } else if pane_id == PaneId::HeatmapChart {
+                    self.size_filter_heatmap = value;
+                    self.sync_heatmap = false;
+                }
+
+                self.trades_chart.as_mut().map(|chart| {
+                    chart.set_size_filter(self.size_filter_heatmap);
+                });
+                self.time_and_sales.as_mut().map(|time_and_sales| {
+                    time_and_sales.set_size_filter(self.size_filter_timesales);
+                });
+
+                Command::none()
+            },
+            Message::SyncWithHeatmap(sync) => {
+                self.sync_heatmap = sync;
+            
+                if sync {
+                    self.size_filter_heatmap = self.size_filter_timesales;
+                    self.trades_chart.as_mut().map(|chart| {
+                        chart.set_size_filter(self.size_filter_heatmap);
+                    });
+                }
+            
+                Command::none()
+            },
         }
     }
 
@@ -833,6 +904,10 @@ impl Application for State {
             let content: pane_grid::Content<'_, Message, _, Renderer> = pane_grid::Content::new(responsive(move |size| {
                 view_content(
                     pane.id, 
+                    pane.show_modal,
+                    &self.size_filter_heatmap,
+                    &self.size_filter_timesales,
+                    self.sync_heatmap,
                     total_panes, 
                     size, 
                     &self.time_and_sales,
@@ -1037,6 +1112,10 @@ fn base_button<'a>(
 
 fn view_content<'a, 'b: 'a>(
     pane_id: PaneId,
+    show_modal: bool,
+    size_filter_heatmap: &'a f32,
+    size_filter_timesales: &'a f32,
+    sync_heatmap: bool,
     _total_panes: usize,
     _size: Size,
     time_and_sales: &'a Option<TimeAndSales>,
@@ -1058,10 +1137,116 @@ fn view_content<'a, 'b: 'a>(
     table_active_tab: &'b usize,
     account_info_usdt: &'b Option<user_data::FetchedBalance>,
 ) -> Element<'a, Message> {
-    let content = match pane_id {
-        PaneId::HeatmapChart => trades_chart.as_ref().map(LineChart::view).unwrap_or_else(|| Text::new("No data").into()),
-        PaneId::CandlestickChart => candlestick_chart.as_ref().map(CandlestickChart::view).unwrap_or_else(|| Text::new("No data").into()),
-        PaneId::TimeAndSales => time_and_sales.as_ref().map(TimeAndSales::view).unwrap_or_else(|| Text::new("No data").into()),
+    let content: Element<Message, Theme, Renderer> = match pane_id {
+        PaneId::HeatmapChart => {
+            let underlay = trades_chart.as_ref().map(LineChart::view).unwrap_or_else(|| Text::new("No data").into());
+            let overlay = if show_modal {
+                Some(
+                    Card::new(
+                        Text::new("Heatmap Chart -> Settings"),
+                        Column::new()
+                            .push(Text::new("Size Filtering"))
+                            .push(
+                                Slider::new(0.0..=50000.0, *size_filter_heatmap, move |value| Message::SliderChanged(PaneId::HeatmapChart, value))
+                                    .step(500.0)
+                            ),
+                    )
+                    .foot(
+                        Row::new()
+                            .spacing(10)
+                            .padding(5)
+                            .width(Length::Fill)
+                            .push(
+                                Text::new(format!("${}", size_filter_heatmap)).size(16)
+                            )
+                    )
+                    .max_width(500.0)
+                    .on_close(Message::CloseModal)
+                )
+            } else {
+                None
+            };
+
+            modal(underlay, overlay)
+                .backdrop(Message::CloseModal)
+                .on_esc(Message::CloseModal)
+                .align_y(alignment::Vertical::Center)
+                .into()
+        }, 
+        
+        PaneId::CandlestickChart => { 
+            let underlay = candlestick_chart.as_ref().map(CandlestickChart::view).unwrap_or_else(|| Text::new("No data").into());
+            let overlay = if show_modal {
+                Some(
+                    Card::new(
+                        Text::new("Candlestick Chart -> Settings"),
+                        Column::new()
+                            .push(Text::new("Test"))
+                    )
+                    .foot(
+                        Row::new()
+                            .spacing(10)
+                            .padding(5)
+                            .width(Length::Fill)
+                            .push(
+                                Text::new("Footer").size(16)
+                            )
+                    )
+                    .max_width(500.0)
+                    .on_close(Message::CloseModal)
+                )
+            } else {
+                None
+            };
+
+            modal(underlay, overlay)
+                .backdrop(Message::CloseModal)
+                .on_esc(Message::CloseModal)
+                .align_y(alignment::Vertical::Center)
+                .into()
+        },
+        
+        PaneId::TimeAndSales => { 
+            let underlay = time_and_sales.as_ref().map(TimeAndSales::view).unwrap_or_else(|| Text::new("No data").into()); 
+            let overlay = if show_modal {
+                Some(
+                    Card::new(
+                        Text::new("Time & Sales -> Settings"),
+                        Column::new()
+                            .push(Text::new("Size Filtering"))
+                            .push(
+                                Slider::new(0.0..=50000.0, *size_filter_timesales, move |value| Message::SliderChanged(PaneId::TimeAndSales, value))
+                                    .step(500.0)
+                            ),
+                    )
+                    .foot(
+                        Row::new()
+                            .spacing(10)
+                            .padding(5)
+                            .width(Length::Fill)
+                            .push(
+                                Text::new(format!("${}", size_filter_timesales)).size(16)
+                            )
+                            .push(Space::with_width(Length::Fill))
+                            .push(
+                                checkbox("Sync Heatmap with", sync_heatmap)
+                                    .on_toggle(Message::SyncWithHeatmap)
+                            )
+                    )
+                    .max_width(500.0)
+                    .on_close(Message::CloseModal)
+                )
+            } else {
+                None
+            };
+
+            modal(underlay, overlay)
+                .backdrop(Message::CloseModal)
+                .on_esc(Message::CloseModal)
+                .align_y(alignment::Vertical::Center)
+                .into()
+        },  
+        
         PaneId::TradePanel => if account_info_usdt.is_none() {
             Text::new("No account info").into()
         } else {
@@ -1217,6 +1402,7 @@ fn view_controls<'a>(
             (Icon::ResizeFull, Message::Maximize(pane))
         };
         let buttons = vec![
+            (container(text(char::from(Icon::Cog).to_string()).font(ICON).size(14)).width(25).center_x(), Message::OpenModal(pane)),
             (container(text(char::from(icon).to_string()).font(ICON).size(14)).width(25).center_x(), message),
             (container(text(char::from(Icon::Close).to_string()).font(ICON).size(14)).width(25).center_x(), Message::Close(pane)),
         ];
@@ -1241,13 +1427,19 @@ struct ConvertedTrade {
 }
 struct TimeAndSales {
     recent_trades: Vec<ConvertedTrade>,
+    size_filter: f32,
 }
 impl TimeAndSales {
     fn new() -> Self {
         Self {
             recent_trades: Vec::new(),
+            size_filter: 0.0,
         }
     }
+    fn set_size_filter(&mut self, value: f32) {
+        self.size_filter = value;
+    }
+
     fn update(&mut self, trades_buffer: &Vec<Trade>) {
         for trade in trades_buffer {
             let trade_time = NaiveDateTime::from_timestamp(trade.time as i64 / 1000, (trade.time % 1000) as u32 * 1_000_000);
@@ -1260,8 +1452,8 @@ impl TimeAndSales {
             self.recent_trades.push(converted_trade);
         }
 
-        if self.recent_trades.len() > 300 {
-            let drain_to = self.recent_trades.len() - 300;
+        if self.recent_trades.len() > 2000 {
+            let drain_to = self.recent_trades.len() - 2000;
             self.recent_trades.drain(0..drain_to);
         }
     }
@@ -1270,12 +1462,14 @@ impl TimeAndSales {
             .height(Length::Fill)
             .padding(10);
 
-        let max_qty = self.recent_trades.iter().map(|trade| trade.qty).fold(0.0, f32::max);
+        let filtered_trades: Vec<&ConvertedTrade> = self.recent_trades.iter().filter(|trade| (trade.qty*trade.price) >= self.size_filter).collect();
+
+        let max_qty = filtered_trades.iter().map(|trade| trade.qty).fold(0.0, f32::max);
     
-        if self.recent_trades.is_empty() {
+        if filtered_trades.is_empty() {
             trades_column = trades_column.push(Text::new("No trades").size(16));
         } else {
-            for trade in self.recent_trades.iter().rev().take(80) {
+            for trade in filtered_trades.iter().rev().take(80) {
                 let trade_row = Row::new()
                     .push(
                         container(Text::new(format!("{}", trade.time.format("%M:%S.%3f"))).size(14))
