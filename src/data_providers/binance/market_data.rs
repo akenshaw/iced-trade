@@ -22,6 +22,8 @@ use futures::stream::StreamExt;
 
 use async_tungstenite::tungstenite;
 
+use crate::{Ticker, Timeframe};
+
 #[derive(Deserialize, Debug, Clone)]
 pub struct StreamWrapper {
     pub stream: String,
@@ -61,21 +63,34 @@ pub struct Kline {
     pub taker_buy_base_asset_volume: f32,
 }
 
-pub fn connect_market_stream(selected_ticker: String, timeframe: String) -> Subscription<Event> {
+pub fn connect_market_stream(selected_ticker: Ticker, timeframe: Timeframe) -> Subscription<Event> {
     struct Connect;
 
     subscription::channel(
         std::any::TypeId::of::<Connect>(),
         100,
-        |mut output| async move {
+        move |mut output| async move {
             let mut state = State::Disconnected;     
             let mut trades_buffer = Vec::new(); 
+
+            let symbol_str = match selected_ticker {
+                Ticker::BTCUSDT => "btcusdt",
+                Ticker::ETHUSDT => "ethusdt",
+                Ticker::SOLUSDT => "solusdt",
+                Ticker::LTCUSDT => "ltcusdt",
+            };
+            let timeframe_str = match timeframe {
+                Timeframe::M1 => "1m",
+                Timeframe::M3 => "3m",
+                Timeframe::M5 => "5m",
+                Timeframe::M15 => "15m",
+                Timeframe::M30 => "30m",
+            };
  
             loop {
                 match &mut state {
                     State::Disconnected => {
-                        let symbol = selected_ticker.to_lowercase();
-                        let websocket_server = format!("wss://fstream.binance.com/stream?streams={}@aggTrade/{}@depth20@100ms/{}@kline_{}", symbol, symbol, symbol, timeframe);
+                        let websocket_server = format!("wss://fstream.binance.com/stream?streams={}@aggTrade/{}@depth20@100ms/{}@kline_{}", symbol_str, symbol_str, symbol_str, timeframe_str);
                         
                         match async_tungstenite::tokio::connect_async(
                             websocket_server,
