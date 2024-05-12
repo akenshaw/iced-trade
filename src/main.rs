@@ -65,6 +65,33 @@ impl Ticker {
     const ALL: [Ticker; 4] = [Ticker::BTCUSDT, Ticker::ETHUSDT, Ticker::SOLUSDT, Ticker::LTCUSDT];
 }
 
+impl std::fmt::Display for Timeframe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Timeframe::M1 => "1m",
+                Timeframe::M3 => "3m",
+                Timeframe::M5 => "5m",
+                Timeframe::M15 => "15m",
+                Timeframe::M30 => "30m",
+            }
+        )
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Timeframe {
+    M1,
+    M3,
+    M5,
+    M15,
+    M30,
+}
+impl Timeframe {
+    const ALL: [Timeframe; 5] = [Timeframe::M1, Timeframe::M3, Timeframe::M5, Timeframe::M15, Timeframe::M30];
+}
+
 // binance testnet api keys
 const API_KEY: &str = "";
 const SECRET_KEY: &str = "";
@@ -158,7 +185,8 @@ pub enum Message {
     UserKeyError,
     UserWsEvent(user_data::Event),
     TickerSelected(Ticker),
-    TimeframeSelected(&'static str),
+    TimeframeSelected(Timeframe),
+    ExchangeSelected(&'static str),
     MarketWsEvent(market_data::Event),
     WsToggle(),
     FetchEvent(Result<Vec<market_data::Kline>, std::string::String>),
@@ -212,7 +240,8 @@ struct State {
     // data streams
     listen_key: Option<String>,
     selected_ticker: Option<Ticker>,
-    selected_timeframe: Option<&'static str>,
+    selected_timeframe: Option<Timeframe>,
+    selected_exchange: Option<&'static str>,
     ws_state: WsState,
     user_ws_state: UserWsState,
     ws_running: bool,
@@ -277,7 +306,8 @@ impl Application for State {
                 time_and_sales: None,
                 listen_key: None,
                 selected_ticker: None,
-                selected_timeframe: Some("1m"),
+                selected_timeframe: Some(Timeframe::M1),
+                selected_exchange: Some("Binance Futures"),
                 ws_state: WsState::Disconnected,
                 user_ws_state: UserWsState::Disconnected,
                 ws_running: false,
@@ -369,6 +399,10 @@ impl Application for State {
             },
             Message::TimeframeSelected(timeframe) => {
                 self.selected_timeframe = Some(timeframe);
+                Command::none()
+            },
+            Message::ExchangeSelected(exchange) => {
+                self.selected_exchange = Some(exchange);
                 Command::none()
             },
             Message::WsToggle() => {
@@ -505,14 +539,22 @@ impl Application for State {
             Message::FetchEvent(klines) => {
                 match klines {
                     Ok(klines) => {
-                        let timeframe_in_minutes = match self.selected_timeframe.unwrap_or_else(|| "1m") {
-                            "1m" => 1,
-                            "3m" => 3,
-                            "5m" => 5,
-                            "15m" => 15,
-                            "30m" => 30,
-                            _ => 1,
+                        let timeframe_in_minutes = match &self.selected_timeframe {
+                            Some(timeframe) => {
+                                match timeframe {
+                                    Timeframe::M1 => 1,
+                                    Timeframe::M3 => 3,
+                                    Timeframe::M5 => 5,
+                                    Timeframe::M15 => 15,
+                                    Timeframe::M30 => 30,
+                                }
+                            },
+                            None => {
+                                eprintln!("No timeframe selected");
+                                return Command::none();
+                            }
                         };
+
                         self.candlestick_chart = Some(CandlestickChart::new(klines, timeframe_in_minutes));
                     },
                     Err(err) => {
@@ -1029,17 +1071,24 @@ impl Application for State {
                 &Ticker::ALL[..],
                 self.selected_ticker,
                 Message::TickerSelected,
-            )
-            .placeholder("Choose a ticker...");
-        
+            ).placeholder("Choose a ticker...");
+            
             let timeframe_pick_list = pick_list(
-                &["1m", "3m", "5m", "15m", "30m"][..],
+                &Timeframe::ALL[..],
                 self.selected_timeframe,
                 Message::TimeframeSelected,
             );
+            let exchange_selector = pick_list(
+                &["Binance Futures"][..],
+                self.selected_exchange,
+                Message::ExchangeSelected,
+            ).placeholder("Choose an exchange...");
         
-            ws_controls = ws_controls.push(timeframe_pick_list)
-                .push(symbol_pick_list);
+            ws_controls = ws_controls
+                .push(exchange_selector)
+                .push(symbol_pick_list)
+                .push(timeframe_pick_list);
+                
         } else {
             ws_controls = ws_controls.push(Text::new(self.selected_ticker.unwrap_or_else(|| { dbg!("No ticker found"); Ticker::BTCUSDT } ).to_string()).size(20));
         }
@@ -1074,9 +1123,9 @@ impl Application for State {
         let mut subscriptions = Vec::new();
     
         if self.ws_running {
-            self.selected_ticker.as_ref().and_then(|ticker| {
-                self.selected_timeframe.as_ref().map(|timeframe| {
-                    let binance_market_stream = market_data::connect_market_stream(ticker.to_string(), timeframe.to_string()).map(Message::MarketWsEvent);
+            self.selected_ticker.and_then(|ticker| {
+                self.selected_timeframe.map(|timeframe| {
+                    let binance_market_stream = market_data::connect_market_stream(ticker, timeframe).map(Message::MarketWsEvent);
                     subscriptions.push(binance_market_stream);
                 })
             });
