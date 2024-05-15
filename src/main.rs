@@ -3,17 +3,18 @@
 mod data_providers;
 use data_providers::binance::{user_data, market_data};
 mod charts;
-use charts::{heatmap, candlesticks};
+use charts::{candlesticks, custom_line::{self, CustomLine}, heatmap};
 
 use crate::heatmap::LineChart;
 use crate::candlesticks::CandlestickChart;
 
+use std::time::Instant;
 use std::cell::RefCell;
 use chrono::{NaiveDateTime, DateTime, Utc};
 use iced::{
-    alignment, executor, font, theme, widget::{
-        button, checkbox, pick_list, text_input, tooltip, Column, Container, Row, Slider, Space, Text
-    }, Alignment, Application, Color, Command, Element, Font, Length, Renderer, Settings, Size, Subscription, Theme
+    alignment, executor, font, theme::{self, Custom}, widget::{
+        button, canvas, checkbox, pick_list, text_input, tooltip, Column, Container, Row, Slider, Space, Text
+    }, Alignment, Application, Color, Command, Element, Font, Length, Renderer, Settings, Size, Subscription, Theme, Vector
 };
 
 use iced::widget::pane_grid::{self, PaneGrid};
@@ -167,7 +168,6 @@ impl Pane {
     }
 }
 
-
 fn main() {
     State::run(Settings {
         antialiasing: true,
@@ -179,6 +179,8 @@ fn main() {
 #[derive(Debug, Clone)]
 pub enum Message {
     Debug(String),
+
+    CustomLine(custom_line::Message),
 
     // Market&User data stream
     UserKeySucceed(String),
@@ -236,6 +238,7 @@ struct State {
     trades_chart: Option<heatmap::LineChart>,
     candlestick_chart: Option<candlesticks::CandlestickChart>,
     time_and_sales: Option<TimeAndSales>,
+    custom_line: CustomLine,
 
     // data streams
     listen_key: Option<String>,
@@ -304,6 +307,7 @@ impl Application for State {
                 trades_chart: None,
                 candlestick_chart: None,
                 time_and_sales: None,
+                custom_line: CustomLine::default(),
                 listen_key: None,
                 selected_ticker: None,
                 selected_timeframe: Some(Timeframe::M1),
@@ -393,6 +397,11 @@ impl Application for State {
 
     fn update(&mut self, message: Self::Message) -> Command<Self::Message> {
         match message {
+            Message::CustomLine(message) => {
+                self.custom_line.update(message);
+                Command::none()
+            },
+
             Message::TickerSelected(ticker) => {
                 self.selected_ticker = Some(ticker);
                 Command::none()
@@ -539,6 +548,7 @@ impl Application for State {
             Message::FetchEvent(klines) => {
                 match klines {
                     Ok(klines) => {
+                        let klines_clone = klines.clone(); // Clone klines
                         let timeframe_in_minutes = match &self.selected_timeframe {
                             Some(timeframe) => {
                                 match timeframe {
@@ -556,6 +566,8 @@ impl Application for State {
                         };
 
                         self.candlestick_chart = Some(CandlestickChart::new(klines, timeframe_in_minutes));
+
+                        self.custom_line.set_dataset(klines_clone);
                     },
                     Err(err) => {
                         eprintln!("Error fetching klines: {}", err);
@@ -581,9 +593,13 @@ impl Application for State {
                         } 
                     }
                     market_data::Event::KlineReceived(kline) => {
+                        let kline_clone = kline.clone();
+
                         if let Some(chart) = &mut self.candlestick_chart {
                             chart.update(kline);
                         }
+                        
+                        self.custom_line.insert_datapoint(kline_clone);
                     }
                 };
                 Command::none()
@@ -970,6 +986,7 @@ impl Application for State {
                     &self.time_and_sales,
                     &self.trades_chart, 
                     &self.candlestick_chart, 
+                    &self.custom_line,
                     self.qty_input_val.borrow().clone(), 
                     self.price_input_val.borrow().clone(),
                     &self.orders_header,
@@ -1192,6 +1209,7 @@ fn view_content<'a, 'b: 'a>(
     time_and_sales: &'a Option<TimeAndSales>,
     trades_chart: &'a Option<LineChart>,
     candlestick_chart: &'a Option<CandlestickChart>,
+    custom_line: &'a CustomLine,
     qty_input_val: Option<String>,
     price_input_val: Option<String>, 
     orders_header: &'b scrollable::Id,
@@ -1319,7 +1337,10 @@ fn view_content<'a, 'b: 'a>(
         },  
         
         PaneId::TradePanel => if account_info_usdt.is_none() {
-            Text::new("No account info").into()
+            custom_line
+                .view()
+                .map(move |message| Message::CustomLine(message))
+                .into()
         } else {
             let form_select_0_button = button("Market Order")
                 .on_press(Message::TabSelected(0, "order_form".to_string()));
