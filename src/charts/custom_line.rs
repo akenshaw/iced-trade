@@ -1,16 +1,15 @@
 use std::collections::BTreeMap;
-use chrono::{DateTime, Utc, Duration, TimeZone, LocalResult};
+use chrono::{DateTime, Utc, TimeZone, LocalResult};
 use iced::mouse;
 use iced::widget::canvas;
 use iced::widget::canvas::event::{self, Event};
-use iced::widget::canvas::stroke::{self, Stroke};
+use iced::widget::canvas::stroke::Stroke;
 use iced::widget::canvas::{Cache, Geometry, Path, Canvas};
 use iced::window;
 use iced::{
     Color, Point, Rectangle, Renderer, Size,
     Theme, Vector, Element, Length
 };
-use std::future::Future;
 use crate::market_data::Kline;
 
 #[derive(Debug, Clone)]
@@ -40,7 +39,7 @@ impl CustomLine {
             klines_raw: BTreeMap::new(),
             translation: Vector::default(),
             scaling: 1.0,
-            autoscale: false,
+            autoscale: true,
         }
     }
 
@@ -192,38 +191,38 @@ impl canvas::Program<Message> for CustomLine {
                         if y < 0.0 && self.scaling > Self::MIN_SCALING
                             || y > 0.0 && self.scaling < Self::MAX_SCALING
                         {
-                            let old_scaling = self.scaling;
+                            //let old_scaling = self.scaling;
 
                             let scaling = (self.scaling * (1.0 + y / 30.0))
                                 .clamp(
-                                    Self::MIN_SCALING,
-                                    Self::MAX_SCALING,
+                                    Self::MIN_SCALING,  // 0.1
+                                    Self::MAX_SCALING,  // 2.0
                                 );
 
-                            let translation =
-                                if let Some(cursor_to_center) =
-                                    cursor.position_from(bounds.center())
-                                {
-                                    let factor = scaling - old_scaling;
+                            //let translation =
+                            //    if let Some(cursor_to_center) =
+                            //        cursor.position_from(bounds.center())
+                            //    {
+                            //        let factor = scaling - old_scaling;
 
-                                    Some(
-                                        self.translation
-                                            - Vector::new(
-                                                cursor_to_center.x * factor
-                                                    / (old_scaling
-                                                        * old_scaling),
-                                                cursor_to_center.y * factor
-                                                    / (old_scaling
-                                                        * old_scaling),
-                                            ),
-                                    )
-                                } else {
-                                    None
-                                };
+                            //        Some(
+                            //            self.translation
+                            //                - Vector::new(
+                            //                    cursor_to_center.x * factor
+                            //                        / (old_scaling
+                            //                            * old_scaling),
+                            //                    cursor_to_center.y * factor
+                            //                        / (old_scaling
+                            //                            * old_scaling),
+                            //                ),
+                            //        )
+                            //    } else {
+                            //        None
+                            //    };
 
                             (
                                 event::Status::Captured,
-                                Some(Message::Scaled(scaling, translation)),
+                                Some(Message::Scaled(scaling, None)),
                             )
                         } else {
                             (event::Status::Captured, None)
@@ -244,22 +243,26 @@ impl canvas::Program<Message> for CustomLine {
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
-        let default_time = Utc::now();
-        let latest: i64 = self.klines_raw.keys().last().unwrap_or_else(||&default_time).timestamp() as i64;
-        let earliest: i64 = latest - 6400;
-
-        let x_range = latest - earliest;
-
-        let mut highest = f32::MIN;
-        let mut lowest = f32::MAX;
-        for (time, (_, high, low, _)) in &self.klines_raw {
-            if *high > highest {
-                highest = *high;
-            }
-            if *low < lowest {
-                lowest = *low;
-            }
+        let latest: i64 = self.klines_raw.keys().last().map_or(0, |time| time.timestamp() - (self.translation.x*10.0) as i64);
+        let earliest: i64 = latest - (6400.0 / self.scaling) as i64;
+    
+        let (visible_klines, highest, lowest, avg_body_height) = self.klines_raw.iter()
+            .filter(|(time, _)| {
+                let timestamp = time.timestamp();
+                timestamp >= earliest && timestamp <= latest
+            })
+            .fold((vec![], f32::MIN, f32::MAX, 0.0), |(mut klines, highest, lowest, total_body_height), (time, (open, high, low, close))| {
+                let body_height = (open - close).abs();
+                klines.push((*time, (*open, *high, *low, *close)));
+                (klines, highest.max(*high), lowest.min(*low), total_body_height + body_height)
+            });
+    
+        if visible_klines.is_empty() {
+            return vec![];
         }
+    
+        let avg_body_height = avg_body_height / visible_klines.len() as f32;
+        let (highest, lowest) = (highest + avg_body_height, lowest - avg_body_height);
         let y_range = highest - lowest;
 
         let background = 
@@ -287,17 +290,11 @@ impl canvas::Program<Message> for CustomLine {
                 });
             });
 
-        let center = Vector::new(bounds.width / 2.0, bounds.height / 2.0);
-
         let candlesticks = 
             self.system_cache.draw(renderer, bounds.size(), |frame| {
                 frame.with_save(|frame| {
-                    frame.translate(center);
-                    frame.scale(self.scaling);
-                    frame.translate(self.translation);
-
-                    for (time, (open, high, low, close)) in &self.klines_raw {
-                        let x_position: f64 = ((time.timestamp() - earliest) as f64 / x_range as f64) * bounds.width as f64;
+                    for (time, (open, high, low, close)) in visible_klines {
+                        let x_position: f64 = ((time.timestamp() - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
                         
                         let y_open = bounds.height - ((open - lowest) / y_range * bounds.height);
                         let y_high = bounds.height - ((high - lowest) / y_range * bounds.height);
@@ -307,8 +304,8 @@ impl canvas::Program<Message> for CustomLine {
                         let color = if close > open { Color::from_rgb8(81, 205, 160) } else { Color::from_rgb8(192, 80, 77) };
     
                         let body = Path::rectangle(
-                            Point::new(x_position as f32 - (2.0), y_open.min(y_close)), 
-                            Size::new(4.0, (y_open - y_close).abs())
+                            Point::new(x_position as f32 - (2.0 * self.scaling), y_open.min(y_close)), 
+                            Size::new(4.0 * self.scaling, (y_open - y_close).abs())
                         );                    
                         frame.fill(&body, color);
                         
