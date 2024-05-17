@@ -24,7 +24,7 @@ pub struct CustomLine {
     system_cache: Cache,
     translation: Vector,
     scaling: f32,
-    klines_raw: BTreeMap<DateTime<Utc>, (f32, f32, f32, f32)>,
+    klines_raw: BTreeMap<DateTime<Utc>, (f32, f32, f32, f32, f32, f32)>,
     autoscale: bool,
 }
 impl CustomLine {
@@ -51,11 +51,9 @@ impl CustomLine {
                 LocalResult::Single(dt) => dt,
                 _ => continue, 
             };
-            let open = kline.open;
-            let high = kline.high;
-            let low = kline.low;
-            let close = kline.close;
-            self.klines_raw.insert(time, (open, high, low, close));
+            let buy_volume = kline.taker_buy_base_asset_volume;
+            let sell_volume = kline.volume - buy_volume;
+            self.klines_raw.insert(time, (kline.open, kline.high, kline.low, kline.close, buy_volume, sell_volume));
         }
 
         self.system_cache.clear();
@@ -66,11 +64,9 @@ impl CustomLine {
             LocalResult::Single(dt) => dt,
             _ => return, 
         };
-        let open = kline.open;
-        let high = kline.high;
-        let low = kline.low;
-        let close = kline.close;
-        self.klines_raw.insert(time, (open, high, low, close));
+        let buy_volume = kline.taker_buy_base_asset_volume;
+        let sell_volume = kline.volume - buy_volume;
+        self.klines_raw.insert(time, (kline.open, kline.high, kline.low, kline.close, buy_volume, sell_volume));
 
         self.system_cache.clear();
     }
@@ -244,17 +240,24 @@ impl canvas::Program<Message> for CustomLine {
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
         let latest: i64 = self.klines_raw.keys().last().map_or(0, |time| time.timestamp() - (self.translation.x*10.0) as i64);
-        let earliest: i64 = latest - (6400.0 / self.scaling) as i64;
+        let earliest: i64 = latest - (6400.0 / (self.scaling / (bounds.width/800.0))) as i64;
     
-        let (visible_klines, highest, lowest, avg_body_height) = self.klines_raw.iter()
+        let (visible_klines, highest, lowest, avg_body_height, max_buy_volume, max_sell_volume) = self.klines_raw.iter()
             .filter(|(time, _)| {
                 let timestamp = time.timestamp();
                 timestamp >= earliest && timestamp <= latest
             })
-            .fold((vec![], f32::MIN, f32::MAX, 0.0), |(mut klines, highest, lowest, total_body_height), (time, (open, high, low, close))| {
-                let body_height = (open - close).abs();
-                klines.push((*time, (*open, *high, *low, *close)));
-                (klines, highest.max(*high), lowest.min(*low), total_body_height + body_height)
+            .fold((vec![], f32::MIN, f32::MAX, 0.0f32, 0.0f32, 0.0f32), |(mut klines, highest, lowest, total_body_height, max_buy, max_sell), (time, kline)| {
+                let body_height = (kline.0 - kline.3).abs();
+                klines.push((*time, *kline));
+                (
+                    klines,
+                    highest.max(kline.1),
+                    lowest.min(kline.2),
+                    total_body_height + body_height,
+                    max_buy.max(kline.4),
+                    max_sell.max(kline.5)
+                )
             });
     
         if visible_klines.is_empty() {
@@ -265,19 +268,24 @@ impl canvas::Program<Message> for CustomLine {
         let (highest, lowest) = (highest + avg_body_height, lowest - avg_body_height);
         let y_range = highest - lowest;
 
+        let volume_area_height = bounds.height / 8.0; 
+        let candlesticks_area_height = bounds.height - volume_area_height;
+
         let background = 
             self.space_cache.draw(renderer, bounds.size(), |frame| {
-                let text_size = 14.0;
+                let text_size = 12.0;
+                let text_width_estimate = text_size * highest.to_string().len() as f32 / 2.0; 
+
                 let highest_label = canvas::Text {
                     content: format!("{:.2}", highest),
-                    position: Point::new(0.0, 0.0),
+                    position: Point::new(bounds.width - text_width_estimate, 0.0),
                     size: iced::Pixels(text_size),
                     color: Color::WHITE,
                     ..canvas::Text::default()
                 };            
                 let lowest_label = canvas::Text {
                     content: format!("{:.2}", lowest),
-                    position: Point::new(0.0, bounds.height - (text_size + text_size / 2.0)),
+                    position: Point::new(bounds.width - text_width_estimate, candlesticks_area_height - (text_size + text_size / 2.0)),
                     size: iced::Pixels(text_size),
                     color: Color::WHITE,
                     ..canvas::Text::default()
@@ -293,13 +301,13 @@ impl canvas::Program<Message> for CustomLine {
         let candlesticks = 
             self.system_cache.draw(renderer, bounds.size(), |frame| {
                 frame.with_save(|frame| {
-                    for (time, (open, high, low, close)) in visible_klines {
+                    for (time, (open, high, low, close, buy_volume, sell_volume)) in visible_klines {
                         let x_position: f64 = ((time.timestamp() - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
                         
-                        let y_open = bounds.height - ((open - lowest) / y_range * bounds.height);
-                        let y_high = bounds.height - ((high - lowest) / y_range * bounds.height);
-                        let y_low = bounds.height - ((low - lowest) / y_range * bounds.height);
-                        let y_close = bounds.height - ((close - lowest) / y_range * bounds.height);
+                        let y_open = candlesticks_area_height - ((open - lowest) / y_range * candlesticks_area_height);
+                        let y_high = candlesticks_area_height - ((high - lowest) / y_range * candlesticks_area_height);
+                        let y_low = candlesticks_area_height - ((low - lowest) / y_range * candlesticks_area_height);
+                        let y_close = candlesticks_area_height - ((close - lowest) / y_range * candlesticks_area_height);
                         
                         let color = if close > open { Color::from_rgb8(81, 205, 160) } else { Color::from_rgb8(192, 80, 77) };
     
@@ -314,6 +322,21 @@ impl canvas::Program<Message> for CustomLine {
                             Point::new(x_position as f32, y_low)
                         );
                         frame.stroke(&wick, Stroke::default().with_color(color).with_width(1.0));
+
+                        let buy_bar_height = (buy_volume / max_buy_volume) * volume_area_height;
+                        let sell_bar_height = (sell_volume / max_sell_volume) * volume_area_height;
+                        
+                        let buy_bar = Path::rectangle(
+                            Point::new(x_position as f32 - (2.0 * self.scaling), (bounds.height - buy_bar_height) as f32), 
+                            Size::new(2.0 * self.scaling, buy_bar_height as f32)
+                        );
+                        frame.fill(&buy_bar, Color::from_rgb8(81, 205, 160)); 
+                        
+                        let sell_bar = Path::rectangle(
+                            Point::new(x_position as f32, (bounds.height - sell_bar_height) as f32), 
+                            Size::new(2.0 * self.scaling, sell_bar_height as f32)
+                        );
+                        frame.fill(&sell_bar, Color::from_rgb8(192, 80, 77)); 
                     }
                 });
             });
