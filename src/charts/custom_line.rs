@@ -37,14 +37,26 @@ impl CustomLine {
     const MIN_SCALING: f32 = 0.1;
     const MAX_SCALING: f32 = 2.0;
 
-    pub fn new(_klines: Vec<Kline>, _timeframe_in_minutes: i16) -> CustomLine {
+    pub fn new(klines: Vec<Kline>, _timeframe_in_minutes: i16) -> CustomLine {
         let _size = window::Settings::default().size;
+        let mut klines_raw = BTreeMap::new();
+
+        for kline in klines {
+            let time = match Utc.timestamp_opt(kline.time as i64 / 1000, 0) {
+                LocalResult::Single(dt) => dt,
+                _ => continue, 
+            };
+            let buy_volume = kline.taker_buy_base_asset_volume;
+            let sell_volume = kline.volume - buy_volume;
+            klines_raw.insert(time, (kline.open, kline.high, kline.low, kline.close, buy_volume, sell_volume));
+        }
+    
         CustomLine {
             mesh_cache: canvas::Cache::default(),
             candles_cache: canvas::Cache::default(),
             x_labels_cache: canvas::Cache::default(),
             y_labels_cache: canvas::Cache::default(),
-            klines_raw: BTreeMap::new(),
+            klines_raw,
             translation: Vector::default(),
             scaling: 1.0,
             autoscale: true,
@@ -54,20 +66,6 @@ impl CustomLine {
             y_max_price: 0.0,
             chart_width: 0.0,
             chart_height: 0.0,
-        }
-    }
-
-    pub fn set_dataset(&mut self, klines: Vec<Kline>) {
-        self.klines_raw.clear();
-
-        for kline in klines {
-            let time = match Utc.timestamp_opt(kline.time as i64 / 1000, 0) {
-                LocalResult::Single(dt) => dt,
-                _ => continue, 
-            };
-            let buy_volume = kline.taker_buy_base_asset_volume;
-            let sell_volume = kline.volume - buy_volume;
-            self.klines_raw.insert(time, (kline.open, kline.high, kline.low, kline.close, buy_volume, sell_volume));
         }
     }
 
@@ -84,9 +82,11 @@ impl CustomLine {
     }
     
     pub fn render_start(&mut self) {
+        self.candles_cache.clear();
+
         let latest: i64 = self.klines_raw.keys().last().map_or(0, |time| time.timestamp() - (self.translation.x*10.0) as i64);
         let earliest: i64 = latest - (6400.0 / (self.scaling / (self.chart_width/800.0))) as i64;
-    
+
         let (visible_klines, highest, lowest, avg_body_height, _) = self.klines_raw.iter()
             .filter(|(time, _)| {
                 let timestamp = time.timestamp();
@@ -103,23 +103,23 @@ impl CustomLine {
                     max_vol.max(kline.4.max(kline.5)) 
                 )
             });
-    
+
         if visible_klines.is_empty() {
             return;
         }
-    
         let avg_body_height = avg_body_height / visible_klines.len() as f32;
         let (highest, lowest) = (highest + avg_body_height, lowest - avg_body_height);
+
+        if earliest != self.x_min_time || latest != self.x_max_time || lowest != self.y_min_price || highest != self.y_max_price {
+            self.x_labels_cache.clear();
+            self.y_labels_cache.clear();
+            self.mesh_cache.clear();
+        }
 
         self.x_min_time = earliest;
         self.x_max_time = latest;
         self.y_min_price = lowest;
         self.y_max_price = highest;
-
-        self.x_labels_cache.clear();
-        self.y_labels_cache.clear();
-        self.mesh_cache.clear();
-        self.candles_cache.clear();
     }
 
     pub fn update(&mut self, message: Message) {
@@ -163,18 +163,18 @@ impl CustomLine {
                 labels_cache: &self.x_labels_cache, min: self.x_min_time, max: self.x_max_time 
             })
             .width(Length::FillPortion(10))
-            .height(Length::Fixed(25.0));
+            .height(Length::Fixed(30.0));
     
         let axis_labels_y = Canvas::new(
             AxisLabelYCanvas { 
                 labels_cache: &self.y_labels_cache, min: self.y_min_price, max: self.y_max_price 
             })
-            .width(Length::Fixed(40.0))
+            .width(Length::Fixed(60.0))
             .height(Length::FillPortion(10));
     
         let empty_space = Container::new(Space::new(Length::Fixed(40.0), Length::Fixed(40.0)))
-            .width(Length::Fixed(40.0))
-            .height(Length::Fixed(25.0));
+            .width(Length::Fixed(60.0))
+            .height(Length::Fixed(30.0));
     
         let chart_and_y_labels = Row::new()
             .push(chart)
