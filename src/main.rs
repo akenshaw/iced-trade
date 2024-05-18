@@ -149,6 +149,7 @@ impl Default for UserWsState {
 pub enum PaneId {
     HeatmapChart,
     CandlestickChart,
+    CustomChart,
     TimeAndSales,
     TradePanel,
 }
@@ -238,7 +239,7 @@ struct State {
     trades_chart: Option<heatmap::LineChart>,
     candlestick_chart: Option<candlesticks::CandlestickChart>,
     time_and_sales: Option<TimeAndSales>,
-    custom_line: CustomLine,
+    custom_line: Option<CustomLine>,
 
     // data streams
     listen_key: Option<String>,
@@ -307,7 +308,7 @@ impl Application for State {
                 trades_chart: None,
                 candlestick_chart: None,
                 time_and_sales: None,
-                custom_line: CustomLine::default(),
+                custom_line: None,
                 listen_key: None,
                 selected_ticker: None,
                 selected_timeframe: Some(Timeframe::M1),
@@ -398,7 +399,9 @@ impl Application for State {
     fn update(&mut self, message: Self::Message) -> Command<Self::Message> {
         match message {
             Message::CustomLine(message) => {
-                self.custom_line.update(message);
+                if let Some(custom_line) = &mut self.custom_line {
+                    custom_line.update(message);
+                }
                 Command::none()
             },
 
@@ -537,6 +540,7 @@ impl Application for State {
                     self.trades_chart = None;
                     self.candlestick_chart = None;
                     self.time_and_sales = None;
+                    self.custom_line = None;
 
                     self.open_orders.clear();
                     self.orders_rows.clear();
@@ -567,7 +571,7 @@ impl Application for State {
 
                         self.candlestick_chart = Some(CandlestickChart::new(klines, timeframe_in_minutes));
 
-                        self.custom_line.set_dataset(klines_clone);
+                        self.custom_line = Some(CustomLine::new(klines_clone, timeframe_in_minutes))
                     },
                     Err(err) => {
                         eprintln!("Error fetching klines: {}", err);
@@ -599,7 +603,9 @@ impl Application for State {
                             chart.update(kline);
                         }
                         
-                        self.custom_line.insert_datapoint(kline_clone);
+                        if let Some(custom_line) = &mut self.custom_line {
+                            custom_line.insert_datapoint(kline_clone);
+                        }
                     }
                 };
                 Command::none()
@@ -739,6 +745,9 @@ impl Application for State {
                         },
                         PaneId::CandlestickChart => {
                             self.panes_open.insert(PaneId::CandlestickChart, false);
+                        },
+                        PaneId::CustomChart => {
+                            self.panes_open.insert(PaneId::CustomChart, false);
                         },
                         PaneId::TimeAndSales => {
                             self.panes_open.insert(PaneId::TimeAndSales, false);
@@ -1018,6 +1027,7 @@ impl Application for State {
             let title = match pane.id {
                 PaneId::HeatmapChart => "Heatmap Chart",
                 PaneId::CandlestickChart => "Candlestick Chart",
+                PaneId::CustomChart => "Custom Chart",
                 PaneId::TimeAndSales => "Time & Sales",
                 PaneId::TradePanel => "Trading Panel",
             };            
@@ -1066,6 +1076,7 @@ impl Application for State {
                 menu_tpl_1(menu_items!(
                     (debug_button(PaneId::HeatmapChart, self.panes_open.get(&PaneId::HeatmapChart).unwrap_or(&false), self.first_pane))
                     (debug_button(PaneId::CandlestickChart, self.panes_open.get(&PaneId::CandlestickChart).unwrap_or(&false), self.first_pane))
+                    (debug_button(PaneId::CustomChart, self.panes_open.get(&PaneId::CustomChart).unwrap_or(&false), self.first_pane))
                     (debug_button(PaneId::TimeAndSales, self.panes_open.get(&PaneId::TimeAndSales).unwrap_or(&false), self.first_pane))
                     (debug_button(PaneId::TradePanel, self.panes_open.get(&PaneId::TradePanel).unwrap_or(&false), self.first_pane))
                 )).width(200.0)
@@ -1209,7 +1220,7 @@ fn view_content<'a, 'b: 'a>(
     time_and_sales: &'a Option<TimeAndSales>,
     trades_chart: &'a Option<LineChart>,
     candlestick_chart: &'a Option<CandlestickChart>,
-    custom_line: &'a CustomLine,
+    custom_line: &'a Option<CustomLine>,
     qty_input_val: Option<String>,
     price_input_val: Option<String>, 
     orders_header: &'b scrollable::Id,
@@ -1294,6 +1305,47 @@ fn view_content<'a, 'b: 'a>(
                 .align_y(alignment::Vertical::Center)
                 .into()
         },
+
+        PaneId::CustomChart => { 
+            let underlay; 
+            if let Some(custom_line) = custom_line {
+                underlay =
+                    custom_line
+                        .view()
+                        .map(move |message| Message::CustomLine(message));
+            } else {
+                underlay = Text::new("No data").into();
+            }
+
+            let overlay = if show_modal {
+                Some(
+                    Card::new(
+                        Text::new("Custom Chart -> Settings"),
+                        Column::new()
+                            .push(Text::new("Test"))
+                    )
+                    .foot(
+                        Row::new()
+                            .spacing(10)
+                            .padding(5)
+                            .width(Length::Fill)
+                            .push(
+                                Text::new("Footer").size(16)
+                            )
+                    )
+                    .max_width(500.0)
+                    .on_close(Message::CloseModal)
+                )
+            } else {
+                None
+            };
+
+            modal(underlay, overlay)
+                .backdrop(Message::CloseModal)
+                .on_esc(Message::CloseModal)
+                .align_y(alignment::Vertical::Center)
+                .into()
+        },
         
         PaneId::TimeAndSales => { 
             let underlay = time_and_sales.as_ref().map(TimeAndSales::view).unwrap_or_else(|| Text::new("No data").into()); 
@@ -1337,10 +1389,7 @@ fn view_content<'a, 'b: 'a>(
         },  
         
         PaneId::TradePanel => if account_info_usdt.is_none() {
-            custom_line
-                .view()
-                .map(move |message| Message::CustomLine(message))
-                .into()
+            Text::new("No account info found").into()
         } else {
             let form_select_0_button = button("Market Order")
                 .on_press(Message::TabSelected(0, "order_form".to_string()));
