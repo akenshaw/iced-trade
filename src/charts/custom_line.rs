@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use chrono::{DateTime, Utc, TimeZone, LocalResult};
+use chrono::{DateTime, Utc, TimeZone, LocalResult, Duration, NaiveDateTime, Timelike};
 use iced::{
     mouse, 
     widget::canvas::{self, event::{self, Event}, 
@@ -266,32 +266,77 @@ impl canvas::Program<Message> for CustomLine {
         let volume_area_height = bounds.height / 8.0; 
         let candlesticks_area_height = bounds.height - volume_area_height;
 
-        let background = 
-            self.space_cache.draw(renderer, bounds.size(), |frame| {
-                let text_size = 12.0;
-                let text_width_estimate = text_size * highest.to_string().len() as f32 / 2.0; 
+        let y_labels_can_fit = (bounds.height / 60.0) as i32;
+        let (step, rounded_lowest) = calculate_price_step(highest, lowest, y_labels_can_fit);
 
-                let highest_label = canvas::Text {
-                    content: format!("{:.2}", highest),
-                    position: Point::new(bounds.width - text_width_estimate, 0.0),
-                    size: iced::Pixels(text_size),
-                    color: Color::WHITE,
-                    ..canvas::Text::default()
-                };            
-                let lowest_label = canvas::Text {
-                    content: format!("{:.2}", lowest),
-                    position: Point::new(bounds.width - text_width_estimate, candlesticks_area_height - (text_size + text_size / 2.0)),
-                    size: iced::Pixels(text_size),
-                    color: Color::WHITE,
-                    ..canvas::Text::default()
-                };
-                highest_label.draw_with(|path, color| {
-                    frame.fill(&path, color);
-                });
-                lowest_label.draw_with(|path, color| {
-                    frame.fill(&path, color);
-                });
+        let x_labels_can_fit = (bounds.width / 100.0) as i32;
+        let (time_step, rounded_earliest) = calculate_time_step(earliest, latest, x_labels_can_fit);
+
+        let background = self.space_cache.draw(renderer, bounds.size(), |frame| {
+            frame.with_save(|frame| {
+                let latest_in_millis = latest * 1000; 
+                let earliest_in_millis = earliest * 1000; 
+
+                let mut time = rounded_earliest;
+                let latest_time = NaiveDateTime::from_timestamp(latest, 0);
+
+                while time <= latest_time {
+                    let time_in_millis = time.timestamp_millis();
+                    
+                    let x_position = ((time_in_millis - earliest_in_millis) as f64 / (latest_in_millis - earliest_in_millis) as f64) * bounds.width as f64;
+
+                    if x_position >= 0.0 && x_position <= bounds.width as f64 {
+                        let line = Path::line(
+                            Point::new(x_position as f32, 0.0), 
+                            Point::new(x_position as f32, bounds.height as f32)
+                        );
+
+                        let text_size = 12.0;
+                        let label = canvas::Text {
+                            content: time.format("%H:%M").to_string(),
+                            position: Point::new(x_position as f32 - text_size / 2.0, bounds.height as f32 - 20.0),
+                            size: iced::Pixels(text_size),
+                            color: Color::WHITE,
+                            ..canvas::Text::default()
+                        };  
+
+                        label.draw_with(|path, color| {
+                            frame.fill(&path, color);
+                        });
+                        frame.stroke(&line, Stroke::default().with_color(Color::from_rgba(120.0, 120.0, 120.0, 0.1)).with_width(1.0));
+                    }
+                    
+                    time = time + time_step;
+                }
             });
+            
+            frame.with_save(|frame| {
+                let mut y = rounded_lowest;
+
+                while y <= highest {
+                    let y_position = candlesticks_area_height - ((y - lowest) / y_range * candlesticks_area_height);
+                    let line = Path::line(
+                        Point::new(0.0, y_position), 
+                        Point::new(bounds.width as f32, y_position)
+                    );
+
+                    let text_size = 12.0;
+                    let label = canvas::Text {
+                        content: format!("{:.1}", y),
+                        position: Point::new(50.0, y_position - text_size / 2.0),
+                        size: iced::Pixels(text_size),
+                        color: Color::WHITE,
+                        ..canvas::Text::default()
+                    };  
+
+                    label.draw_with(|path, color| {
+                        frame.fill(&path, color);
+                    });
+                    frame.stroke(&line, Stroke::default().with_color(Color::from_rgba(120.0, 120.0, 120.0, 0.1)).with_width(1.0));
+                    y += step;
+                }
+            });
+        });
 
         let candlesticks = 
             self.system_cache.draw(renderer, bounds.size(), |frame| {
@@ -303,7 +348,7 @@ impl canvas::Program<Message> for CustomLine {
                     let y_low = candlesticks_area_height - ((low - lowest) / y_range * candlesticks_area_height);
                     let y_close = candlesticks_area_height - ((close - lowest) / y_range * candlesticks_area_height);
                     
-                    let color = if close > open { Color::from_rgb8(81, 205, 160) } else { Color::from_rgb8(192, 80, 77) };
+                    let color = if close >= open { Color::from_rgb8(81, 205, 160) } else { Color::from_rgb8(192, 80, 77) };
 
                     let body = Path::rectangle(
                         Point::new(x_position as f32 - (2.0 * self.scaling), y_open.min(y_close)), 
@@ -353,6 +398,57 @@ impl canvas::Program<Message> for CustomLine {
             Interaction::None => mouse::Interaction::default(),
         }
     }
+}
+
+fn calculate_price_step(highest: f32, lowest: f32, labels_can_fit: i32) -> (f32, f32) {
+    let range = highest - lowest;
+    let mut step = 100.0; 
+
+    let steps = [100.0, 50.0, 20.0, 10.0, 5.0, 2.0, 1.0, 0.5];
+
+    for &s in steps.iter().rev() {
+        if range / s <= labels_can_fit as f32 {
+            step = s;
+            break;
+        }
+    }
+    let rounded_lowest = (lowest / step).floor() * step;
+
+    (step, rounded_lowest)
+}
+fn calculate_time_step(earliest: i64, latest: i64, labels_can_fit: i32) -> (Duration, NaiveDateTime) {
+    let duration = latest - earliest;
+    let duration_in_millis = duration * 1000; 
+
+    let steps = [
+        Duration::minutes(60),
+        Duration::minutes(30),
+        Duration::minutes(15),
+        Duration::minutes(10),
+        Duration::minutes(5),
+        Duration::minutes(1),
+    ];
+
+    let mut selected_step = steps[0];
+    for &step in steps.iter() {
+        if duration_in_millis / step.num_milliseconds() >= labels_can_fit as i64 {
+            selected_step = step;
+            break;
+        }
+    }
+
+    let mut rounded_earliest = NaiveDateTime::from_timestamp(earliest, 0)
+        .with_second(0).unwrap()
+        .with_nanosecond(0).unwrap();
+
+    let minutes = rounded_earliest.minute();
+    let step_minutes = selected_step.num_minutes() as u32;
+    let remainder = minutes % step_minutes;
+    if remainder > 0 {
+        rounded_earliest = rounded_earliest + Duration::minutes((step_minutes - remainder) as i64);
+    }
+
+    (selected_step, rounded_earliest)
 }
 
 impl Default for CustomLine {
