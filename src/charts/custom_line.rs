@@ -6,22 +6,32 @@ use iced::{
     stroke::Stroke, Cache, Geometry, Path, Canvas}, 
     window, Color, Point, Rectangle, Renderer, Size, Theme, Vector, Element, Length
 };
+use iced::widget::{Column, Row, Container, Space};
 use crate::market_data::Kline;
 
 #[derive(Debug, Clone)]
 pub enum Message {
     Translated(Vector),
     Scaled(f32, Option<Vector>),
+    ChartBounds(f32, f32),
 }
 
 #[derive(Debug)]
 pub struct CustomLine {
     space_cache: Cache,
     system_cache: Cache,
+    x_labels_cache: Cache,
+    y_labels_cache: Cache,
     translation: Vector,
     scaling: f32,
     klines_raw: BTreeMap<DateTime<Utc>, (f32, f32, f32, f32, f32, f32)>,
     autoscale: bool,
+    x_min_time: i64,
+    x_max_time: i64,
+    y_min_price: f32,
+    y_max_price: f32,
+    chart_width: f32,
+    chart_height: f32,
 }
 impl CustomLine {
     const MIN_SCALING: f32 = 0.1;
@@ -32,10 +42,18 @@ impl CustomLine {
         CustomLine {
             space_cache: canvas::Cache::default(),
             system_cache: canvas::Cache::default(),
+            x_labels_cache: canvas::Cache::default(),
+            y_labels_cache: canvas::Cache::default(),
             klines_raw: BTreeMap::new(),
             translation: Vector::default(),
             scaling: 1.0,
             autoscale: true,
+            x_min_time: 0,
+            x_max_time: 0,
+            y_min_price: 0.0,
+            y_max_price: 0.0,
+            chart_width: 0.0,
+            chart_height: 0.0,
         }
     }
 
@@ -51,8 +69,6 @@ impl CustomLine {
             let sell_volume = kline.volume - buy_volume;
             self.klines_raw.insert(time, (kline.open, kline.high, kline.low, kline.close, buy_volume, sell_volume));
         }
-
-        self.system_cache.clear();
     }
 
     pub fn insert_datapoint(&mut self, kline: Kline) {
@@ -64,9 +80,48 @@ impl CustomLine {
         let sell_volume = kline.volume - buy_volume;
         self.klines_raw.insert(time, (kline.open, kline.high, kline.low, kline.close, buy_volume, sell_volume));
 
-        self.system_cache.clear();
+        self.render_start();
     }
     
+    pub fn render_start(&mut self) {
+        let latest: i64 = self.klines_raw.keys().last().map_or(0, |time| time.timestamp() - (self.translation.x*10.0) as i64);
+        let earliest: i64 = latest - (6400.0 / (self.scaling / (self.chart_width/800.0))) as i64;
+    
+        let (visible_klines, highest, lowest, avg_body_height, max_volume) = self.klines_raw.iter()
+            .filter(|(time, _)| {
+                let timestamp = time.timestamp();
+                timestamp >= earliest && timestamp <= latest
+            })
+            .fold((vec![], f32::MIN, f32::MAX, 0.0f32, 0.0f32), |(mut klines, highest, lowest, total_body_height, max_vol), (time, kline)| {
+                let body_height = (kline.0 - kline.3).abs();
+                klines.push((*time, *kline));
+                (
+                    klines,
+                    highest.max(kline.1),
+                    lowest.min(kline.2),
+                    total_body_height + body_height,
+                    max_vol.max(kline.4.max(kline.5)) 
+                )
+            });
+    
+        if visible_klines.is_empty() {
+            return;
+        }
+    
+        let avg_body_height = avg_body_height / visible_klines.len() as f32;
+        let (highest, lowest) = (highest + avg_body_height, lowest - avg_body_height);
+
+        self.x_min_time = earliest;
+        self.x_max_time = latest;
+        self.y_min_price = lowest;
+        self.y_max_price = highest;
+
+        self.x_labels_cache.clear();
+        self.y_labels_cache.clear();
+        self.space_cache.clear();
+        self.system_cache.clear();
+    }
+
     pub fn update(&mut self, message: Message) {
         match message {
             Message::Translated(translation) => {
@@ -93,14 +148,46 @@ impl CustomLine {
                 self.system_cache.clear();
                 self.space_cache.clear();
             }
+            Message::ChartBounds(width, height) => {
+                self.chart_width = width;
+                self.chart_height = height;
+            }
         }
     }
 
     pub fn view(&self) -> Element<Message> {
-        Canvas::new(self)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        let chart = Canvas::new(self)
+            .width(Length::FillPortion(10))
+            .height(Length::FillPortion(10));
+    
+        let axis_labels_x = Canvas::new(AxisLabelXCanvas { labels_cache: &self.x_labels_cache, min: self.x_min_time, max: self.x_max_time })
+            .width(Length::FillPortion(10))
+            .height(Length::Fixed(40.0));
+    
+        let axis_labels_y = Canvas::new(AxisLabelYCanvas { labels_cache: &self.y_labels_cache, min: self.y_min_price, max: self.y_max_price })
+            .width(Length::Fixed(40.0))
+            .height(Length::FillPortion(10));
+    
+        let empty_space = Container::new(Space::new(Length::Fixed(40.0), Length::Fixed(40.0)))
+            .width(Length::Fixed(40.0))
+            .height(Length::Fixed(40.0));
+    
+        let chart_and_y_labels = Row::new()
+            .push(chart)
+            .push(axis_labels_y)
+            .spacing(0);
+    
+        let bottom_row = Row::new()
+            .push(axis_labels_x)
+            .push(empty_space)
+            .spacing(0);
+    
+        let content = Column::new()
+            .push(chart_and_y_labels)
+            .push(bottom_row)
+            .spacing(0);
+    
+        content.into()
     }
 }
 
@@ -127,7 +214,11 @@ impl canvas::Program<Message> for CustomLine {
         event: Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
-    ) -> (event::Status, Option<Message>) {
+    ) -> (event::Status, Option<Message>) {        
+        if bounds.width != self.chart_width || bounds.height != self.chart_height {
+            return (event::Status::Ignored, Some(Message::ChartBounds(bounds.width, bounds.height)));
+        } 
+        
         if let Event::Mouse(mouse::Event::ButtonReleased(_)) = event {
             *interaction = Interaction::None;
         }
@@ -234,7 +325,7 @@ impl canvas::Program<Message> for CustomLine {
         _theme: &Theme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
-    ) -> Vec<Geometry> {
+    ) -> Vec<Geometry> {    
         let latest: i64 = self.klines_raw.keys().last().map_or(0, |time| time.timestamp() - (self.translation.x*10.0) as i64);
         let earliest: i64 = latest - (6400.0 / (self.scaling / (bounds.width/800.0))) as i64;
     
@@ -290,19 +381,6 @@ impl canvas::Program<Message> for CustomLine {
                             Point::new(x_position as f32, 0.0), 
                             Point::new(x_position as f32, bounds.height as f32)
                         );
-
-                        let text_size = 12.0;
-                        let label = canvas::Text {
-                            content: time.format("%H:%M").to_string(),
-                            position: Point::new(x_position as f32 - text_size / 2.0, bounds.height as f32 - 20.0),
-                            size: iced::Pixels(text_size),
-                            color: Color::WHITE,
-                            ..canvas::Text::default()
-                        };  
-
-                        label.draw_with(|path, color| {
-                            frame.fill(&path, color);
-                        });
                         frame.stroke(&line, Stroke::default().with_color(Color::from_rgba(120.0, 120.0, 120.0, 0.1)).with_width(1.0));
                     }
                     
@@ -319,20 +397,7 @@ impl canvas::Program<Message> for CustomLine {
                         Point::new(0.0, y_position), 
                         Point::new(bounds.width as f32, y_position)
                     );
-
-                    let text_size = 12.0;
-                    let label = canvas::Text {
-                        content: format!("{:.1}", y),
-                        position: Point::new(50.0, y_position - text_size / 2.0),
-                        size: iced::Pixels(text_size),
-                        color: Color::WHITE,
-                        ..canvas::Text::default()
-                    };  
-
-                    label.draw_with(|path, color| {
-                        frame.fill(&path, color);
-                    });
-                    frame.stroke(&line, Stroke::default().with_color(Color::from_rgba(120.0, 120.0, 120.0, 0.1)).with_width(1.0));
+                    frame.stroke(&line, Stroke::default().with_color(Color::from_rgba(80.0, 80.0, 80.0, 0.1)).with_width(1.0));
                     y += step;
                 }
             });
@@ -454,5 +519,156 @@ fn calculate_time_step(earliest: i64, latest: i64, labels_can_fit: i32) -> (Dura
 impl Default for CustomLine {
     fn default() -> Self {
         Self::new(vec![], 1)
+    }
+}
+pub struct AxisLabelXCanvas<'a> {
+    labels_cache: &'a Cache,
+    min: i64,
+    max: i64,
+}
+impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
+    type State = Interaction;
+
+    fn update(
+        &self,
+        interaction: &mut Interaction,
+        event: Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> (event::Status, Option<Message>) {
+        (event::Status::Ignored, None)
+    }
+    
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        if self.max == 0 {
+            return vec![];
+        }
+
+        let x_labels_can_fit = (bounds.width / 100.0) as i32;
+        let (time_step, rounded_earliest) = calculate_time_step(self.min, self.max, x_labels_can_fit);
+
+        let labels = self.labels_cache.draw(renderer, bounds.size(), |frame| {
+            frame.with_save(|frame| {
+                let latest_in_millis = self.max * 1000; 
+                let earliest_in_millis = self.min * 1000; 
+
+                let mut time = rounded_earliest;
+                let latest_time = NaiveDateTime::from_timestamp(self.max, 0);
+
+                while time <= latest_time {
+                    let time_in_millis = time.timestamp_millis();
+                    
+                    let x_position = ((time_in_millis - earliest_in_millis) as f64 / (latest_in_millis - earliest_in_millis) as f64) * bounds.width as f64;
+
+                    if x_position >= 0.0 && x_position <= bounds.width as f64 {
+                        let text_size = 12.0;
+                        let label = canvas::Text {
+                            content: time.format("%H:%M").to_string(),
+                            position: Point::new(x_position as f32 - text_size / 2.0, bounds.height as f32 - 20.0),
+                            size: iced::Pixels(text_size),
+                            color: Color::WHITE,
+                            ..canvas::Text::default()
+                        };  
+
+                        label.draw_with(|path, color| {
+                            frame.fill(&path, color);
+                        });
+                    }
+                    
+                    time = time + time_step;
+                }
+            });
+        });
+
+        vec![labels]
+    }
+
+    fn mouse_interaction(
+        &self,
+        interaction: &Interaction,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> mouse::Interaction {
+        mouse::Interaction::default()
+    }
+}
+pub struct AxisLabelYCanvas<'a> {
+    labels_cache: &'a Cache,
+    min: f32,
+    max: f32,
+}
+impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
+    type State = Interaction;
+
+    fn update(
+        &self,
+        interaction: &mut Interaction,
+        event: Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> (event::Status, Option<Message>) {
+        (event::Status::Ignored, None)
+    }
+    
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        if self.max == 0.0 {
+            return vec![];
+        }
+
+        let y_labels_can_fit = (bounds.height / 60.0) as i32;
+        let (step, rounded_lowest) = calculate_price_step(self.max, self.min, y_labels_can_fit);
+
+        let volume_area_height = bounds.height / 8.0; 
+        let candlesticks_area_height = bounds.height - volume_area_height;
+
+        let labels = self.labels_cache.draw(renderer, bounds.size(), |frame| {
+            frame.with_save(|frame| {
+                let y_range = self.max - self.min;
+                let mut y = rounded_lowest;
+
+                while y <= self.max {
+                    let y_position = candlesticks_area_height - ((y - self.min) / y_range * candlesticks_area_height);
+
+                    let text_size = 12.0;
+                    let label = canvas::Text {
+                        content: format!("{:.1}", y),
+                        position: Point::new(5.0, y_position - text_size / 2.0),
+                        size: iced::Pixels(text_size),
+                        color: Color::WHITE,
+                        ..canvas::Text::default()
+                    };  
+
+                    label.draw_with(|path, color| {
+                        frame.fill(&path, color);
+                    });
+                    y += step;
+                }
+            });
+        });
+
+        vec![labels]
+    }
+
+    fn mouse_interaction(
+        &self,
+        interaction: &Interaction,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> mouse::Interaction {
+        mouse::Interaction::default()
     }
 }
