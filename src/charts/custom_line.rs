@@ -160,17 +160,23 @@ impl CustomLine {
             .width(Length::FillPortion(10))
             .height(Length::FillPortion(10));
     
-        let axis_labels_x = Canvas::new(AxisLabelXCanvas { labels_cache: &self.x_labels_cache, min: self.x_min_time, max: self.x_max_time })
+        let axis_labels_x = Canvas::new(
+            AxisLabelXCanvas { 
+                labels_cache: &self.x_labels_cache, min: self.x_min_time, max: self.x_max_time 
+            })
             .width(Length::FillPortion(10))
-            .height(Length::Fixed(40.0));
+            .height(Length::Fixed(25.0));
     
-        let axis_labels_y = Canvas::new(AxisLabelYCanvas { labels_cache: &self.y_labels_cache, min: self.y_min_price, max: self.y_max_price })
+        let axis_labels_y = Canvas::new(
+            AxisLabelYCanvas { 
+                labels_cache: &self.y_labels_cache, min: self.y_min_price, max: self.y_max_price 
+            })
             .width(Length::Fixed(40.0))
             .height(Length::FillPortion(10));
     
         let empty_space = Container::new(Space::new(Length::Fixed(40.0), Length::Fixed(40.0)))
             .width(Length::Fixed(40.0))
-            .height(Length::Fixed(40.0));
+            .height(Length::Fixed(25.0));
     
         let chart_and_y_labels = Row::new()
             .push(chart)
@@ -381,7 +387,7 @@ impl canvas::Program<Message> for CustomLine {
                             Point::new(x_position as f32, 0.0), 
                             Point::new(x_position as f32, bounds.height as f32)
                         );
-                        frame.stroke(&line, Stroke::default().with_color(Color::from_rgba(120.0, 120.0, 120.0, 0.1)).with_width(1.0));
+                        frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(40, 40, 40, 1.0)).with_width(1.0))
                     }
                     
                     time = time + time_step;
@@ -397,7 +403,7 @@ impl canvas::Program<Message> for CustomLine {
                         Point::new(0.0, y_position), 
                         Point::new(bounds.width as f32, y_position)
                     );
-                    frame.stroke(&line, Stroke::default().with_color(Color::from_rgba(80.0, 80.0, 80.0, 0.1)).with_width(1.0));
+                    frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(40, 40, 40, 1.0)).with_width(1.0));
                     y += step;
                 }
             });
@@ -571,9 +577,9 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
                         let text_size = 12.0;
                         let label = canvas::Text {
                             content: time.format("%H:%M").to_string(),
-                            position: Point::new(x_position as f32 - text_size / 2.0, bounds.height as f32 - 20.0),
+                            position: Point::new(x_position as f32 - text_size, bounds.height as f32 - 20.0),
                             size: iced::Pixels(text_size),
-                            color: Color::WHITE,
+                            color: Color::from_rgba8(200, 200, 200, 1.0),
                             ..canvas::Text::default()
                         };  
 
@@ -596,7 +602,15 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
-        mouse::Interaction::default()
+        match interaction {
+            Interaction::Drawing => mouse::Interaction::Crosshair,
+            Interaction::Erasing => mouse::Interaction::Crosshair,
+            Interaction::Panning { .. } => mouse::Interaction::ResizingHorizontally,
+            Interaction::None if cursor.is_over(bounds) => {
+                mouse::Interaction::ResizingHorizontally
+            }
+            Interaction::None => mouse::Interaction::default(),
+        }
     }
 }
 pub struct AxisLabelYCanvas<'a> {
@@ -648,7 +662,7 @@ impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
                         content: format!("{:.1}", y),
                         position: Point::new(5.0, y_position - text_size / 2.0),
                         size: iced::Pixels(text_size),
-                        color: Color::WHITE,
+                        color: Color::from_rgba8(200, 200, 200, 1.0),
                         ..canvas::Text::default()
                     };  
 
@@ -669,6 +683,14 @@ impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
-        mouse::Interaction::default()
+        match interaction {
+            Interaction::Drawing => mouse::Interaction::Crosshair,
+            Interaction::Erasing => mouse::Interaction::Crosshair,
+            Interaction::Panning { .. } => mouse::Interaction::ResizingVertically,
+            Interaction::None if cursor.is_over(bounds) => {
+                mouse::Interaction::ResizingVertically
+            }
+            Interaction::None => mouse::Interaction::default(),
+        }
     }
 }
