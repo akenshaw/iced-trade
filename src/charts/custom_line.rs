@@ -18,8 +18,8 @@ pub enum Message {
 
 #[derive(Debug)]
 pub struct CustomLine {
-    space_cache: Cache,
-    system_cache: Cache,
+    mesh_cache: Cache,
+    candles_cache: Cache,
     x_labels_cache: Cache,
     y_labels_cache: Cache,
     translation: Vector,
@@ -40,8 +40,8 @@ impl CustomLine {
     pub fn new(_klines: Vec<Kline>, _timeframe_in_minutes: i16) -> CustomLine {
         let _size = window::Settings::default().size;
         CustomLine {
-            space_cache: canvas::Cache::default(),
-            system_cache: canvas::Cache::default(),
+            mesh_cache: canvas::Cache::default(),
+            candles_cache: canvas::Cache::default(),
             x_labels_cache: canvas::Cache::default(),
             y_labels_cache: canvas::Cache::default(),
             klines_raw: BTreeMap::new(),
@@ -87,7 +87,7 @@ impl CustomLine {
         let latest: i64 = self.klines_raw.keys().last().map_or(0, |time| time.timestamp() - (self.translation.x*10.0) as i64);
         let earliest: i64 = latest - (6400.0 / (self.scaling / (self.chart_width/800.0))) as i64;
     
-        let (visible_klines, highest, lowest, avg_body_height, max_volume) = self.klines_raw.iter()
+        let (visible_klines, highest, lowest, avg_body_height, _) = self.klines_raw.iter()
             .filter(|(time, _)| {
                 let timestamp = time.timestamp();
                 timestamp >= earliest && timestamp <= latest
@@ -118,8 +118,8 @@ impl CustomLine {
 
         self.x_labels_cache.clear();
         self.y_labels_cache.clear();
-        self.space_cache.clear();
-        self.system_cache.clear();
+        self.mesh_cache.clear();
+        self.candles_cache.clear();
     }
 
     pub fn update(&mut self, message: Message) {
@@ -131,8 +131,7 @@ impl CustomLine {
                     self.translation = translation;
                 }
 
-                self.system_cache.clear();
-                self.space_cache.clear();
+                self.render_start();
             }
             Message::Scaled(scaling, translation) => {
                 self.scaling = scaling;
@@ -145,8 +144,7 @@ impl CustomLine {
                     }
                 }
 
-                self.system_cache.clear();
-                self.space_cache.clear();
+                self.render_start();
             }
             Message::ChartBounds(width, height) => {
                 self.chart_width = width;
@@ -369,7 +367,7 @@ impl canvas::Program<Message> for CustomLine {
         let x_labels_can_fit = (bounds.width / 100.0) as i32;
         let (time_step, rounded_earliest) = calculate_time_step(earliest, latest, x_labels_can_fit);
 
-        let background = self.space_cache.draw(renderer, bounds.size(), |frame| {
+        let background = self.mesh_cache.draw(renderer, bounds.size(), |frame| {
             frame.with_save(|frame| {
                 let latest_in_millis = latest * 1000; 
                 let earliest_in_millis = earliest * 1000; 
@@ -410,7 +408,7 @@ impl canvas::Program<Message> for CustomLine {
         });
 
         let candlesticks = 
-            self.system_cache.draw(renderer, bounds.size(), |frame| {
+            self.candles_cache.draw(renderer, bounds.size(), |frame| {
                 for (time, (open, high, low, close, buy_volume, sell_volume)) in visible_klines {
                     let x_position: f64 = ((time.timestamp() - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
                     
