@@ -169,11 +169,11 @@ impl CustomLine {
             AxisLabelYCanvas { 
                 labels_cache: &self.y_labels_cache, min: self.y_min_price, max: self.y_max_price 
             })
-            .width(Length::Fixed(60.0))
+            .width(Length::Fixed(45.0))
             .height(Length::FillPortion(10));
     
         let empty_space = Container::new(Space::new(Length::Fixed(40.0), Length::Fixed(40.0)))
-            .width(Length::Fixed(60.0))
+            .width(Length::Fixed(45.0))
             .height(Length::Fixed(30.0));
     
         let chart_and_y_labels = Row::new()
@@ -189,7 +189,8 @@ impl CustomLine {
         let content = Column::new()
             .push(chart_and_y_labels)
             .push(bottom_row)
-            .spacing(0);
+            .spacing(0)
+            .padding(5);
     
         content.into()
     }
@@ -361,10 +362,10 @@ impl canvas::Program<Message> for CustomLine {
         let volume_area_height = bounds.height / 8.0; 
         let candlesticks_area_height = bounds.height - volume_area_height;
 
-        let y_labels_can_fit = (bounds.height / 60.0) as i32;
+        let y_labels_can_fit = (bounds.height / 32.0) as i32;
         let (step, rounded_lowest) = calculate_price_step(highest, lowest, y_labels_can_fit);
 
-        let x_labels_can_fit = (bounds.width / 100.0) as i32;
+        let x_labels_can_fit = (bounds.width / 90.0) as i32;
         let (time_step, rounded_earliest) = calculate_time_step(earliest, latest, x_labels_can_fit);
 
         let background = self.mesh_cache.draw(renderer, bounds.size(), |frame| {
@@ -473,7 +474,7 @@ fn calculate_price_step(highest: f32, lowest: f32, labels_can_fit: i32) -> (f32,
     let range = highest - lowest;
     let mut step = 100.0; 
 
-    let steps = [100.0, 50.0, 20.0, 10.0, 5.0, 2.0, 1.0, 0.5];
+    let steps = [100.0, 50.0, 20.0, 10.0, 5.0, 2.0, 1.0, 0.5, 0.2, 0.1, 0.05];
 
     for &s in steps.iter().rev() {
         if range / s <= labels_can_fit as f32 {
@@ -555,7 +556,7 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
             return vec![];
         }
 
-        let x_labels_can_fit = (bounds.width / 100.0) as i32;
+        let x_labels_can_fit = (bounds.width / 90.0) as i32;
         let (time_step, rounded_earliest) = calculate_time_step(self.min, self.max, x_labels_can_fit);
 
         let labels = self.labels_cache.draw(renderer, bounds.size(), |frame| {
@@ -641,7 +642,7 @@ impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
             return vec![];
         }
 
-        let y_labels_can_fit = (bounds.height / 60.0) as i32;
+        let y_labels_can_fit = (bounds.height / 32.0) as i32;
         let (step, rounded_lowest) = calculate_price_step(self.max, self.min, y_labels_can_fit);
 
         let volume_area_height = bounds.height / 8.0; 
@@ -651,26 +652,31 @@ impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
             frame.with_save(|frame| {
                 let y_range = self.max - self.min;
                 let mut y = rounded_lowest;
-
+        
                 while y <= self.max {
                     let y_position = candlesticks_area_height - ((y - self.min) / y_range * candlesticks_area_height);
-
+        
                     let text_size = 12.0;
+                    let decimal_places = if step.fract() == 0.0 { 0 } else { 1 };
+                    let label_content = match decimal_places {
+                        0 => format!("{:.0}", y),
+                        _ => format!("{:.1}", y),
+                    };
                     let label = canvas::Text {
-                        content: format!("{:.1}", y),
+                        content: label_content,
                         position: Point::new(5.0, y_position - text_size / 2.0),
                         size: iced::Pixels(text_size),
                         color: Color::from_rgba8(200, 200, 200, 1.0),
                         ..canvas::Text::default()
                     };  
-
+        
                     label.draw_with(|path, color| {
                         frame.fill(&path, color);
                     });
                     y += step;
                 }
             });
-        });
+        });   
 
         vec![labels]
     }
