@@ -87,32 +87,37 @@ impl CustomLine {
         let latest: i64 = self.klines_raw.keys().last().map_or(0, |time| time.timestamp() - (self.translation.x*10.0) as i64);
         let earliest: i64 = latest - (6400.0 / (self.scaling / (self.chart_width/800.0))) as i64;
 
-        let (visible_klines, highest, lowest, avg_body_height, _) = self.klines_raw.iter()
+        let (visible_klines, highest, lowest, avg_body_height, _, _) = self.klines_raw.iter()
             .filter(|(time, _)| {
                 let timestamp = time.timestamp();
                 timestamp >= earliest && timestamp <= latest
             })
-            .fold((vec![], f32::MIN, f32::MAX, 0.0f32, 0.0f32), |(mut klines, highest, lowest, total_body_height, max_vol), (time, kline)| {
+            .fold((vec![], f32::MIN, f32::MAX, 0.0f32, 0.0f32, None), |(mut klines, highest, lowest, total_body_height, max_vol, latest_kline), (time, kline)| {
                 let body_height = (kline.0 - kline.3).abs();
                 klines.push((*time, *kline));
+                let total_body_height = match latest_kline {
+                    Some(_) => total_body_height + body_height,
+                    None => total_body_height,
+                };
                 (
                     klines,
                     highest.max(kline.1),
                     lowest.min(kline.2),
-                    total_body_height + body_height,
-                    max_vol.max(kline.4.max(kline.5)) 
+                    total_body_height,
+                    max_vol.max(kline.4.max(kline.5)),
+                    Some(kline)
                 )
             });
 
-        if visible_klines.is_empty() {
+        if visible_klines.is_empty() || visible_klines.len() == 1 {
             return;
         }
-        let avg_body_height = avg_body_height / visible_klines.len() as f32;
+
+        let avg_body_height = avg_body_height / (visible_klines.len() - 1) as f32;
         let (highest, lowest) = (highest + avg_body_height, lowest - avg_body_height);
 
         if earliest != self.x_min_time || latest != self.x_max_time || lowest != self.y_min_price || highest != self.y_max_price {
             self.x_labels_cache.clear();
-            self.y_labels_cache.clear();
             self.mesh_cache.clear();
         }
 
@@ -120,6 +125,8 @@ impl CustomLine {
         self.x_max_time = latest;
         self.y_min_price = lowest;
         self.y_max_price = highest;
+
+        self.y_labels_cache.clear();
     }
 
     pub fn update(&mut self, message: Message) {
@@ -163,18 +170,21 @@ impl CustomLine {
                 labels_cache: &self.x_labels_cache, min: self.x_min_time, max: self.x_max_time 
             })
             .width(Length::FillPortion(10))
-            .height(Length::Fixed(30.0));
+            .height(Length::Fixed(26.0));
+
+        let last_close_price = self.klines_raw.values().last().map_or(0.0, |kline| kline.3);
+        let last_open_price = self.klines_raw.values().last().map_or(0.0, |kline| kline.0);
     
         let axis_labels_y = Canvas::new(
             AxisLabelYCanvas { 
-                labels_cache: &self.y_labels_cache, min: self.y_min_price, max: self.y_max_price 
+                labels_cache: &self.y_labels_cache, min: self.y_min_price, max: self.y_max_price, last_close_price, last_open_price 
             })
-            .width(Length::Fixed(45.0))
+            .width(Length::Fixed(52.0))
             .height(Length::FillPortion(10));
     
         let empty_space = Container::new(Space::new(Length::Fixed(40.0), Length::Fixed(40.0)))
-            .width(Length::Fixed(45.0))
-            .height(Length::Fixed(30.0));
+            .width(Length::Fixed(52.0))
+            .height(Length::Fixed(26.0));
     
         let chart_and_y_labels = Row::new()
             .push(chart)
@@ -334,28 +344,33 @@ impl canvas::Program<Message> for CustomLine {
         let latest: i64 = self.klines_raw.keys().last().map_or(0, |time| time.timestamp() - (self.translation.x*10.0) as i64);
         let earliest: i64 = latest - (6400.0 / (self.scaling / (bounds.width/800.0))) as i64;
     
-        let (visible_klines, highest, lowest, avg_body_height, max_volume) = self.klines_raw.iter()
+        let (visible_klines, highest, lowest, avg_body_height, max_volume, _) = self.klines_raw.iter()
             .filter(|(time, _)| {
                 let timestamp = time.timestamp();
                 timestamp >= earliest && timestamp <= latest
             })
-            .fold((vec![], f32::MIN, f32::MAX, 0.0f32, 0.0f32), |(mut klines, highest, lowest, total_body_height, max_vol), (time, kline)| {
+            .fold((vec![], f32::MIN, f32::MAX, 0.0f32, 0.0f32, None), |(mut klines, highest, lowest, total_body_height, max_vol, latest_kline), (time, kline)| {
                 let body_height = (kline.0 - kline.3).abs();
                 klines.push((*time, *kline));
+                let total_body_height = match latest_kline {
+                    Some(_) => total_body_height + body_height,
+                    None => total_body_height,
+                };
                 (
                     klines,
                     highest.max(kline.1),
                     lowest.min(kline.2),
-                    total_body_height + body_height,
-                    max_vol.max(kline.4.max(kline.5)) 
+                    total_body_height,
+                    max_vol.max(kline.4.max(kline.5)),
+                    Some(kline)
                 )
             });
-    
-        if visible_klines.is_empty() {
+
+        if visible_klines.is_empty() || visible_klines.len() == 1 {
             return vec![];
         }
-    
-        let avg_body_height = avg_body_height / visible_klines.len() as f32;
+
+        let avg_body_height = avg_body_height / (visible_klines.len() - 1) as f32;
         let (highest, lowest) = (highest + avg_body_height, lowest - avg_body_height);
         let y_range = highest - lowest;
 
@@ -616,6 +631,8 @@ pub struct AxisLabelYCanvas<'a> {
     labels_cache: &'a Cache,
     min: f32,
     max: f32,
+    last_close_price: f32,
+    last_open_price: f32,
 }
 impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
     type State = Interaction;
@@ -652,10 +669,10 @@ impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
             frame.with_save(|frame| {
                 let y_range = self.max - self.min;
                 let mut y = rounded_lowest;
-        
+
                 while y <= self.max {
                     let y_position = candlesticks_area_height - ((y - self.min) / y_range * candlesticks_area_height);
-        
+
                     let text_size = 12.0;
                     let decimal_places = if step.fract() == 0.0 { 0 } else { 1 };
                     let label_content = match decimal_places {
@@ -664,19 +681,37 @@ impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
                     };
                     let label = canvas::Text {
                         content: label_content,
-                        position: Point::new(5.0, y_position - text_size / 2.0),
+                        position: Point::new(10.0, y_position - text_size / 2.0),
                         size: iced::Pixels(text_size),
                         color: Color::from_rgba8(200, 200, 200, 1.0),
                         ..canvas::Text::default()
                     };  
-        
+
                     label.draw_with(|path, color| {
                         frame.fill(&path, color);
                     });
+
                     y += step;
                 }
+
+                let last_close_y_position = candlesticks_area_height - ((self.last_close_price - self.min) / y_range * candlesticks_area_height);
+
+                let triangle_color = if self.last_close_price >= self.last_open_price {
+                    Color::from_rgba8(81, 205, 160, 0.9) 
+                } else {
+                    Color::from_rgba8(192, 80, 77, 0.9) 
+                };
+
+                let triangle = Path::new(|path| {
+                    path.move_to(Point::new(5.0, last_close_y_position));
+                    path.line_to(Point::new(0.0, last_close_y_position - 5.0));
+                    path.line_to(Point::new(0.0, last_close_y_position + 5.0));
+                    path.close();
+                });
+
+                frame.fill(&triangle, triangle_color);
             });
-        });   
+        });
 
         vec![labels]
     }
