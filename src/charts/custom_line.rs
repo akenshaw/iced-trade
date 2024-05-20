@@ -1,12 +1,9 @@
 use std::collections::BTreeMap;
 use chrono::{DateTime, Utc, TimeZone, LocalResult, Duration, NaiveDateTime, Timelike};
 use iced::{
-    mouse, 
-    widget::canvas::{self, event::{self, Event}, 
-    stroke::Stroke, Cache, Geometry, Path, Canvas}, 
-    window, Color, Point, Rectangle, Renderer, Size, Theme, Vector, Element, Length
+    alignment, mouse, widget::{button, canvas::{self, event::{self, Event}, stroke::Stroke, Cache, Canvas, Geometry, Path}}, window, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector
 };
-use iced::widget::{Column, Row, Container, Space};
+use iced::widget::{Column, Row, Container, Text};
 use crate::market_data::Kline;
 
 #[derive(Debug, Clone)]
@@ -14,18 +11,24 @@ pub enum Message {
     Translated(Vector),
     Scaled(f32, Option<Vector>),
     ChartBounds(f32, f32),
+    AutoscaleToggle,
+    CrosshairToggle,
+    CrosshairMoved(Point),
 }
 
 #[derive(Debug)]
 pub struct CustomLine {
     mesh_cache: Cache,
     candles_cache: Cache,
+    crosshair_cache: Cache,
     x_labels_cache: Cache,
     y_labels_cache: Cache,
     translation: Vector,
     scaling: f32,
     klines_raw: BTreeMap<DateTime<Utc>, (f32, f32, f32, f32, f32, f32)>,
     autoscale: bool,
+    crosshair: bool,
+    crosshair_position: Point,
     x_min_time: i64,
     x_max_time: i64,
     y_min_price: f32,
@@ -54,12 +57,15 @@ impl CustomLine {
         CustomLine {
             mesh_cache: canvas::Cache::default(),
             candles_cache: canvas::Cache::default(),
+            crosshair_cache: canvas::Cache::default(),
             x_labels_cache: canvas::Cache::default(),
             y_labels_cache: canvas::Cache::default(),
             klines_raw,
             translation: Vector::default(),
             scaling: 1.0,
             autoscale: true,
+            crosshair: false,
+            crosshair_position: Point::new(0.0, 0.0),
             x_min_time: 0,
             x_max_time: 0,
             y_min_price: 0.0,
@@ -127,6 +133,7 @@ impl CustomLine {
         self.y_max_price = highest;
 
         self.y_labels_cache.clear();
+        self.crosshair_cache.clear();
     }
 
     pub fn update(&mut self, message: Message) {
@@ -137,6 +144,7 @@ impl CustomLine {
                 } else {
                     self.translation = translation;
                 }
+                self.crosshair_position = Point::new(0.0, 0.0);
 
                 self.render_start();
             }
@@ -150,12 +158,23 @@ impl CustomLine {
                         self.translation = translation;
                     }
                 }
+                self.crosshair_position = Point::new(0.0, 0.0);
 
                 self.render_start();
             }
             Message::ChartBounds(width, height) => {
                 self.chart_width = width;
                 self.chart_height = height;
+            }
+            Message::AutoscaleToggle => {
+                self.autoscale = !self.autoscale;
+            }
+            Message::CrosshairToggle => {
+                self.crosshair = !self.crosshair;
+            }
+            Message::CrosshairMoved(position) => {
+                self.crosshair_position = position;
+                self.crosshair_cache.clear();
             }
         }
     }
@@ -167,7 +186,7 @@ impl CustomLine {
     
         let axis_labels_x = Canvas::new(
             AxisLabelXCanvas { 
-                labels_cache: &self.x_labels_cache, min: self.x_min_time, max: self.x_max_time 
+                labels_cache: &self.x_labels_cache, min: self.x_min_time, max: self.x_max_time, crosshair_cache: &self.crosshair_cache, crosshair_position: self.crosshair_position, crosshair: self.crosshair
             })
             .width(Length::FillPortion(10))
             .height(Length::Fixed(26.0));
@@ -177,24 +196,45 @@ impl CustomLine {
     
         let axis_labels_y = Canvas::new(
             AxisLabelYCanvas { 
-                labels_cache: &self.y_labels_cache, min: self.y_min_price, max: self.y_max_price, last_close_price, last_open_price 
+                labels_cache: &self.y_labels_cache, crosshair_cache: &self.crosshair_cache, min: self.y_min_price, max: self.y_max_price, last_close_price, last_open_price, crosshair_position: self.crosshair_position, crosshair: self.crosshair
             })
-            .width(Length::Fixed(52.0))
+            .width(Length::Fixed(60.0))
             .height(Length::FillPortion(10));
+
+        let autoscale_button = button(
+            Text::new("A")
+                .size(10)
+                .horizontal_alignment(alignment::Horizontal::Center)
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .on_press(Message::AutoscaleToggle)
+            .style(MinDarkButtonStyleSheet::new(self.autoscale));
+        let crosshair_button = button(
+            Text::new("+")
+                .size(10)
+                .horizontal_alignment(alignment::Horizontal::Center)
+            ) 
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .on_press(Message::CrosshairToggle)
+            .style(MinDarkButtonStyleSheet::new(self.crosshair));
     
-        let empty_space = Container::new(Space::new(Length::Fixed(40.0), Length::Fixed(40.0)))
-            .width(Length::Fixed(52.0))
+        let chart_controls = Container::new(
+            Row::new()
+                .push(autoscale_button)
+                .push(crosshair_button).spacing(2)
+            ).padding([0, 2, 0, 2])
+            .width(Length::Fixed(60.0))
             .height(Length::Fixed(26.0));
-    
+
         let chart_and_y_labels = Row::new()
             .push(chart)
-            .push(axis_labels_y)
-            .spacing(0);
+            .push(axis_labels_y);
     
         let bottom_row = Row::new()
             .push(axis_labels_x)
-            .push(empty_space)
-            .spacing(0);
+            .push(chart_controls);
     
         let content = Column::new()
             .push(chart_and_y_labels)
@@ -206,6 +246,62 @@ impl CustomLine {
     }
 }
 
+pub struct MinDarkButtonStyleSheet {
+    is_active: bool,
+}
+
+impl MinDarkButtonStyleSheet {
+    pub fn new(is_active: bool) -> iced::theme::Button {
+        iced::theme::Button::Custom(Box::new(Self { is_active }))
+    }
+}
+
+impl button::StyleSheet for MinDarkButtonStyleSheet {
+    type Style = iced::Theme;
+
+    fn active(&self, _style: &Self::Style) -> button::Appearance {
+        let background = if self.is_active {
+            iced::Background::Color(Color::from_rgba8(20, 20, 20, 255.0)) 
+        } else {
+            iced::Background::Color(Color::from_rgba8(0, 0, 0, 255.0)) 
+        };
+        let border_color = if self.is_active {
+            Color::from_rgba8(50, 50, 50, 255.0)
+        } else {
+            Color::from_rgba8(20, 20, 20, 255.0)
+        };
+
+        button::Appearance {
+            background: Some(background),
+            text_color: Color::WHITE,
+            border: iced::Border {
+                color: border_color,
+                width: 1.0,
+                radius: 4.0.into(),
+            },
+            ..Default::default()
+        }
+    }
+    fn hovered(&self, _style: &Self::Style) -> button::Appearance {    
+        let background = iced::Background::Color(Color::from_rgba8(40, 40, 40,255.0));
+        let border_color = if self.is_active {
+            Color::from_rgba8(50, 50, 50, 255.0)
+        } else {
+            Color::from_rgba8(20, 20, 20, 255.0)
+        };
+
+        button::Appearance {
+            background: Some(background),
+            text_color: Color::WHITE,
+            border: iced::Border {
+                color: border_color,
+                width: 1.0,
+                radius: 4.0.into(),
+            },
+            ..Default::default()
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum Interaction {
@@ -239,7 +335,13 @@ impl canvas::Program<Message> for CustomLine {
         }
 
         let Some(cursor_position) = cursor.position_in(bounds) else {
-            return (event::Status::Ignored, None);
+            return (event::Status::Ignored, 
+                if self.crosshair {
+                    Some(Message::CrosshairMoved(Point::new(0.0, 0.0)))
+                } else {
+                    None
+                }
+                );
         };
 
         match event {
@@ -273,7 +375,12 @@ impl canvas::Program<Message> for CustomLine {
                                         * (1.0 / self.scaling),
                             ))
                         }
-                        Interaction::None => None,
+                        Interaction::None => 
+                            if self.crosshair && cursor.is_over(bounds) {
+                                Some(Message::CrosshairMoved(cursor_position))
+                            } else {
+                                None
+                            },
                     };
 
                     let event_status = match interaction {
@@ -339,7 +446,7 @@ impl canvas::Program<Message> for CustomLine {
         renderer: &Renderer,
         _theme: &Theme,
         bounds: Rectangle,
-        _cursor: mouse::Cursor,
+        cursor: mouse::Cursor,
     ) -> Vec<Geometry> {    
         let latest: i64 = self.klines_raw.keys().last().map_or(0, |time| time.timestamp() - (self.translation.x*10.0) as i64);
         let earliest: i64 = latest - (6400.0 / (self.scaling / (bounds.width/800.0))) as i64;
@@ -464,7 +571,30 @@ impl canvas::Program<Message> for CustomLine {
                 }
             });
 
-        vec![background, candlesticks]
+        if self.crosshair {
+            let crosshair = self.crosshair_cache.draw(renderer, bounds.size(), |frame| {
+                if let Some(cursor_position) = cursor.position_in(bounds) {
+                    let x = cursor_position.x;
+                    let y = cursor_position.y;
+
+                    let line = Path::line(
+                        Point::new(x, 0.0), 
+                        Point::new(x, bounds.height as f32)
+                    );
+                    frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(200, 200, 200, 1.0)).with_width(1.0));
+
+                    let line = Path::line(
+                        Point::new(0.0, y), 
+                        Point::new(bounds.width as f32, y)
+                    );
+                    frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(200, 200, 200, 1.0)).with_width(1.0));
+                }
+            });
+
+            return vec![background, crosshair, candlesticks];
+        }   else {
+            return vec![background, candlesticks];
+        }
     }
 
     fn mouse_interaction(
@@ -543,6 +673,9 @@ impl Default for CustomLine {
 }
 pub struct AxisLabelXCanvas<'a> {
     labels_cache: &'a Cache,
+    crosshair_cache: &'a Cache,
+    crosshair_position: Point,
+    crosshair: bool,
     min: i64,
     max: i64,
 }
@@ -551,10 +684,10 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
 
     fn update(
         &self,
-        interaction: &mut Interaction,
-        event: Event,
-        bounds: Rectangle,
-        cursor: mouse::Cursor,
+        _interaction: &mut Interaction,
+        _event: Event,
+        _bounds: Rectangle,
+        _cursor: mouse::Cursor,
     ) -> (event::Status, Option<Message>) {
         (event::Status::Ignored, None)
     }
@@ -606,8 +739,39 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
                 }
             });
         });
+        let crosshair = self.crosshair_cache.draw(renderer, bounds.size(), |frame| {
+            if self.crosshair && self.crosshair_position.x > 0.0 {
+                let latest_in_millis = self.max * 1000;
+                let earliest_in_millis = self.min * 1000;
 
-        vec![labels]
+                let crosshair_ratio = self.crosshair_position.x as f64 / bounds.width as f64;
+                let crosshair_millis = earliest_in_millis as f64 + crosshair_ratio * (latest_in_millis - earliest_in_millis) as f64;
+                let crosshair_time = NaiveDateTime::from_timestamp((crosshair_millis / 1000.0) as i64, 0);
+
+                let text_size = 12.0;
+                let text_content = crosshair_time.format("%H:%M").to_string();
+                let growth_amount = 6.0; 
+                let rectangle_position = Point::new(self.crosshair_position.x - 14.0 - growth_amount, bounds.height as f32 - 20.0);
+                let text_position = Point::new(self.crosshair_position.x - 14.0, bounds.height as f32 - 20.0);
+
+                let text_background = canvas::Path::rectangle(rectangle_position, Size::new(text_content.len() as f32 * text_size/2.0 + 2.0 * growth_amount, text_size + text_size/2.0));
+                frame.fill(&text_background, Color::from_rgba8(200, 200, 200, 1.0));
+
+                let crosshair_label = canvas::Text {
+                    content: text_content,
+                    position: text_position,
+                    size: iced::Pixels(text_size),
+                    color: Color::from_rgba8(0, 0, 0, 1.0),
+                    ..canvas::Text::default()
+                };
+
+                crosshair_label.draw_with(|path, color| {
+                    frame.fill(&path, color);
+                });
+            }
+        });
+
+        vec![labels, crosshair]
     }
 
     fn mouse_interaction(
@@ -629,20 +793,23 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
 }
 pub struct AxisLabelYCanvas<'a> {
     labels_cache: &'a Cache,
+    crosshair_cache: &'a Cache,
     min: f32,
     max: f32,
     last_close_price: f32,
     last_open_price: f32,
+    crosshair_position: Point,
+    crosshair: bool,
 }
 impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
     type State = Interaction;
 
     fn update(
         &self,
-        interaction: &mut Interaction,
-        event: Event,
-        bounds: Rectangle,
-        cursor: mouse::Cursor,
+        _interaction: &mut Interaction,
+        _event: Event,
+        _bounds: Rectangle,
+        _cursor: mouse::Cursor,
     ) -> (event::Status, Option<Message>) {
         (event::Status::Ignored, None)
     }
@@ -712,8 +879,34 @@ impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
                 frame.fill(&triangle, triangle_color);
             });
         });
+        let crosshair = self.crosshair_cache.draw(renderer, bounds.size(), |frame| {
+            if self.crosshair && self.crosshair_position.y > 0.0 {
+                let text_size = 12.0;
+                let y_range = self.max - self.min;
+                let label_content = format!("{:.1}", self.min + (y_range * (candlesticks_area_height - self.crosshair_position.y) / candlesticks_area_height));
+                
+                let growth_amount = 3.0; 
+                let rectangle_position = Point::new(8.0 - growth_amount, self.crosshair_position.y - text_size / 2.0 - 3.0);
+                let text_position = Point::new(8.0, self.crosshair_position.y - text_size / 2.0 - 3.0);
 
-        vec![labels]
+                let text_background = canvas::Path::rectangle(rectangle_position, Size::new(label_content.len() as f32 * text_size / 2.0 + 2.0 * growth_amount, text_size + text_size / 1.8));
+                frame.fill(&text_background, Color::from_rgba8(200, 200, 200, 1.0));
+
+                let label = canvas::Text {
+                    content: label_content,
+                    position: text_position,
+                    size: iced::Pixels(text_size),
+                    color: Color::from_rgba8(0, 0, 0, 1.0),
+                    ..canvas::Text::default()
+                };
+
+                label.draw_with(|path, color| {
+                    frame.fill(&path, color);
+                });
+            }
+        });
+
+        vec![labels, crosshair]
     }
 
     fn mouse_interaction(
