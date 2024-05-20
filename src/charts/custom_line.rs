@@ -203,7 +203,7 @@ impl CustomLine {
 
         let autoscale_button = button(
             Text::new("A")
-                .size(10)
+                .size(12)
                 .horizontal_alignment(alignment::Horizontal::Center)
             )
             .width(Length::Fill)
@@ -212,7 +212,7 @@ impl CustomLine {
             .style(MinDarkButtonStyleSheet::new(self.autoscale));
         let crosshair_button = button(
             Text::new("+")
-                .size(10)
+                .size(12)
                 .horizontal_alignment(alignment::Horizontal::Center)
             ) 
             .width(Length::Fill)
@@ -277,7 +277,7 @@ impl button::StyleSheet for MinDarkButtonStyleSheet {
             border: iced::Border {
                 color: border_color,
                 width: 1.0,
-                radius: 4.0.into(),
+                radius: 3.0.into(),
             },
             ..Default::default()
         }
@@ -296,7 +296,7 @@ impl button::StyleSheet for MinDarkButtonStyleSheet {
             border: iced::Border {
                 color: border_color,
                 width: 1.0,
-                radius: 4.0.into(),
+                radius: 3.0.into(),
             },
             ..Default::default()
         }
@@ -581,13 +581,39 @@ impl canvas::Program<Message> for CustomLine {
                         Point::new(x, 0.0), 
                         Point::new(x, bounds.height as f32)
                     );
-                    frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(200, 200, 200, 1.0)).with_width(1.0));
+                    frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(200, 200, 200, 0.6)).with_width(1.0));
 
                     let line = Path::line(
                         Point::new(0.0, y), 
                         Point::new(bounds.width as f32, y)
                     );
-                    frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(200, 200, 200, 1.0)).with_width(1.0));
+                    frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(200, 200, 200, 0.6)).with_width(1.0));
+
+                    let crosshair_ratio = cursor_position.x as f64 / bounds.width as f64;
+                    let crosshair_millis = earliest as f64 * 1000.0 + crosshair_ratio * (latest as f64 * 1000.0 - earliest as f64 * 1000.0);
+                    let crosshair_time = NaiveDateTime::from_timestamp((crosshair_millis / 1000.0) as i64, 0);
+
+                    if let Some((_closest_time, kline)) = self.klines_raw.iter()
+                        .filter(|(time, _)| {
+                            let timestamp = time.timestamp();
+                            timestamp >= earliest && timestamp <= latest
+                        })
+                        .min_by_key(|(time, _)| ((time.timestamp() as f64 - crosshair_time.timestamp() as f64).abs() as i64)) {
+                        
+                        let tooltip_text = format!(
+                            "O: {} H: {} L: {} C: {}\nBuyV: {:.0} SellV: {:.0}",
+                            kline.0, kline.1, kline.2, kline.3, kline.4, kline.5
+                        );
+
+                        let text = canvas::Text {
+                            content: tooltip_text,
+                            position: Point::new(10.0, 10.0),
+                            size: iced::Pixels(12.0),
+                            color: Color::from_rgba8(120, 120, 120, 1.0),
+                            ..canvas::Text::default()
+                        };
+                        frame.fill_text(text);
+                    }
                 }
             });
 
@@ -754,7 +780,7 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
                 let rectangle_position = Point::new(self.crosshair_position.x - 14.0 - growth_amount, bounds.height as f32 - 20.0);
                 let text_position = Point::new(self.crosshair_position.x - 14.0, bounds.height as f32 - 20.0);
 
-                let text_background = canvas::Path::rectangle(rectangle_position, Size::new(text_content.len() as f32 * text_size/2.0 + 2.0 * growth_amount, text_size + text_size/2.0));
+                let text_background = canvas::Path::rectangle(rectangle_position, Size::new(text_content.len() as f32 * text_size/2.0 + 2.0 * growth_amount + 1.0, text_size + text_size/2.0));
                 frame.fill(&text_background, Color::from_rgba8(200, 200, 200, 1.0));
 
                 let crosshair_label = canvas::Text {
@@ -889,7 +915,7 @@ impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
                 let rectangle_position = Point::new(8.0 - growth_amount, self.crosshair_position.y - text_size / 2.0 - 3.0);
                 let text_position = Point::new(8.0, self.crosshair_position.y - text_size / 2.0 - 3.0);
 
-                let text_background = canvas::Path::rectangle(rectangle_position, Size::new(label_content.len() as f32 * text_size / 2.0 + 2.0 * growth_amount, text_size + text_size / 1.8));
+                let text_background = canvas::Path::rectangle(rectangle_position, Size::new(label_content.len() as f32 * text_size / 2.0 + 2.0 * growth_amount + 4.0, text_size + text_size / 1.8));
                 frame.fill(&text_background, Color::from_rgba8(200, 200, 200, 1.0));
 
                 let label = canvas::Text {
