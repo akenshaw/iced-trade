@@ -292,13 +292,14 @@ impl Application for State {
     type Theme = Theme;
 
     fn new(_flags: Self::Flags) -> (Self, Command<Self::Message>) {
-        let (panes, first_pane) = pane_grid::State::new(Pane::new(PaneId::CandlestickChart));
+        let (panes, first_pane) = pane_grid::State::new(Pane::new(PaneId::CustomChart));
 
         let mut panes_open = HashMap::new();
         panes_open.insert(PaneId::HeatmapChart, true);
-        panes_open.insert(PaneId::CandlestickChart, true);
+        panes_open.insert(PaneId::CandlestickChart, false);
         panes_open.insert(PaneId::TimeAndSales, false);
         panes_open.insert(PaneId::TradePanel, false);
+        panes_open.insert(PaneId::CustomChart, true);
         (
             Self { 
                 size_filter_timesales: 0.0,
