@@ -10,7 +10,7 @@ use crate::market_data::Kline;
 pub enum Message {
     Translated(Vector),
     Scaled(f32, Option<Vector>),
-    ChartBounds(f32, f32),
+    ChartBounds(Rectangle),
     AutoscaleToggle,
     CrosshairToggle,
     CrosshairMoved(Point),
@@ -26,6 +26,7 @@ pub struct CustomLine {
     translation: Vector,
     scaling: f32,
     klines_raw: BTreeMap<DateTime<Utc>, (f32, f32, f32, f32, f32, f32)>,
+    timeframe: i16,
     autoscale: bool,
     crosshair: bool,
     crosshair_position: Point,
@@ -33,14 +34,13 @@ pub struct CustomLine {
     x_max_time: i64,
     y_min_price: f32,
     y_max_price: f32,
-    chart_width: f32,
-    chart_height: f32,
+    bounds: Rectangle,
 }
 impl CustomLine {
     const MIN_SCALING: f32 = 0.1;
     const MAX_SCALING: f32 = 2.0;
 
-    pub fn new(klines: Vec<Kline>, _timeframe_in_minutes: i16) -> CustomLine {
+    pub fn new(klines: Vec<Kline>, timeframe: i16) -> CustomLine {
         let _size = window::Settings::default().size;
         let mut klines_raw = BTreeMap::new();
 
@@ -60,6 +60,7 @@ impl CustomLine {
             crosshair_cache: canvas::Cache::default(),
             x_labels_cache: canvas::Cache::default(),
             y_labels_cache: canvas::Cache::default(),
+            timeframe,
             klines_raw,
             translation: Vector::default(),
             scaling: 1.0,
@@ -70,8 +71,7 @@ impl CustomLine {
             x_max_time: 0,
             y_min_price: 0.0,
             y_max_price: 0.0,
-            chart_width: 0.0,
-            chart_height: 0.0,
+            bounds: Rectangle::default(),
         }
     }
 
@@ -90,8 +90,8 @@ impl CustomLine {
     pub fn render_start(&mut self) {
         self.candles_cache.clear();
 
-        let latest: i64 = self.klines_raw.keys().last().map_or(0, |time| time.timestamp() - (self.translation.x*10.0) as i64);
-        let earliest: i64 = latest - (6400.0 / (self.scaling / (self.chart_width/800.0))) as i64;
+        let latest: i64 = self.klines_raw.keys().last().map_or(0, |time| time.timestamp() - ((self.translation.x*10.0)*(self.timeframe as f32)) as i64);
+        let earliest: i64 = latest - ((6400.0*self.timeframe as f32) / (self.scaling / (self.bounds.width/800.0))) as i64;
 
         let (visible_klines, highest, lowest, avg_body_height, _, _) = self.klines_raw.iter()
             .filter(|(time, _)| {
@@ -162,9 +162,8 @@ impl CustomLine {
 
                 self.render_start();
             }
-            Message::ChartBounds(width, height) => {
-                self.chart_width = width;
-                self.chart_height = height;
+            Message::ChartBounds(bounds) => {
+                self.bounds = bounds;
             }
             Message::AutoscaleToggle => {
                 self.autoscale = !self.autoscale;
@@ -186,7 +185,12 @@ impl CustomLine {
     
         let axis_labels_x = Canvas::new(
             AxisLabelXCanvas { 
-                labels_cache: &self.x_labels_cache, min: self.x_min_time, max: self.x_max_time, crosshair_cache: &self.crosshair_cache, crosshair_position: self.crosshair_position, crosshair: self.crosshair
+                labels_cache: &self.x_labels_cache, 
+                min: self.x_min_time, 
+                max: self.x_max_time, 
+                crosshair_cache: &self.crosshair_cache, 
+                crosshair_position: self.crosshair_position, 
+                crosshair: self.crosshair
             })
             .width(Length::FillPortion(10))
             .height(Length::Fixed(26.0));
@@ -196,7 +200,14 @@ impl CustomLine {
     
         let axis_labels_y = Canvas::new(
             AxisLabelYCanvas { 
-                labels_cache: &self.y_labels_cache, crosshair_cache: &self.crosshair_cache, min: self.y_min_price, max: self.y_max_price, last_close_price, last_open_price, crosshair_position: self.crosshair_position, crosshair: self.crosshair
+                labels_cache: &self.y_labels_cache, 
+                crosshair_cache: &self.crosshair_cache, 
+                min: self.y_min_price,
+                max: self.y_max_price,
+                last_close_price, 
+                last_open_price, 
+                crosshair_position: self.crosshair_position, 
+                crosshair: self.crosshair
             })
             .width(Length::Fixed(60.0))
             .height(Length::FillPortion(10));
@@ -326,8 +337,8 @@ impl canvas::Program<Message> for CustomLine {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> (event::Status, Option<Message>) {        
-        if bounds.width != self.chart_width || bounds.height != self.chart_height {
-            return (event::Status::Ignored, Some(Message::ChartBounds(bounds.width, bounds.height)));
+        if bounds != self.bounds {
+            return (event::Status::Ignored, Some(Message::ChartBounds(bounds)));
         } 
         
         if let Event::Mouse(mouse::Event::ButtonReleased(_)) = event {
@@ -448,8 +459,8 @@ impl canvas::Program<Message> for CustomLine {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<Geometry> {    
-        let latest: i64 = self.klines_raw.keys().last().map_or(0, |time| time.timestamp() - (self.translation.x*10.0) as i64);
-        let earliest: i64 = latest - (6400.0 / (self.scaling / (bounds.width/800.0))) as i64;
+        let latest: i64 = self.klines_raw.keys().last().map_or(0, |time| time.timestamp() - ((self.translation.x*10.0)*(self.timeframe as f32)) as i64);
+        let earliest: i64 = latest - ((6400.0*self.timeframe as f32) / (self.scaling / (bounds.width/800.0))) as i64;
     
         let (visible_klines, highest, lowest, avg_body_height, max_volume, _) = self.klines_raw.iter()
             .filter(|(time, _)| {
@@ -643,9 +654,9 @@ impl canvas::Program<Message> for CustomLine {
 
 fn calculate_price_step(highest: f32, lowest: f32, labels_can_fit: i32) -> (f32, f32) {
     let range = highest - lowest;
-    let mut step = 100.0; 
+    let mut step = 1000.0; 
 
-    let steps = [100.0, 50.0, 20.0, 10.0, 5.0, 2.0, 1.0, 0.5, 0.2, 0.1, 0.05];
+    let steps = [1000.0, 500.0, 200.0, 100.0, 50.0, 20.0, 10.0, 5.0, 2.0, 1.0, 0.5, 0.2, 0.1, 0.05];
 
     for &s in steps.iter().rev() {
         if range / s <= labels_can_fit as f32 {
@@ -662,6 +673,11 @@ fn calculate_time_step(earliest: i64, latest: i64, labels_can_fit: i32) -> (Dura
     let duration_in_millis = duration * 1000; 
 
     let steps = [
+        Duration::days(1),
+        Duration::hours(12),
+        Duration::hours(8),
+        Duration::hours(4),
+        Duration::hours(2),
         Duration::minutes(60),
         Duration::minutes(30),
         Duration::minutes(15),
@@ -692,11 +708,6 @@ fn calculate_time_step(earliest: i64, latest: i64, labels_can_fit: i32) -> (Dura
     (selected_step, rounded_earliest)
 }
 
-impl Default for CustomLine {
-    fn default() -> Self {
-        Self::new(vec![], 1)
-    }
-}
 pub struct AxisLabelXCanvas<'a> {
     labels_cache: &'a Cache,
     crosshair_cache: &'a Cache,
@@ -729,15 +740,14 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
         if self.max == 0 {
             return vec![];
         }
+        let latest_in_millis = self.max * 1000; 
+        let earliest_in_millis = self.min * 1000; 
 
         let x_labels_can_fit = (bounds.width / 90.0) as i32;
         let (time_step, rounded_earliest) = calculate_time_step(self.min, self.max, x_labels_can_fit);
 
         let labels = self.labels_cache.draw(renderer, bounds.size(), |frame| {
             frame.with_save(|frame| {
-                let latest_in_millis = self.max * 1000; 
-                let earliest_in_millis = self.min * 1000; 
-
                 let mut time = rounded_earliest;
                 let latest_time = NaiveDateTime::from_timestamp(self.max, 0);
 
@@ -767,9 +777,6 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
         });
         let crosshair = self.crosshair_cache.draw(renderer, bounds.size(), |frame| {
             if self.crosshair && self.crosshair_position.x > 0.0 {
-                let latest_in_millis = self.max * 1000;
-                let earliest_in_millis = self.min * 1000;
-
                 let crosshair_ratio = self.crosshair_position.x as f64 / bounds.width as f64;
                 let crosshair_millis = earliest_in_millis as f64 + crosshair_ratio * (latest_in_millis - earliest_in_millis) as f64;
                 let crosshair_time = NaiveDateTime::from_timestamp((crosshair_millis / 1000.0) as i64, 0);
