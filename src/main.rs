@@ -6,15 +6,14 @@ mod charts;
 use charts::{candlesticks, custom_line::{self, CustomLine}, heatmap};
 
 use crate::heatmap::LineChart;
-use crate::candlesticks::CandlestickChart;
 
-use std::time::Instant;
+use std::vec;
 use std::cell::RefCell;
 use chrono::{NaiveDateTime, DateTime, Utc};
 use iced::{
     alignment, executor, font, theme::{self, Custom}, widget::{
         button, canvas, checkbox, pick_list, text_input, tooltip, Column, Container, Row, Slider, Space, Text
-    }, Alignment, Application, Color, Command, Element, Font, Length, Renderer, Settings, Size, Subscription, Theme, Vector
+    }, Alignment, Application, Color, Command, Element, Font, Length, Renderer, Settings, Size, Subscription, Theme
 };
 
 use iced::widget::pane_grid::{self, PaneGrid};
@@ -169,6 +168,12 @@ impl Pane {
         }
     }
 }
+#[derive(Debug, Clone, Copy)]
+enum StreamType {
+    Klines(Ticker, Timeframe),
+    DepthAndTrades(Ticker),
+    UserStream,
+}
 
 fn main() {
     State::run(Settings {
@@ -183,17 +188,18 @@ pub enum Message {
     Debug(String),
 
     CustomLine(custom_line::Message),
+    Candlestick(custom_line::Message),
 
     // Market&User data stream
     UserKeySucceed(String),
     UserKeyError,
     UserWsEvent(user_data::Event),
     TickerSelected(Ticker),
-    TimeframeSelected(Timeframe),
+    TimeframeSelected(Timeframe, pane_grid::Pane),
     ExchangeSelected(&'static str),
     MarketWsEvent(market_data::Event),
     WsToggle(),
-    FetchEvent(Result<Vec<market_data::Kline>, std::string::String>),
+    FetchEvent(Result<Vec<market_data::Kline>, std::string::String>, PaneId),
     UpdateAccInfo(user_data::FetchedBalance),
     
     // Pane grid
@@ -235,12 +241,12 @@ pub enum Message {
     SliderChanged(PaneId, f32),
     SyncWithHeatmap(bool),
 
-    CreateActiveStream(Ticker, Timeframe),
+    CutTheKlineStream,
 }
 
 struct State {
     trades_chart: Option<heatmap::LineChart>,
-    candlestick_chart: Option<candlesticks::CandlestickChart>,
+    candlestick_chart: Option<CustomLine>,
     time_and_sales: Option<TimeAndSales>,
     custom_line: Option<CustomLine>,
 
@@ -253,10 +259,8 @@ struct State {
     user_ws_state: UserWsState,
     ws_running: bool,
 
-    active_kline_streams: HashMap<(Ticker, Timeframe), (bool, WsState)>,
-
     // pane grid
-    panes_open: HashMap<PaneId, bool>,
+    panes_open: HashMap<PaneId, (bool, Option<StreamType>)>,
     panes: pane_grid::State<Pane>,
     focus: Option<pane_grid::Pane>,
     first_pane: pane_grid::Pane,
@@ -288,6 +292,8 @@ struct State {
     size_filter_timesales: f32,
     size_filter_heatmap: f32,
     sync_heatmap: bool,
+
+    kline_stream: bool,
 }
 
 impl Application for State {
@@ -299,17 +305,18 @@ impl Application for State {
     fn new(_flags: Self::Flags) -> (Self, Command<Self::Message>) {
         let (panes, first_pane) = pane_grid::State::new(Pane::new(PaneId::CustomChart));
 
-        let mut panes_open: HashMap<PaneId, bool> = HashMap::new();
-        panes_open.insert(PaneId::HeatmapChart, true);
-        panes_open.insert(PaneId::CandlestickChart, false);
-        panes_open.insert(PaneId::TimeAndSales, false);
-        panes_open.insert(PaneId::TradePanel, false);
-        panes_open.insert(PaneId::CustomChart, true);
+        let mut panes_open: HashMap<PaneId, (bool, Option<StreamType>)> = HashMap::new();
+        panes_open.insert(PaneId::HeatmapChart, (true, Some(StreamType::DepthAndTrades(Ticker::BTCUSDT))));
+        panes_open.insert(PaneId::TimeAndSales, (false, None));
+        panes_open.insert(PaneId::CandlestickChart, (false, Some(StreamType::Klines(Ticker::BTCUSDT, Timeframe::M15))));
+        panes_open.insert(PaneId::CustomChart, (true, Some(StreamType::Klines(Ticker::BTCUSDT, Timeframe::M1))));
+        panes_open.insert(PaneId::TradePanel, (false, None));
         (
             Self { 
                 size_filter_timesales: 0.0,
                 size_filter_heatmap: 0.0,
                 sync_heatmap: false,
+                kline_stream: true,
 
                 trades_chart: None,
                 candlestick_chart: None,
@@ -320,7 +327,6 @@ impl Application for State {
                 selected_timeframe: Some(Timeframe::M1),
                 selected_exchange: Some("Binance Futures"),
                 ws_state: WsState::Disconnected,
-                active_kline_streams: HashMap::new(),
                 user_ws_state: UserWsState::Disconnected,
                 ws_running: false,
                 panes,
@@ -411,16 +417,29 @@ impl Application for State {
                 }
                 Command::none()
             },
-
-            Message::TickerSelected(ticker) => {
-                self.selected_ticker = Some(ticker);
+            Message::Candlestick(message) => {
+                if let Some(candlesticks) = &mut self.candlestick_chart {
+                    candlesticks.update(message);
+                }
                 Command::none()
             },
-            Message::TimeframeSelected(timeframe) => {
-                self.selected_timeframe = Some(timeframe);
 
-                self.active_kline_streams.clear();
-        
+            Message::TickerSelected(ticker) => {
+                self.selected_ticker = Some(ticker.clone());
+
+                for value in self.panes_open.values_mut() {
+                    if let (true, Some(StreamType::Klines(_, timeframe))) = value {
+                        *value = (true, Some(StreamType::Klines(ticker.clone(), *timeframe)));
+                    }
+                }
+
+                Command::none()
+            },
+            Message::TimeframeSelected(timeframe, pane) => {
+                if !self.ws_running {
+                    return Command::none();
+                }
+
                 let selected_ticker = match &self.selected_ticker {
                     Some(ticker) => ticker,
                     None => {
@@ -428,37 +447,41 @@ impl Application for State {
                         return Command::none();
                     }
                 };
-                let selected_timeframe = match &self.selected_timeframe {
-                    Some(timeframe) => timeframe,
-                    None => {
-                        eprintln!("No timeframe selected");
-                        return Command::none();
-                    }
-                };
-            
-                let fetch_klines = Command::perform(
-                    market_data::fetch_klines(*selected_ticker, *selected_timeframe)
-                        .map_err(|err| format!("{}", err)), 
-                    |klines| {
-                        Message::FetchEvent(klines)
-                    }
-                );
-
-                let selected_ticker_clone = selected_ticker.clone();
-                let selected_timeframe_clone = selected_timeframe.clone();
+                self.kline_stream = false;
                 
+                let mut commands = vec![];
+                let mut dropped_streams = vec![];
+
+                self.panes.panes.get(&pane).map(|pane| {
+                    if let Some((_, stream_type)) = self.panes_open.get(&pane.id) {
+                        if let Some(StreamType::Klines(ticker, _)) = stream_type {
+                            self.panes_open.insert(pane.id, (true, Some(StreamType::Klines(*ticker, timeframe))));   
+
+                            let pane_id = pane.id;
+                            let fetch_klines = Command::perform(
+                            market_data::fetch_klines(*selected_ticker, timeframe)
+                                .map_err(|err| format!("{}", err)), 
+                            move |klines| {
+                                Message::FetchEvent(klines, pane_id)
+                            });
+
+                            dropped_streams.push(pane_id);
+                            
+                            commands.push(fetch_klines);                                  
+                        };
+                    }
+                });
+        
                 // sleep to drop existent stream and create new one
                 let remove_active_stream = Command::perform(
                     async {
                         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                     },
-                    move |_| Message::CreateActiveStream(selected_ticker_clone, selected_timeframe_clone)
+                    move |_| Message::CutTheKlineStream
                 );
+                commands.push(remove_active_stream);
 
-                self.custom_line = None;
-                self.candlestick_chart = None;
-
-                Command::batch(vec![fetch_klines, remove_active_stream])
+                Command::batch(commands)
             },
             Message::ExchangeSelected(exchange) => {
                 self.selected_exchange = Some(exchange);
@@ -467,32 +490,16 @@ impl Application for State {
             Message::WsToggle() => {
                 self.ws_running =! self.ws_running;
 
-                if self.ws_running {
+                if self.ws_running {  
+                    let mut commands = vec![];
+
                     let selected_ticker = match &self.selected_ticker {
                         Some(ticker) => ticker,
                         None => {
                             eprintln!("No ticker selected");
-                            self.ws_running = false;
                             return Command::none();
                         }
                     };
-                    let selected_timeframe = match &self.selected_timeframe {
-                        Some(timeframe) => timeframe,
-                        None => {
-                            eprintln!("No timeframe selected");
-                            self.ws_running = false;
-                            return Command::none();
-                        }
-                    };
-            
-                    let fetch_klines = Command::perform(
-                        market_data::fetch_klines(*selected_ticker, *selected_timeframe)
-                            .map_err(|err| format!("{}", err)), 
-                        |klines| {
-                            Message::FetchEvent(klines)
-                        }
-                    );
-                    let mut commands = vec![fetch_klines];
 
                     if let Some(_listen_key) = &self.listen_key {
                         let fetch_open_orders = Command::perform(
@@ -550,8 +557,8 @@ impl Application for State {
                     }
 
                     let first_pane = self.first_pane;
-
-                    for (pane_id, is_open) in &self.panes_open {
+        
+                    for (pane_id, (is_open, stream_type)) in &self.panes_open {
                         if *is_open {
                             if !self.panes.panes.values().any(|pane| pane.id == *pane_id) {
                                 let pane_id = *pane_id;
@@ -567,24 +574,38 @@ impl Application for State {
                                 commands.push(split_pane);
                             }
                             if *pane_id == PaneId::HeatmapChart {
-                                if self.trades_chart.is_none() {
-                                    self.trades_chart = Some(LineChart::new());
-                                }
+                                self.trades_chart = Some(LineChart::new());
                             }
                             if *pane_id == PaneId::TimeAndSales {
-                                if self.time_and_sales.is_none() {
-                                    self.time_and_sales = Some(TimeAndSales::new());
-                                }
-                            }
-                            if *pane_id == PaneId::CustomChart {
-                                self.active_kline_streams.insert(
-                                    (selected_ticker.clone(), selected_timeframe.clone()),
-                                    (true, WsState::Disconnected)
-                                );
+                                self.time_and_sales = Some(TimeAndSales::new());
                             }
                         }
-                    }
+                        let selected_ticker = match stream_type {
+                            Some(StreamType::DepthAndTrades(ticker)) => ticker,
+                            Some(StreamType::Klines(ticker, _)) => ticker,
+                            _ => {
+                                dbg!("No ticker selected");
+                                continue; 
+                            }
+                        };
+                        let selected_timeframe = match stream_type {
+                            Some(StreamType::Klines(_, timeframe)) => timeframe,
+                            _ => {
+                                dbg!("No timeframe selected");
+                                continue;   
+                            }
+                        };                            
 
+                        let pane_id = *pane_id;
+                        let fetch_klines = Command::perform(
+                            market_data::fetch_klines(*selected_ticker, *selected_timeframe)
+                                .map_err(|err| format!("{}", err)), 
+                            move |klines| {
+                                Message::FetchEvent(klines, pane_id)
+                            }
+                        );
+                        commands.push(fetch_klines);
+                    }
                     Command::batch(commands)
 
                 } else {
@@ -602,33 +623,24 @@ impl Application for State {
                     Command::none()
                 }
             },       
-            Message::FetchEvent(klines) => {
+            Message::FetchEvent(klines, target_pane) => {
                 match klines {
                     Ok(klines) => {
-                        let klines_clone = klines.clone(); // Clone klines
-                        let timeframe_in_minutes = match &self.selected_timeframe {
-                            Some(timeframe) => {
-                                match timeframe {
-                                    Timeframe::M1 => 1,
-                                    Timeframe::M3 => 3,
-                                    Timeframe::M5 => 5,
-                                    Timeframe::M15 => 15,
-                                    Timeframe::M30 => 30,
-                                }
-                            },
-                            None => {
-                                eprintln!("No timeframe selected");
-                                return Command::none();
+                        if let Some((_, Some(StreamType::Klines(_, timeframe)))) = self.panes_open.get(&target_pane) {
+                            match target_pane {
+                                PaneId::CustomChart => {
+                                    self.custom_line = Some(CustomLine::new(klines, *timeframe));
+                                },
+                                PaneId::CandlestickChart => {
+                                    self.candlestick_chart = Some(CustomLine::new(klines, *timeframe));
+                                },
+                                _ => {}
                             }
-                        };
-
-                        self.candlestick_chart = Some(CandlestickChart::new(klines, timeframe_in_minutes));
-
-                        self.custom_line = Some(CustomLine::new(klines_clone, timeframe_in_minutes));
+                        }
                     },
                     Err(err) => {
                         eprintln!("Error fetching klines: {}", err);
-                        self.candlestick_chart = Some(CandlestickChart::new(vec![], 1));
+                        self.candlestick_chart = Some(CustomLine::new(vec![], Timeframe::M1)); 
                     },
                 }
                 Command::none()
@@ -649,15 +661,25 @@ impl Application for State {
                             chart.update(depth_update, trades_buffer, bids, asks);
                         } 
                     }
-                    market_data::Event::KlineReceived(kline) => {
-                        let kline_clone = kline.clone();
-
-                        if let Some(chart) = &mut self.candlestick_chart {
-                            chart.update(kline);
-                        }
-                        
-                        if let Some(custom_line) = &mut self.custom_line {
-                            custom_line.insert_datapoint(kline_clone);
+                    market_data::Event::KlineReceived(kline, timeframe) => {
+                        for (pane_id, (_, stream_type_option)) in &self.panes_open {
+                            if let Some(StreamType::Klines(_, pane_timeframe)) = stream_type_option {
+                                if *pane_timeframe == timeframe {
+                                    match pane_id {
+                                        PaneId::CandlestickChart => {
+                                            if let Some(candlestick_chart) = &mut self.candlestick_chart {
+                                                candlestick_chart.insert_datapoint(kline.clone());
+                                            }
+                                        },
+                                        PaneId::CustomChart => {
+                                            if let Some(custom_line) = &mut self.custom_line {
+                                                custom_line.insert_datapoint(kline.clone());
+                                            }
+                                        },
+                                        _ => {}
+                                    }
+                                }
+                            }
                         }
                     }
                 };
@@ -749,15 +771,28 @@ impl Application for State {
                     None
                 };
 
+                if let Some(value) = self.panes_open.get_mut(&pane_id) {
+                    value.0 = true;
+                }
+
                 if Some(focus_pane) != None {
                     self.focus = focus_pane;
-                    self.panes_open.insert(pane_id, true);
 
+                    let selected_ticker = match &self.selected_ticker {
+                        Some(ticker) => ticker,
+                        None => {
+                            eprintln!("No ticker selected");
+                            return Command::none();
+                        }
+                    };
+                    
                     if pane_id == PaneId::TimeAndSales {
                         self.time_and_sales = Some(TimeAndSales::new());
+                        self.panes_open.insert(pane_id, (true, Some(StreamType::DepthAndTrades(*selected_ticker))));
                     }
                     if pane_id == PaneId::HeatmapChart {
                         self.trades_chart = Some(LineChart::new());
+                        self.panes_open.insert(pane_id, (true, Some(StreamType::DepthAndTrades(*selected_ticker))));
                     }
                 } 
 
@@ -793,21 +828,29 @@ impl Application for State {
                 self.panes.get(pane).map(|pane| {
                     match pane.id {
                         PaneId::HeatmapChart => {
-                            self.panes_open.insert(PaneId::HeatmapChart, false);
-                            self.trades_chart = None;
+                            if let Some(value) = self.panes_open.get_mut(&PaneId::HeatmapChart) {
+                                value.0 = false;
+                            }
                         },
                         PaneId::CandlestickChart => {
-                            self.panes_open.insert(PaneId::CandlestickChart, false);
+                            if let Some(value) = self.panes_open.get_mut(&PaneId::CandlestickChart) {
+                                value.0 = false;
+                            }
                         },
                         PaneId::CustomChart => {
-                            self.panes_open.insert(PaneId::CustomChart, false);
+                            if let Some(value) = self.panes_open.get_mut(&PaneId::CustomChart) {
+                                value.0 = false;
+                            }
                         },
                         PaneId::TimeAndSales => {
-                            self.panes_open.insert(PaneId::TimeAndSales, false);
-                            self.time_and_sales = None;
+                            if let Some(value) = self.panes_open.get_mut(&PaneId::TimeAndSales) {
+                                value.0 = false;
+                            }
                         },
                         PaneId::TradePanel => {
-                            self.panes_open.insert(PaneId::TradePanel, false);
+                            if let Some(value) = self.panes_open.get_mut(&PaneId::TradePanel) {
+                                value.0 = false;
+                            }
                         },  
                     }
                 });
@@ -1026,11 +1069,8 @@ impl Application for State {
             
                 Command::none()
             },
-            Message::CreateActiveStream(ticker, timeframe) => {
-                self.active_kline_streams.insert(
-                    (ticker, timeframe),
-                    (true, WsState::Disconnected)
-                );
+            Message::CutTheKlineStream => {
+                self.kline_stream = true;
                 Command::none()
             },
         }
@@ -1083,24 +1123,33 @@ impl Application for State {
             } else {
                 style::pane_active
             });
-    
+        
             let title = match pane.id {
                 PaneId::HeatmapChart => "Heatmap Chart",
                 PaneId::CandlestickChart => "Candlestick Chart",
-                PaneId::CustomChart => "Custom Chart",
+                PaneId::CustomChart => "Custom Chart", 
                 PaneId::TimeAndSales => "Time & Sales",
                 PaneId::TradePanel => "Trading Panel",
-            };            
+            };
+
             if is_focused {
+                let pane_timeframe = self.panes_open.get(&pane.id).and_then(|(_, stream_type)| {
+                    match stream_type {
+                        Some(StreamType::Klines(_, timeframe)) => Some(timeframe),
+                        _ => None,
+                    }
+                });
+
                 let title_bar = pane_grid::TitleBar::new(title)
                     .controls(view_controls(
                         id,
+                        pane.id,
                         total_panes,
                         is_maximized,
+                        pane_timeframe
                     ))
                     .padding(4)
                     .style(style::title_bar_focused);
-    
                 content = content.title_bar(title_bar);
             }
             content
@@ -1134,11 +1183,11 @@ impl Application for State {
         let mb = menu_bar!(
             (add_pane_button, {
                 menu_tpl_1(menu_items!(
-                    (debug_button(PaneId::HeatmapChart, self.panes_open.get(&PaneId::HeatmapChart).unwrap_or(&false), self.first_pane))
-                    (debug_button(PaneId::CandlestickChart, self.panes_open.get(&PaneId::CandlestickChart).unwrap_or(&false), self.first_pane))
-                    (debug_button(PaneId::CustomChart, self.panes_open.get(&PaneId::CustomChart).unwrap_or(&false), self.first_pane))
-                    (debug_button(PaneId::TimeAndSales, self.panes_open.get(&PaneId::TimeAndSales).unwrap_or(&false), self.first_pane))
-                    (debug_button(PaneId::TradePanel, self.panes_open.get(&PaneId::TradePanel).unwrap_or(&false), self.first_pane))
+                    (debug_button(PaneId::HeatmapChart, self.panes_open.get(&PaneId::HeatmapChart).map(|(open, _)| open).unwrap_or(&false), self.first_pane))
+                    (debug_button(PaneId::CandlestickChart, self.panes_open.get(&PaneId::CandlestickChart).map(|(open, _)| open).unwrap_or(&false), self.first_pane))
+                    (debug_button(PaneId::CustomChart, self.panes_open.get(&PaneId::CustomChart).map(|(open, _)| open).unwrap_or(&false), self.first_pane))
+                    (debug_button(PaneId::TimeAndSales, self.panes_open.get(&PaneId::TimeAndSales).map(|(open, _)| open).unwrap_or(&false), self.first_pane))
+                    (debug_button(PaneId::TradePanel, self.panes_open.get(&PaneId::TradePanel).map(|(open, _)| open).unwrap_or(&false), self.first_pane))
                 )).width(200.0)
             })
         );
@@ -1154,20 +1203,12 @@ impl Application for State {
             .align_items(Alignment::Center)
             .push(ws_button);
 
-
-        let timeframe_pick_list = pick_list(
-            &Timeframe::ALL[..],
-            self.selected_timeframe,
-            Message::TimeframeSelected,
-        );
-
         if !self.ws_running {
             let symbol_pick_list = pick_list(
                 &Ticker::ALL[..],
                 self.selected_ticker,
                 Message::TickerSelected,
             ).placeholder("Choose a ticker...");
-            
             
             let exchange_selector = pick_list(
                 &["Binance Futures"][..],
@@ -1178,11 +1219,10 @@ impl Application for State {
             ws_controls = ws_controls
                 .push(exchange_selector)
                 .push(symbol_pick_list)
-                .push(timeframe_pick_list);
                 
         } else {
             ws_controls = ws_controls.push(
-                Text::new(self.selected_ticker.unwrap_or_else(|| { dbg!("No ticker found"); Ticker::BTCUSDT } ).to_string()).size(20)).push(timeframe_pick_list);;
+                Text::new(self.selected_ticker.unwrap_or_else(|| { dbg!("No ticker found"); Ticker::BTCUSDT } ).to_string()).size(20));
         }
 
         let content = Column::new()
@@ -1220,21 +1260,19 @@ impl Application for State {
                     let binance_market_stream = market_data::connect_market_stream(ticker).map(Message::MarketWsEvent);
                     subscriptions.push(binance_market_stream);
 
-                    for (stream, (active, _state)) in &self.active_kline_streams {
-                        if *active {
-                            let binance_market_stream = market_data::connect_kline_stream(*stream).map(Message::MarketWsEvent);
-                            subscriptions.push(binance_market_stream);
+                    let mut streams: Vec<(Ticker, Timeframe)> = vec![];
+                    
+                    for (_pane_id, (_is_open, stream_type)) in &self.panes_open {
+                        if let Some(StreamType::Klines(ticker, timeframe)) = stream_type {
+                            streams.push((*ticker, *timeframe));
                         }
+                    }
+                    if !streams.is_empty() && self.kline_stream {
+                        let binance_kline_streams = market_data::connect_kline_stream(streams).map(Message::MarketWsEvent);
+                        subscriptions.push(binance_kline_streams);
                     }
                 })
             });
-        }
-        if let Some(listen_key) = &self.listen_key {
-            let binance_user_stream = user_data::connect_user_stream(listen_key.to_string()).map(Message::UserWsEvent);
-            subscriptions.push(binance_user_stream);
-
-            let fetch_positions = user_data::fetch_user_stream(API_KEY, SECRET_KEY).map(Message::UserWsEvent);
-            subscriptions.push(fetch_positions);
         }
         
         Subscription::batch(subscriptions)
@@ -1290,7 +1328,7 @@ fn view_content<'a, 'b: 'a>(
     _size: Size,
     time_and_sales: &'a Option<TimeAndSales>,
     trades_chart: &'a Option<LineChart>,
-    candlestick_chart: &'a Option<CandlestickChart>,
+    candlestick_chart: &'a Option<CustomLine>,
     custom_line: &'a Option<CustomLine>,
     qty_input_val: Option<String>,
     price_input_val: Option<String>, 
@@ -1346,7 +1384,15 @@ fn view_content<'a, 'b: 'a>(
         }, 
         
         PaneId::CandlestickChart => { 
-            let underlay = candlestick_chart.as_ref().map(CandlestickChart::view).unwrap_or_else(|| Text::new("No data").into());
+            let underlay; 
+            if let Some(candlestick_chart) = candlestick_chart {
+                underlay =
+                    candlestick_chart
+                        .view()
+                        .map(move |message| Message::Candlestick(message));
+            } else {
+                underlay = Text::new("No data").into();
+            }
             let overlay = if show_modal {
                 Some(
                     Card::new(
@@ -1602,8 +1648,10 @@ fn view_content<'a, 'b: 'a>(
 
 fn view_controls<'a>(
     pane: pane_grid::Pane,
+    pane_id: PaneId,
     total_panes: usize,
     is_maximized: bool,
+    selected_timeframe: Option<&'a Timeframe>,
 ) -> Element<'a, Message> {
     let mut row = row![].spacing(5);
 
@@ -1613,6 +1661,16 @@ fn view_controls<'a>(
         } else {
             (Icon::ResizeFull, Message::Maximize(pane))
         };
+
+        if pane_id == PaneId::CandlestickChart || pane_id == PaneId::CustomChart {
+            let timeframe_picker = pick_list(
+                &Timeframe::ALL[..],
+                selected_timeframe,
+                move |timeframe| Message::TimeframeSelected(timeframe, pane),
+            ).placeholder("Choose a timeframe...").text_size(11);
+            row = row.push(timeframe_picker);
+        }
+
         let buttons = vec![
             (container(text(char::from(Icon::Cog).to_string()).font(ICON).size(14)).width(25).center_x(), Message::OpenModal(pane)),
             (container(text(char::from(icon).to_string()).font(ICON).size(14)).width(25).center_x(), message),
@@ -1625,8 +1683,9 @@ fn view_controls<'a>(
                     .padding(3)
                     .on_press(message),
             );
-        }
+        } 
     }
+    
     row.into()
 }
 
