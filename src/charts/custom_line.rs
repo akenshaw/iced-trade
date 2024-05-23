@@ -4,7 +4,7 @@ use iced::{
     alignment, mouse, widget::{button, canvas::{self, event::{self, Event}, stroke::Stroke, Cache, Canvas, Geometry, Path}}, window, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector
 };
 use iced::widget::{Column, Row, Container, Text};
-use crate::market_data::Kline;
+use crate::{market_data::Kline, Timeframe};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -40,7 +40,7 @@ impl CustomLine {
     const MIN_SCALING: f32 = 0.1;
     const MAX_SCALING: f32 = 2.0;
 
-    pub fn new(klines: Vec<Kline>, timeframe: i16) -> CustomLine {
+    pub fn new(klines: Vec<Kline>, timeframe: Timeframe) -> CustomLine {
         let _size = window::Settings::default().size;
         let mut klines_raw = BTreeMap::new();
 
@@ -53,6 +53,14 @@ impl CustomLine {
             let sell_volume = kline.volume - buy_volume;
             klines_raw.insert(time, (kline.open, kline.high, kline.low, kline.close, buy_volume, sell_volume));
         }
+
+        let timeframe = match timeframe {
+            Timeframe::M1 => 1,
+            Timeframe::M3 => 3,
+            Timeframe::M5 => 5,
+            Timeframe::M15 => 15,
+            Timeframe::M30 => 30,
+        };
     
         CustomLine {
             mesh_cache: canvas::Cache::default(),
