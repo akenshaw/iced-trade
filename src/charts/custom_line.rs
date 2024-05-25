@@ -198,7 +198,8 @@ impl CustomLine {
                 max: self.x_max_time, 
                 crosshair_cache: &self.crosshair_cache, 
                 crosshair_position: self.crosshair_position, 
-                crosshair: self.crosshair
+                crosshair: self.crosshair,
+                timeframe: self.timeframe
             })
             .width(Length::FillPortion(10))
             .height(Length::Fixed(26.0));
@@ -593,18 +594,9 @@ impl canvas::Program<Message> for CustomLine {
         if self.crosshair {
             let crosshair = self.crosshair_cache.draw(renderer, bounds.size(), |frame| {
                 if let Some(cursor_position) = cursor.position_in(bounds) {
-                    let x = cursor_position.x;
-                    let y = cursor_position.y;
-
                     let line = Path::line(
-                        Point::new(x, 0.0), 
-                        Point::new(x, bounds.height as f32)
-                    );
-                    frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(200, 200, 200, 0.6)).with_width(1.0));
-
-                    let line = Path::line(
-                        Point::new(0.0, y), 
-                        Point::new(bounds.width as f32, y)
+                        Point::new(0.0, cursor_position.y), 
+                        Point::new(bounds.width as f32, cursor_position.y)
                     );
                     frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(200, 200, 200, 0.6)).with_width(1.0));
 
@@ -612,13 +604,21 @@ impl canvas::Program<Message> for CustomLine {
                     let crosshair_millis = earliest as f64 * 1000.0 + crosshair_ratio * (latest as f64 * 1000.0 - earliest as f64 * 1000.0);
                     let crosshair_time = NaiveDateTime::from_timestamp((crosshair_millis / 1000.0) as i64, 0);
 
-                    if let Some((_closest_time, kline)) = self.klines_raw.iter()
-                        .filter(|(time, _)| {
-                            let timestamp = time.timestamp();
-                            timestamp >= earliest && timestamp <= latest
-                        })
-                        .min_by_key(|(time, _)| ((time.timestamp() as f64 - crosshair_time.timestamp() as f64).abs() as i64)) {
-                        
+                    let crosshair_timestamp = crosshair_time.timestamp();
+                    let rounded_timestamp = (crosshair_timestamp as f64 / (self.timeframe as f64 * 60.0)).round() as i64 * self.timeframe as i64 * 60;
+
+                    let snap_ratio = (rounded_timestamp as f64 - earliest as f64) / ((latest as f64) - (earliest as f64));
+                    let snap_x = snap_ratio * bounds.width as f64;
+
+                    let line = Path::line(
+                        Point::new(snap_x as f32, 0.0), 
+                        Point::new(snap_x as f32, bounds.height as f32)
+                    );
+                    frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(200, 200, 200, 0.6)).with_width(1.0));
+
+                    if let Some((_, kline)) = self.klines_raw.iter()
+                        .find(|(time, _)| time.timestamp() == rounded_timestamp) {
+
                         let tooltip_text = format!(
                             "O: {} H: {} L: {} C: {}\nBuyV: {:.0} SellV: {:.0}",
                             kline.0, kline.1, kline.2, kline.3, kline.4, kline.5
@@ -653,7 +653,11 @@ impl canvas::Program<Message> for CustomLine {
             Interaction::Erasing => mouse::Interaction::Crosshair,
             Interaction::Panning { .. } => mouse::Interaction::Grabbing,
             Interaction::None if cursor.is_over(bounds) => {
-                mouse::Interaction::Crosshair
+                if self.crosshair {
+                    mouse::Interaction::Crosshair
+                } else {
+                    mouse::Interaction::default()
+                }
             }
             Interaction::None => mouse::Interaction::default(),
         }
@@ -723,6 +727,7 @@ pub struct AxisLabelXCanvas<'a> {
     crosshair: bool,
     min: i64,
     max: i64,
+    timeframe: i16,
 }
 impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
     type State = Interaction;
@@ -789,11 +794,18 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
                 let crosshair_millis = earliest_in_millis as f64 + crosshair_ratio * (latest_in_millis - earliest_in_millis) as f64;
                 let crosshair_time = NaiveDateTime::from_timestamp((crosshair_millis / 1000.0) as i64, 0);
 
+                let crosshair_timestamp = crosshair_time.timestamp();
+                let rounded_timestamp = (crosshair_timestamp as f64 / (self.timeframe as f64 * 60.0)).round() as i64 * self.timeframe as i64 * 60;
+                let rounded_time = NaiveDateTime::from_timestamp(rounded_timestamp, 0);
+
+                let snap_ratio = (rounded_timestamp as f64 * 1000.0 - earliest_in_millis as f64) / (latest_in_millis as f64 - earliest_in_millis as f64);
+                let snap_x = snap_ratio * bounds.width as f64;
+
                 let text_size = 12.0;
-                let text_content = crosshair_time.format("%H:%M").to_string();
+                let text_content = rounded_time.format("%H:%M").to_string();
                 let growth_amount = 6.0; 
-                let rectangle_position = Point::new(self.crosshair_position.x - 14.0 - growth_amount, bounds.height as f32 - 20.0);
-                let text_position = Point::new(self.crosshair_position.x - 14.0, bounds.height as f32 - 20.0);
+                let rectangle_position = Point::new(snap_x as f32 - 14.0 - growth_amount, bounds.height as f32 - 20.0);
+                let text_position = Point::new(snap_x as f32 - 14.0, bounds.height as f32 - 20.0);
 
                 let text_background = canvas::Path::rectangle(rectangle_position, Size::new(text_content.len() as f32 * text_size/2.0 + 2.0 * growth_amount + 1.0, text_size + text_size/2.0));
                 frame.fill(&text_background, Color::from_rgba8(200, 200, 200, 1.0));
