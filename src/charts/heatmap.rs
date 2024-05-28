@@ -115,8 +115,6 @@ impl Heatmap {
     }
     
     pub fn render_start(&mut self) {
-        self.candles_cache.clear();
-
         let timestamp_now = Utc::now().timestamp_millis();
 
         let latest: i64 = timestamp_now - ((self.translation.x*100.0)*(self.timeframe as f32)) as i64;
@@ -129,25 +127,44 @@ impl Heatmap {
             })
             .collect::<Vec<_>>();
 
+        let visible_depth = self.depth.iter()
+            .filter(|(time, _, _)| {
+                let timestamp = time.timestamp_millis();
+                timestamp >= earliest && timestamp <= latest
+            })
+            .collect::<Vec<_>>();
+
         if visible_trades.is_empty() || visible_trades.len() < 5 {
             return;
         }
 
-        let highest: &f32 = visible_trades.iter().map(|(_, price, _, _)| price).max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(&0.0);
-        let lowest: &f32 = visible_trades.iter().map(|(_, price, _, _)| price).min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(&0.0);
+        let highest = visible_depth.iter().map(|(_, bids, asks)| {
+            let highest_bid = bids.iter().map(|(price, _)| price).max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(&0.0);
+            let highest_ask = asks.iter().map(|(price, _)| price).max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(&0.0);
 
-        if earliest != self.x_min_time || latest != self.x_max_time || *lowest != self.y_min_price || *highest != self.y_max_price {
+            highest_bid.max(*highest_ask)
+        }).max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(0.0);
+        let lowest = visible_depth.iter().map(|(_, bids, asks)| {
+            let lowest_bid = bids.iter().map(|(price, _)| price).min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(&0.0);
+            let lowest_ask = asks.iter().map(|(price, _)| price).min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(&0.0);
+
+            lowest_bid.min(*lowest_ask)
+        }).min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(0.0);
+
+        if earliest != self.x_min_time || latest != self.x_max_time || lowest != self.y_min_price || highest != self.y_max_price {
             self.x_labels_cache.clear();
             self.mesh_cache.clear();
         }
 
         self.x_min_time = earliest;
         self.x_max_time = latest;
-        self.y_min_price = *lowest;
-        self.y_max_price = *highest;
+        self.y_min_price = lowest;
+        self.y_max_price = highest;
 
         self.y_labels_cache.clear();
         self.crosshair_cache.clear();
+
+        self.candles_cache.clear();
     }
 
     pub fn update(&mut self, message: Message) {
@@ -440,24 +457,25 @@ impl canvas::Program<Message> for Heatmap {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<Geometry> {    
-        let timestamp_now = Utc::now().timestamp_millis();
-
-        let latest: i64 = timestamp_now - ((self.translation.x*100.0)*(self.timeframe as f32)) as i64;
-        let earliest: i64 = latest - ((64000.0*self.timeframe as f32) / (self.scaling / (self.bounds.width/800.0))) as i64;
-
-        let visible_trades = self.data_points.iter()
+        let latest = self.x_max_time;
+        let earliest = self.x_min_time;
+    
+        let visible_trades: Vec<&(DateTime<Utc>, f32, f32, bool)> = self.data_points.iter()
             .filter(|(time, _, _, _)| {
                 let timestamp = time.timestamp_millis();
                 timestamp >= earliest && timestamp <= latest
             })
             .collect::<Vec<_>>();
 
-        if visible_trades.is_empty() || visible_trades.len() < 5 {
-            return vec![];
-        }
+        let visible_depth: Vec<&(DateTime<Utc>, Vec<(f32, f32)>, Vec<(f32, f32)>)> = self.depth.iter()
+            .filter(|(time, _, _)| {
+                let timestamp = time.timestamp_millis();
+                timestamp >= earliest && timestamp <= latest
+            })
+            .collect::<Vec<_>>();
 
-        let highest = visible_trades.iter().map(|(_, price, _, _)| price).max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(&0.0);
-        let lowest = visible_trades.iter().map(|(_, price, _, _)| price).min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(&0.0);
+        let highest = self.y_max_price;
+        let lowest = self.y_min_price;
 
         let y_range = highest - lowest;
 
@@ -514,6 +532,35 @@ impl canvas::Program<Message> for Heatmap {
                     Size::new(1.0, buy_bar_height as f32)
                 );
                 frame.fill(&buy_bar, Color::from_rgb8(81, 205, 160)); 
+            }
+        
+            let max_order_quantity = visible_depth.iter()
+                .map(|(_, bids, asks)| {
+                bids.iter().map(|(_, qty)| qty).chain(asks.iter().map(|(_, qty)| qty)).fold(f32::MIN, |current_max: f32, qty: &f32| f32::max(current_max, *qty))
+            }).fold(f32::MIN, f32::max);
+
+            for i in 0..20 { 
+                let bids_i: Vec<(DateTime<Utc>, f32, f32)> = visible_depth.iter()
+                    .map(|&(time, bid, _ask)| ((*time).clone(), bid[i].0, bid[i].1)).collect();
+                let asks_i: Vec<(DateTime<Utc>, f32, f32)> = visible_depth.iter()
+                    .map(|&(time, _bid, ask)| ((*time).clone(), ask[i].0, ask[i].1)).collect();
+
+                bids_i.iter().zip(asks_i.iter()).for_each(|((time, bid_price, bid_qty), (_, ask_price, ask_qty))| {
+                    let bid_y_position = candlesticks_area_height - ((bid_price - lowest) / y_range * candlesticks_area_height);
+                    let ask_y_position = candlesticks_area_height - ((ask_price - lowest) / y_range * candlesticks_area_height);
+
+                    let x_position = ((time.timestamp_millis() - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
+
+                    let bid_color_alpha = (bid_qty / max_order_quantity).min(1.0);
+                    let ask_color_alpha = (ask_qty / max_order_quantity).min(1.0);
+
+                    let bid_circle = Path::circle(Point::new(x_position as f32, bid_y_position), 1.0);
+                    frame.fill(&bid_circle, Color::from_rgba8(0, 144, 144, bid_color_alpha));
+
+
+                    let ask_circle = Path::circle(Point::new(x_position as f32, ask_y_position), 1.0);
+                    frame.fill(&ask_circle, Color::from_rgba8(192, 0, 192, ask_color_alpha));
+                });
             }
         });
 
@@ -591,17 +638,14 @@ fn calculate_time_step(earliest: i64, latest: i64, labels_can_fit: i32) -> (Dura
     let duration = latest - earliest;
 
     let steps = [
-        Duration::minutes(3),
-        Duration::minutes(2),
         Duration::minutes(1),
         Duration::seconds(30),
         Duration::seconds(15),
         Duration::seconds(10),
         Duration::seconds(5),
+        Duration::seconds(2),
         Duration::seconds(1),
         Duration::milliseconds(500),
-        Duration::milliseconds(200),
-        Duration::milliseconds(100),
     ];
 
     let mut selected_step = steps[0];
@@ -656,7 +700,7 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
         let latest_in_millis = self.max; 
         let earliest_in_millis = self.min; 
 
-        let x_labels_can_fit = (bounds.width / 90.0) as i32;
+        let x_labels_can_fit = (bounds.width / 120.0) as i32;
         let (time_step, rounded_earliest) = calculate_time_step(self.min, self.max, x_labels_can_fit);
 
         let labels = self.labels_cache.draw(renderer, bounds.size(), |frame| {
@@ -743,7 +787,6 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
         }
     }
 }
-
 
 pub struct AxisLabelYCanvas<'a> {
     labels_cache: &'a Cache,
