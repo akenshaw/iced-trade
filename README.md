@@ -1,4 +1,4 @@
-<img width="1706" alt="image" src="https://github.com/akenshaw/iced-trade/assets/63060680/e6036261-6b1b-4e6e-a40f-852e488ee0d7">
+![image](https://github.com/akenshaw/iced-trade/assets/63060680/158e4bb1-0bd3-435e-a1b5-6ccae62d9d5c)
 
 Trading implementation is highly experimental; advised not to use any trading functionality with a real account
 ***
