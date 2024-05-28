@@ -774,21 +774,21 @@ impl Application for State {
                 style::pane_active
             });
         
-            let title = match pane.id {
-                PaneId::HeatmapChart => "Heatmap Chart",
-                PaneId::CandlestickChart => "Candlestick Chart",
-                PaneId::CustomChart => "Custom Chart", 
-                PaneId::TimeAndSales => "Time & Sales",
-                PaneId::TradePanel => "Trading Panel",
-            };
-
             if is_focused {
+                let title = match pane.id {
+                    PaneId::HeatmapChart => "Heatmap",
+                    PaneId::CandlestickChart => "Candlesticks",
+                    PaneId::CustomChart => "Candlesticks",
+                    PaneId::TimeAndSales => "Time&Sales",
+                    PaneId::TradePanel => "Trade Panel",
+                };
+
                 let pane_timeframe = self.panes_open.get(&pane.id).and_then(|(_, stream_type)| {
                     match stream_type {
                         Some(StreamType::Klines(_, timeframe)) => Some(timeframe),
                         _ => None,
                     }
-                });
+                });    
 
                 let title_bar = pane_grid::TitleBar::new(title)
                     .controls(view_controls(
@@ -890,7 +890,7 @@ impl Application for State {
         if self.show_layout_modal {
             let mut buttons = Column::new().spacing(2).align_items(Alignment::Start);
 
-            let candlestick_chart_button = button("Candlestick Chart")
+            let candlestick_chart_button = button("Candlesticks 1")
                 .width(iced::Pixels(200.0));
             if let Some((false, _)) = self.panes_open.get(&PaneId::CandlestickChart) {
                 buttons = buttons.push(candlestick_chart_button.on_press(Message::Split(pane_grid::Axis::Vertical, self.first_pane, PaneId::CandlestickChart)));
@@ -898,7 +898,7 @@ impl Application for State {
                 buttons = buttons.push(candlestick_chart_button);
             }
 
-            let custom_chart_button = button("Custom Line")
+            let custom_chart_button = button("Candlesticks 2")
                 .width(iced::Pixels(200.0));
             if let Some((false, _)) = self.panes_open.get(&PaneId::CustomChart) {
                 buttons = buttons.push(custom_chart_button.on_press(Message::Split(pane_grid::Axis::Vertical, self.first_pane, PaneId::CustomChart)));
@@ -906,7 +906,7 @@ impl Application for State {
                 buttons = buttons.push(custom_chart_button);
             }
 
-            let heatmap_chart_button = button("Heatmap Chart")
+            let heatmap_chart_button = button("Heatmap")
                 .width(iced::Pixels(200.0));
             if let Some((false, _)) = self.panes_open.get(&PaneId::HeatmapChart) {
                 buttons = buttons.push(heatmap_chart_button.on_press(Message::Split(pane_grid::Axis::Vertical, self.first_pane, PaneId::HeatmapChart)));
@@ -914,7 +914,7 @@ impl Application for State {
                 buttons = buttons.push(heatmap_chart_button);
             }
 
-            let time_and_sales_button = button("Time & Sales")
+            let time_and_sales_button = button("Time&Sales")
                 .width(iced::Pixels(200.0));
             if let Some((false, _)) = self.panes_open.get(&PaneId::TimeAndSales) {
                 buttons = buttons.push(time_and_sales_button.on_press(Message::Split(pane_grid::Axis::Vertical, self.first_pane, PaneId::TimeAndSales)));
