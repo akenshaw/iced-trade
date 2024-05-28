@@ -1,11 +1,10 @@
-use std::{collections::{BTreeMap, HashMap, VecDeque}, path::is_separator};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use chrono::{DateTime, Utc, TimeZone, LocalResult, Duration, NaiveDateTime, Timelike};
 use iced::{
-    advanced::graphics::core::time, alignment, color, mouse, widget::{button, canvas::{self, event::{self, Event}, path, stroke::Stroke, Cache, Canvas, Geometry, Path}, shader::wgpu::hal::auxil::db}, window, Border, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector
+    alignment, color, mouse, widget::{button, canvas::{self, event::{self, Event}, path, stroke::Stroke, Cache, Canvas, Geometry, Path}}, window, Border, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector
 };
 use iced::widget::{Column, Row, Container, Text};
-use serde_json::from_str;
-use crate::{data_providers::binance::market_data::Trade, market_data::Kline, Timeframe};
+use crate::data_providers::binance::market_data::Trade;
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -19,8 +18,7 @@ pub enum Message {
 
 #[derive(Debug)]
 pub struct Heatmap {
-    mesh_cache: Cache,
-    candles_cache: Cache,
+    heatmap_cache: Cache,
     crosshair_cache: Cache,
     x_labels_cache: Cache,
     y_labels_cache: Cache,
@@ -29,8 +27,6 @@ pub struct Heatmap {
     translation: Vector,
     scaling: f32,
     
-    klines_raw: BTreeMap<DateTime<Utc>, (f32, f32, f32, f32, f32, f32)>,
-
     data_points: VecDeque<(DateTime<Utc>, f32, f32, bool)>,
     depth: VecDeque<(DateTime<Utc>, Vec<(f32, f32)>, Vec<(f32, f32)>)>,
     size_filter: f32,
@@ -47,15 +43,14 @@ pub struct Heatmap {
     timeframe: f32,
 }
 impl Heatmap {
-    const MIN_SCALING: f32 = 0.1;
-    const MAX_SCALING: f32 = 2.0;
+    const MIN_SCALING: f32 = 0.4;
+    const MAX_SCALING: f32 = 3.6;
 
     pub fn new() -> Heatmap {
         let _size = window::Settings::default().size;
     
         Heatmap {
-            mesh_cache: canvas::Cache::default(),
-            candles_cache: canvas::Cache::default(),
+            heatmap_cache: canvas::Cache::default(),
             crosshair_cache: canvas::Cache::default(),
             x_labels_cache: canvas::Cache::default(),
             y_labels_cache: canvas::Cache::default(),
@@ -66,7 +61,6 @@ impl Heatmap {
             depth: VecDeque::new(),
             size_filter: 0.0,
 
-            klines_raw: BTreeMap::new(),
             translation: Vector::default(),
             scaling: 1.0,
             autoscale: true,
@@ -151,20 +145,23 @@ impl Heatmap {
             lowest_bid.min(*lowest_ask)
         }).min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(0.0);
 
-        if earliest != self.x_min_time || latest != self.x_max_time || lowest != self.y_min_price || highest != self.y_max_price {
+        if earliest != self.x_min_time || latest != self.x_max_time {            
             self.x_labels_cache.clear();
-            self.mesh_cache.clear();
+            self.x_crosshair_cache.clear();
+        }
+        if lowest != self.y_min_price || highest != self.y_max_price {            
+            self.y_labels_cache.clear();
+            self.y_croshair_cache.clear();
         }
 
         self.x_min_time = earliest;
         self.x_max_time = latest;
         self.y_min_price = lowest;
         self.y_max_price = highest;
-
-        self.y_labels_cache.clear();
+        
         self.crosshair_cache.clear();
 
-        self.candles_cache.clear();
+        self.heatmap_cache.clear();
     }
 
     pub fn update(&mut self, message: Message) {
@@ -217,10 +214,7 @@ impl Heatmap {
         let chart = Canvas::new(self)
             .width(Length::FillPortion(10))
             .height(Length::FillPortion(10));
-    
-        let last_close_price = self.klines_raw.values().last().map_or(0.0, |kline| kline.3);
-        let last_open_price = self.klines_raw.values().last().map_or(0.0, |kline| kline.0);
-    
+        
         let axis_labels_x = Canvas::new(
             AxisLabelXCanvas { 
                 labels_cache: &self.x_labels_cache, 
@@ -229,7 +223,6 @@ impl Heatmap {
                 crosshair_cache: &self.x_crosshair_cache, 
                 crosshair_position: self.crosshair_position, 
                 crosshair: self.crosshair,
-                timeframe: self.timeframe
             })
             .width(Length::FillPortion(10))
             .height(Length::Fixed(26.0));
@@ -240,8 +233,6 @@ impl Heatmap {
                 y_croshair_cache: &self.y_croshair_cache, 
                 min: self.y_min_price,
                 max: self.y_max_price,
-                last_close_price, 
-                last_open_price, 
                 crosshair_position: self.crosshair_position, 
                 crosshair: self.crosshair
             })
@@ -480,9 +471,9 @@ impl canvas::Program<Message> for Heatmap {
         let y_range = highest - lowest;
 
         let volume_area_height = bounds.height / 8.0; 
-        let candlesticks_area_height = bounds.height - volume_area_height;
+        let heatmap_area_height = bounds.height - volume_area_height;
 
-        let candlesticks = self.candles_cache.draw(renderer, bounds.size(), |frame| {
+        let heatmap = self.heatmap_cache.draw(renderer, bounds.size(), |frame| {
             let (qty_max, qty_min) = visible_trades.iter().map(|(_, _, qty, _)| qty).fold((0.0f32, f32::MAX), |(max, min), &qty| (max.max(qty), min.min(qty)));
 
             let mut aggregated_volumes: HashMap<i64, (f32, f32)> = HashMap::new();
@@ -499,7 +490,7 @@ impl canvas::Program<Message> for Heatmap {
 
                 let x_position = ((timestamp - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
 
-                let y_position = candlesticks_area_height - ((price - lowest) / y_range * candlesticks_area_height);
+                let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
 
                 let color = if *is_sell {
                     Color::from_rgba8(192, 80, 77, 1.0)
@@ -546,8 +537,8 @@ impl canvas::Program<Message> for Heatmap {
                     .map(|&(time, _bid, ask)| ((*time).clone(), ask[i].0, ask[i].1)).collect();
 
                 bids_i.iter().zip(asks_i.iter()).for_each(|((time, bid_price, bid_qty), (_, ask_price, ask_qty))| {
-                    let bid_y_position = candlesticks_area_height - ((bid_price - lowest) / y_range * candlesticks_area_height);
-                    let ask_y_position = candlesticks_area_height - ((ask_price - lowest) / y_range * candlesticks_area_height);
+                    let bid_y_position = heatmap_area_height - ((bid_price - lowest) / y_range * heatmap_area_height);
+                    let ask_y_position = heatmap_area_height - ((ask_price - lowest) / y_range * heatmap_area_height);
 
                     let x_position = ((time.timestamp_millis() - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
 
@@ -590,9 +581,9 @@ impl canvas::Program<Message> for Heatmap {
                 }
             });
 
-            return vec![crosshair, candlesticks];
+            return vec![crosshair, heatmap];
         }   else {
-            return vec![candlesticks];
+            return vec![heatmap];
         }
     }
 
@@ -671,7 +662,6 @@ pub struct AxisLabelXCanvas<'a> {
     crosshair: bool,
     min: i64,
     max: i64,
-    timeframe: f32,
 }
 impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
     type State = Interaction;
@@ -793,8 +783,6 @@ pub struct AxisLabelYCanvas<'a> {
     y_croshair_cache: &'a Cache,
     min: f32,
     max: f32,
-    last_close_price: f32,
-    last_open_price: f32,
     crosshair_position: Point,
     crosshair: bool,
 }
@@ -857,23 +845,6 @@ impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
 
                     y += step;
                 }
-
-                let last_close_y_position = candlesticks_area_height - ((self.last_close_price - self.min) / y_range * candlesticks_area_height);
-
-                let triangle_color = if self.last_close_price >= self.last_open_price {
-                    Color::from_rgba8(81, 205, 160, 0.9) 
-                } else {
-                    Color::from_rgba8(192, 80, 77, 0.9) 
-                };
-
-                let triangle = Path::new(|path| {
-                    path.move_to(Point::new(5.0, last_close_y_position));
-                    path.line_to(Point::new(0.0, last_close_y_position - 5.0));
-                    path.line_to(Point::new(0.0, last_close_y_position + 5.0));
-                    path.close();
-                });
-
-                frame.fill(&triangle, triangle_color);
             });
         });
         let crosshair = self.y_croshair_cache.draw(renderer, bounds.size(), |frame| {
