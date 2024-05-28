@@ -1,10 +1,9 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, vec};
 use chrono::{DateTime, Utc, TimeZone, LocalResult, Duration, NaiveDateTime, Timelike};
 use iced::{
     alignment, color, mouse, widget::{button, canvas::{self, event::{self, Event}, path, stroke::Stroke, Cache, Canvas, Geometry, Path}}, window, Border, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector
 };
 use iced::widget::{Column, Row, Container, Text};
-use serde_json::from_str;
 use crate::{market_data::Kline, Timeframe};
 
 #[derive(Debug, Clone)]
