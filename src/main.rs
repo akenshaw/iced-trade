@@ -3,29 +3,27 @@
 mod data_providers;
 use data_providers::binance::{user_data, market_data};
 mod charts;
-use charts::{candlesticks, custom_line::{self, CustomLine}, heatmap};
+use charts::custom_line::{self, CustomLine};
+use charts::heatmap::{self, Heatmap};
+use hmac::digest::consts::False;
+use hmac::digest::CtOutput;
 
-use crate::heatmap::LineChart;
-
-use std::vec;
+use std::{sync::Arc, vec};
 use std::cell::RefCell;
 use chrono::{NaiveDateTime, DateTime, Utc};
 use iced::{
-    alignment, executor, font, theme::{self, Custom}, widget::{
-        button, canvas, checkbox, pick_list, text_input, tooltip, Column, Container, Row, Slider, Space, Text
-    }, Alignment, Application, Color, Command, Element, Font, Length, Renderer, Settings, Size, Subscription, Theme
+    advanced::widget, alignment, executor, font, theme::{self, Custom}, widget::{
+        button, center, checkbox, mouse_area, opaque, pick_list, stack, text_input, tooltip, Column, Container, Row, Slider, Space, Text
+    }, Alignment, Color, Command, Element, Font, Length, Renderer, Settings, Size, Subscription, Theme
 };
+use iced::advanced::Application;
 
 use iced::widget::pane_grid::{self, PaneGrid};
 use iced::widget::{
     container, row, scrollable, text, responsive
 };
-use iced_table::table;
 use futures::TryFutureExt;
 use plotters_iced::sample::lttb::DataPoint;
-
-use iced_aw::menu::{Item, Menu};
-use iced_aw::{menu_bar, menu_items, modal, Card};
 
 use std::collections::HashMap;
 
@@ -189,18 +187,17 @@ pub enum Message {
 
     CustomLine(custom_line::Message),
     Candlestick(custom_line::Message),
+    Heatmap(heatmap::Message),
 
     // Market&User data stream
     UserKeySucceed(String),
     UserKeyError,
-    UserWsEvent(user_data::Event),
     TickerSelected(Ticker),
     TimeframeSelected(Timeframe, pane_grid::Pane),
     ExchangeSelected(&'static str),
     MarketWsEvent(market_data::Event),
     WsToggle(),
     FetchEvent(Result<Vec<market_data::Kline>, std::string::String>, PaneId),
-    UpdateAccInfo(user_data::FetchedBalance),
     
     // Pane grid
     Split(pane_grid::Axis, pane_grid::Pane, PaneId),
@@ -211,24 +208,6 @@ pub enum Message {
     Restore,
     Close(pane_grid::Pane),
     ToggleLayoutLock,
-
-    // Trading order form
-    LimitOrder(String),
-    MarketOrder(String),
-    CancelOrder(String),
-    InputChanged((String, String)),
-    OrderCreated(user_data::NewOrder),
-    MarketOrderCreated(user_data::NewOrder),
-    OrdersFetched(Vec<user_data::NewOrder>),
-    OrderFailed(String),
-
-    // Trading table
-    TabSelected(usize, String),
-    SyncHeader(scrollable::AbsoluteOffset),
-    TableResizing(usize, f32),
-    TableResized,
-    FooterEnabled(bool),
-    MinWidthEnabled(bool),
 
     // Font
     FontLoaded(Result<(), font::Error>),
@@ -242,13 +221,18 @@ pub enum Message {
     SyncWithHeatmap(bool),
 
     CutTheKlineStream,
+
+    ShowLayoutModal,
+    HideLayoutModal,
 }
 
 struct State {
-    trades_chart: Option<heatmap::LineChart>,
+    show_layout_modal: bool,
+
     candlestick_chart: Option<CustomLine>,
     time_and_sales: Option<TimeAndSales>,
     custom_line: Option<CustomLine>,
+    heatmap_chart: Option<Heatmap>,
 
     // data streams
     listen_key: Option<String>,
@@ -266,29 +250,6 @@ struct State {
     first_pane: pane_grid::Pane,
     pane_lock: bool,
 
-    // order form
-    qty_input_val: RefCell<Option<String>>,
-    price_input_val: RefCell<Option<String>>,
-
-    // table
-    order_form_active_tab: usize,
-    table_active_tab: usize,
-    open_orders: Vec<user_data::NewOrder>,
-    orders_header: scrollable::Id,
-    orders_body: scrollable::Id,
-    orders_footer: scrollable::Id,
-    orders_columns: Vec<TableColumn>,
-    orders_rows: Vec<TableRow>,
-    pos_header: scrollable::Id,
-    pos_body: scrollable::Id,
-    pos_footer: scrollable::Id,
-    position_columns: Vec<PosTableColumn>,
-    position_rows: Vec<PosTableRow>,
-    resize_columns_enabled: bool,
-    footer_enabled: bool,
-    min_width_enabled: bool,
-    account_info_usdt: Option<user_data::FetchedBalance>,
-
     size_filter_timesales: f32,
     size_filter_heatmap: f32,
     sync_heatmap: bool,
@@ -297,6 +258,7 @@ struct State {
 }
 
 impl Application for State {
+    type Renderer = Renderer;
     type Message = self::Message;
     type Executor = executor::Default;
     type Flags = ();
@@ -313,15 +275,17 @@ impl Application for State {
         panes_open.insert(PaneId::TradePanel, (false, None));
         (
             Self { 
+                show_layout_modal: false,
+
                 size_filter_timesales: 0.0,
                 size_filter_heatmap: 0.0,
                 sync_heatmap: false,
                 kline_stream: true,
 
-                trades_chart: None,
                 candlestick_chart: None,
                 time_and_sales: None,
                 custom_line: None,
+                heatmap_chart: None,
                 listen_key: None,
                 selected_ticker: None,
                 selected_timeframe: Some(Timeframe::M1),
@@ -334,45 +298,6 @@ impl Application for State {
                 focus: None,
                 first_pane,
                 pane_lock: false,
-                qty_input_val: RefCell::new(None),
-                price_input_val: RefCell::new(None),
-                order_form_active_tab: 0,
-                table_active_tab: 0,
-                open_orders: vec![],
-                orders_header: scrollable::Id::unique(),
-                orders_body: scrollable::Id::unique(),
-                orders_footer: scrollable::Id::unique(),
-                pos_header: scrollable::Id::unique(),
-                pos_body: scrollable::Id::unique(),
-                pos_footer: scrollable::Id::unique(),
-                resize_columns_enabled: true,
-                footer_enabled: true,
-                min_width_enabled: true,
-                orders_columns: vec![
-                    TableColumn::new(ColumnKind::UpdateTime),
-                    TableColumn::new(ColumnKind::Symbol),
-                    TableColumn::new(ColumnKind::OrderType),
-                    TableColumn::new(ColumnKind::Side),
-                    TableColumn::new(ColumnKind::Price),
-                    TableColumn::new(ColumnKind::OrigQty),
-                    TableColumn::new(ColumnKind::ExecutedQty),
-                    TableColumn::new(ColumnKind::ReduceOnly),
-                    TableColumn::new(ColumnKind::TimeInForce),
-                    TableColumn::new(ColumnKind::CancelOrder),
-                ],
-                orders_rows: vec![],
-                position_columns: vec![
-                    PosTableColumn::new(PosColumnKind::Symbol),
-                    PosTableColumn::new(PosColumnKind::PosSize),
-                    PosTableColumn::new(PosColumnKind::EntryPrice),
-                    PosTableColumn::new(PosColumnKind::Breakeven),
-                    PosTableColumn::new(PosColumnKind::MarkPrice),
-                    PosTableColumn::new(PosColumnKind::LiqPrice),
-                    PosTableColumn::new(PosColumnKind::MarginAmt),
-                    PosTableColumn::new(PosColumnKind::UnrealPnL),
-                ],
-                position_rows: vec![],
-                account_info_usdt: None,
             },
             Command::batch(vec![
                 font::load(ICON_BYTES).map(Message::FontLoaded),
@@ -420,6 +345,12 @@ impl Application for State {
             Message::Candlestick(message) => {
                 if let Some(candlesticks) = &mut self.candlestick_chart {
                     candlesticks.update(message);
+                }
+                Command::none()
+            },
+            Message::Heatmap(message) => {
+                if let Some(heatmap) = &mut self.heatmap_chart {
+                    heatmap.update(message);
                 }
                 Command::none()
             },
@@ -501,61 +432,6 @@ impl Application for State {
                         }
                     };
 
-                    if let Some(_listen_key) = &self.listen_key {
-                        let fetch_open_orders = Command::perform(
-                            user_data::fetch_open_orders(selected_ticker.to_string(), API_KEY, SECRET_KEY)
-                                .map_err(|err| format!("{:?}", err)),
-                            |orders| {
-                                match orders {
-                                    Ok(orders) => {
-                                        Message::OrdersFetched(orders)
-                                    },
-                                    Err(err) => {
-                                        Message::OrderFailed(format!("{}", err))
-                                    }
-                                }
-                            }
-                        );
-                        let fetch_open_positions = Command::perform(
-                            user_data::fetch_open_positions(API_KEY, SECRET_KEY)
-                                .map_err(|err| format!("{:?}", err)),
-                            |positions| {
-                                match positions {
-                                    Ok(positions) => {
-                                        Message::UserWsEvent(user_data::Event::FetchedPositions(positions))
-                                    },
-                                    Err(err) => {
-                                        Message::OrderFailed(format!("{}", err))
-                                    }
-                                }
-                            }
-                        );
-                        let fetch_balance = Command::perform(
-                            user_data::fetch_acc_balance(API_KEY, SECRET_KEY)
-                                .map_err(|err| format!("{:?}", err)),
-                            |balance| {
-                                match balance {
-                                    Ok(balance) => {
-                                        let mut message = Message::OrderFailed("No USDT balance found".to_string());
-                                        for asset in balance {
-                                            if asset.asset == "USDT" {
-                                                message = Message::UpdateAccInfo(asset);
-                                                break;
-                                            }
-                                        }
-                                        message
-                                    },
-                                    Err(err) => {
-                                        Message::OrderFailed(format!("{}", err))
-                                    }
-                                }
-                            }
-                        );
-                        commands.extend(vec![fetch_open_orders, fetch_open_positions, fetch_balance]);
-                    } else {
-                        eprintln!("No listen key found for user data fetch");
-                    }
-
                     let first_pane = self.first_pane;
         
                     for (pane_id, (is_open, stream_type)) in &self.panes_open {
@@ -574,7 +450,7 @@ impl Application for State {
                                 commands.push(split_pane);
                             }
                             if *pane_id == PaneId::HeatmapChart {
-                                self.trades_chart = Some(LineChart::new());
+                                self.heatmap_chart = Some(Heatmap::new());
                             }
                             if *pane_id == PaneId::TimeAndSales {
                                 self.time_and_sales = Some(TimeAndSales::new());
@@ -611,14 +487,10 @@ impl Application for State {
                 } else {
                     self.ws_state = WsState::Disconnected;
 
-                    self.trades_chart = None;
+                    self.heatmap_chart = None;
                     self.candlestick_chart = None;
                     self.time_and_sales = None;
                     self.custom_line = None;
-
-                    self.open_orders.clear();
-                    self.orders_rows.clear();
-                    self.position_rows.clear();
 
                     Command::none()
                 }
@@ -657,8 +529,8 @@ impl Application for State {
                         if let Some(time_and_sales) = &mut self.time_and_sales {
                             time_and_sales.update(&trades_buffer);
                         } 
-                        if let Some(chart) = &mut self.trades_chart {
-                            chart.update(depth_update, trades_buffer, bids, asks);
+                        if let Some(chart) = &mut self.heatmap_chart {
+                            chart.insert_datapoint(trades_buffer, depth_update, bids, asks)
                         } 
                     }
                     market_data::Event::KlineReceived(kline, timeframe) => {
@@ -679,73 +551,6 @@ impl Application for State {
                                         _ => {}
                                     }
                                 }
-                            }
-                        }
-                    }
-                };
-                Command::none()
-            },
-            Message::UserWsEvent(event) => {
-                match event {
-                    user_data::Event::Connected(connection) => {
-                        self.user_ws_state = UserWsState::Connected(connection);
-                    }
-                    user_data::Event::Disconnected => {
-                        self.user_ws_state = UserWsState::Disconnected;
-                    }
-                    user_data::Event::CancelOrder(order_trade_update) => {
-                        TableRow::remove_row(order_trade_update.order_id, &mut self.orders_rows);
-                    }
-                    user_data::Event::NewOrder(order) => {
-                        dbg!(order);
-                    }
-                    user_data::Event::TestEvent(msg) => {
-                        dbg!(msg);
-                    }
-                    user_data::Event::NewPositions(positions) => {
-                        for position in positions {
-                            PosTableRow::remove_row(&position.symbol, &mut self.position_rows);
-                            if position.pos_amt != 0.0 {
-                                let position_in_table = user_data::PositionInTable { 
-                                    symbol: position.symbol.clone(),
-                                    size: position.pos_amt,
-                                    entry_price: position.entry_price,
-                                    breakeven_price: position.breakeven_price,
-                                    mark_price: 0.0, 
-                                    liquidation_price: 0.0,
-                                    margin_amt: 0.0, 
-                                    unrealized_pnl: 0.0,
-                                };
-
-                                self.position_rows.push(PosTableRow::add_row(position_in_table));
-                            }
-                        }
-                    }
-                    user_data::Event::FetchedPositions(positions) => {
-                        self.position_rows.clear();
-                    
-                        for fetched_position in positions {
-                            if fetched_position.pos_amt != 0.0 {
-                                let position_in_table = user_data::PositionInTable { 
-                                    symbol: fetched_position.symbol.clone(),
-                                    size: fetched_position.pos_amt,
-                                    entry_price: fetched_position.entry_price,
-                                    breakeven_price: fetched_position.breakeven_price,
-                                    mark_price: fetched_position.mark_price,
-                                    liquidation_price: fetched_position.liquidation_price,
-                                    margin_amt: 0.0,
-                                    unrealized_pnl: fetched_position.unrealized_pnl,
-                                };
-                    
-                                self.position_rows.push(PosTableRow::add_row(position_in_table));
-                            }
-                        }
-                    }
-                    user_data::Event::FetchedBalance(balance) => {
-                        for asset in balance {
-                            if asset.asset == "USDT" {
-                                self.account_info_usdt = Some(asset);
-                                break;
                             }
                         }
                     }
@@ -791,7 +596,7 @@ impl Application for State {
                         self.panes_open.insert(pane_id, (true, Some(StreamType::DepthAndTrades(*selected_ticker))));
                     }
                     if pane_id == PaneId::HeatmapChart {
-                        self.trades_chart = Some(LineChart::new());
+                        dbg!("Creating heatmap chart");
                         self.panes_open.insert(pane_id, (true, Some(StreamType::DepthAndTrades(*selected_ticker))));
                     }
                 } 
@@ -863,160 +668,11 @@ impl Application for State {
             Message::ToggleLayoutLock => {
                 self.focus = None;
                 self.pane_lock = !self.pane_lock;
-                self.resize_columns_enabled = !self.pane_lock;
                 Command::none()
             },
 
-            // Order form
-            Message::LimitOrder(side) => {
-                Command::perform(
-                    user_data::create_limit_order(side, self.qty_input_val.borrow().as_ref().unwrap().to_string(), self.price_input_val.borrow().as_ref().unwrap().to_string(), API_KEY, SECRET_KEY),
-                    |res| {
-                        match res {
-                            Ok(res) => {
-                                Message::OrderCreated(res)
-                            },
-                            Err(user_data::BinanceError::Reqwest(err)) => {
-                                Message::OrderFailed(format!("Network error: {}", err))
-                            },
-                            Err(user_data::BinanceError::BinanceAPI(err_msg)) => {
-                                Message::OrderFailed(format!("Binance API error: {}", err_msg))
-                            }
-                        }
-                    }
-                )
-            },
-            Message::MarketOrder(side) => {
-                Command::perform(
-                    user_data::create_market_order(side, self.qty_input_val.borrow().as_ref().unwrap().to_string(), API_KEY, SECRET_KEY),
-                    |res| {
-                        match res {
-                            Ok(res) => {
-                                Message::MarketOrderCreated(res)
-                            },
-                            Err(user_data::BinanceError::Reqwest(err)) => {
-                                Message::OrderFailed(format!("Network error: {}", err))
-                            },
-                            Err(user_data::BinanceError::BinanceAPI(err_msg)) => {
-                                Message::OrderFailed(format!("Binance API error: {}", err_msg))
-                            }
-                        }
-                    }
-                )
-            },
-            Message::CancelOrder(order_id) => {
-                Command::perform(
-                    user_data::cancel_order(order_id, API_KEY, SECRET_KEY),
-                    |res| {
-                        match res {
-                            Ok(_) => {
-                                Message::OrderFailed("Order cancelled".to_string())
-                            },
-                            Err(user_data::BinanceError::Reqwest(err)) => {
-                                Message::OrderFailed(format!("Network error: {}", err))
-                            },
-                            Err(user_data::BinanceError::BinanceAPI(err_msg)) => {
-                                Message::OrderFailed(format!("Binance API error: {}", err_msg))
-                            }
-                        }
-                    }
-                )
-            },
-            Message::OrdersFetched(orders) => {
-                for order in orders {
-                    self.open_orders.push(order.clone());
-                    self.orders_rows.push(TableRow::add_row(order));
-                }
-                Command::none()
-            },
-            Message::OrderCreated(order) => {
-                self.orders_rows.push(TableRow::add_row(order.clone()));
-                self.open_orders.push(order);
-                Command::none()
-            },
-            Message::MarketOrderCreated(order) => {
-                dbg!(order);
-                Command::none()
-            },
-            Message::OrderFailed(err) => {
-                eprintln!("Error creating order: {}", err);
-                Command::none()
-            },
-
-            Message::InputChanged((field, new_value)) => {
-                if field == "price" {
-                    *self.price_input_val.borrow_mut() = Some(new_value);
-                } else if field == "qty" {
-                    *self.qty_input_val.borrow_mut() = Some(new_value);
-                }
-                Command::none()
-            },
-            Message::UpdateAccInfo(acc_info) => {
-                self.account_info_usdt = Some(acc_info);
-                Command::none()
-            },
-
-            // Table 
-            Message::SyncHeader(offset) => {
-                let orders_batch = Command::batch(vec![
-                    scrollable::scroll_to(self.orders_header.clone(), offset),
-                    scrollable::scroll_to(self.orders_footer.clone(), offset),
-                ]);
-                let positions_batch = Command::batch(vec![
-                    scrollable::scroll_to(self.pos_header.clone(), offset),
-                    scrollable::scroll_to(self.pos_footer.clone(), offset),
-                ]);
-
-                if self.table_active_tab == 0 {
-                    orders_batch
-                } else if self.table_active_tab == 1 {
-                    positions_batch
-                } else {
-                    Command::none()
-                }
-            },
-            Message::TableResizing(index, offset) => {
-                if self.table_active_tab == 0 {
-                    self.orders_columns[index].resize_offset = Some(offset);
-                } else if self.table_active_tab == 1 {
-                    self.position_columns[index].resize_offset = Some(offset);
-                }
-                Command::none()
-            },
-            Message::TableResized => {
-                if self.table_active_tab == 0 {
-                    self.orders_columns.iter_mut().for_each(|column| {
-                        if let Some(offset) = column.resize_offset.take() {
-                            column.width += offset;
-                        }
-                    });
-                } else if self.table_active_tab == 1 {
-                    self.position_columns.iter_mut().for_each(|column| {
-                        if let Some(offset) = column.resize_offset.take() {
-                            column.width += offset;
-                        }
-                    });
-                }
-                Command::none()
-            },
-            Message::FooterEnabled(enabled) => {
-                self.footer_enabled = enabled;
-                Command::none()
-            },
-            Message::MinWidthEnabled(enabled) => {
-                self.min_width_enabled = enabled;
-                Command::none()
-            },
-            Message::TabSelected(index, tab_type) => {
-                if tab_type == "order_form" {
-                    self.order_form_active_tab = index;
-                } else if tab_type == "table" {
-                    self.table_active_tab = index;
-                }
-                Command::none()
-            },
-
-            Message::Debug(_msg) => {
+            Message::Debug(msg) => {
+                println!("{}", msg);
                 Command::none()
             },
             Message::FontLoaded(_) => {
@@ -1048,9 +704,9 @@ impl Application for State {
                     self.sync_heatmap = false;
                 }
 
-                self.trades_chart.as_mut().map(|chart| {
-                    chart.set_size_filter(self.size_filter_heatmap);
-                });
+                if let Some(heatmap_chart) = &mut self.heatmap_chart {
+                    heatmap_chart.set_size_filter(self.size_filter_heatmap);
+                }
                 self.time_and_sales.as_mut().map(|time_and_sales| {
                     time_and_sales.set_size_filter(self.size_filter_timesales);
                 });
@@ -1062,15 +718,24 @@ impl Application for State {
             
                 if sync {
                     self.size_filter_heatmap = self.size_filter_timesales;
-                    self.trades_chart.as_mut().map(|chart| {
-                        chart.set_size_filter(self.size_filter_heatmap);
-                    });
+                    if let Some(heatmap_chart) = &mut self.heatmap_chart {
+                        heatmap_chart.set_size_filter(self.size_filter_heatmap);
+                    }
                 }
             
                 Command::none()
             },
             Message::CutTheKlineStream => {
                 self.kline_stream = true;
+                Command::none()
+            },
+
+            Message::ShowLayoutModal => {
+                self.show_layout_modal = true;
+                iced::widget::focus_next()
+            },
+            Message::HideLayoutModal => {
+                self.show_layout_modal = false;
                 Command::none()
             },
         }
@@ -1092,25 +757,10 @@ impl Application for State {
                     self.sync_heatmap,
                     total_panes, 
                     size, 
+                    &self.heatmap_chart,
                     &self.time_and_sales,
-                    &self.trades_chart, 
                     &self.candlestick_chart, 
                     &self.custom_line,
-                    self.qty_input_val.borrow().clone(), 
-                    self.price_input_val.borrow().clone(),
-                    &self.orders_header,
-                    &self.orders_body,
-                    &self.pos_header,
-                    &self.pos_body,
-                    &self.orders_columns,
-                    &self.orders_rows,
-                    &self.position_columns,
-                    &self.position_rows,
-                    &self.min_width_enabled,
-                    &self.resize_columns_enabled,
-                    &self.order_form_active_tab,
-                    &self.table_active_tab,
-                    &self.account_info_usdt,
                 )
             }));
     
@@ -1124,21 +774,21 @@ impl Application for State {
                 style::pane_active
             });
         
-            let title = match pane.id {
-                PaneId::HeatmapChart => "Heatmap Chart",
-                PaneId::CandlestickChart => "Candlestick Chart",
-                PaneId::CustomChart => "Custom Chart", 
-                PaneId::TimeAndSales => "Time & Sales",
-                PaneId::TradePanel => "Trading Panel",
-            };
-
             if is_focused {
+                let title = match pane.id {
+                    PaneId::HeatmapChart => "Heatmap",
+                    PaneId::CandlestickChart => "Candlesticks",
+                    PaneId::CustomChart => "Candlesticks",
+                    PaneId::TimeAndSales => "Time&Sales",
+                    PaneId::TradePanel => "Trade Panel",
+                };
+
                 let pane_timeframe = self.panes_open.get(&pane.id).and_then(|(_, stream_type)| {
                     match stream_type {
                         Some(StreamType::Klines(_, timeframe)) => Some(timeframe),
                         _ => None,
                     }
-                });
+                });    
 
                 let title_bar = pane_grid::TitleBar::new(title)
                     .controls(view_controls(
@@ -1168,29 +818,27 @@ impl Application for State {
                 } else { 
                     text(char::from(Icon::Unlocked).to_string()).font(ICON) 
                 })
-                .center_x().width(25)
+                .width(25)
+                .center_x(iced::Pixels(20.0))
             )
             .on_press(Message::ToggleLayoutLock);
 
         let add_pane_button = button(
             container(
                 text(char::from(Icon::Layout).to_string()).font(ICON))
-                .center_x().width(25)
+                .width(25)
+                .center_x(iced::Pixels(20.0))
             )
-            .on_press(Message::Debug("Add Pane".to_string()));
+            .on_press(Message::ShowLayoutModal);
 
-        let menu_tpl_1 = |items| Menu::new(items).max_width(180.0).offset(15.0).spacing(5.0);
-        let mb = menu_bar!(
-            (add_pane_button, {
-                menu_tpl_1(menu_items!(
-                    (debug_button(PaneId::HeatmapChart, self.panes_open.get(&PaneId::HeatmapChart).map(|(open, _)| open).unwrap_or(&false), self.first_pane))
-                    (debug_button(PaneId::CandlestickChart, self.panes_open.get(&PaneId::CandlestickChart).map(|(open, _)| open).unwrap_or(&false), self.first_pane))
-                    (debug_button(PaneId::CustomChart, self.panes_open.get(&PaneId::CustomChart).map(|(open, _)| open).unwrap_or(&false), self.first_pane))
-                    (debug_button(PaneId::TimeAndSales, self.panes_open.get(&PaneId::TimeAndSales).map(|(open, _)| open).unwrap_or(&false), self.first_pane))
-                    (debug_button(PaneId::TradePanel, self.panes_open.get(&PaneId::TradePanel).map(|(open, _)| open).unwrap_or(&false), self.first_pane))
-                )).width(200.0)
-            })
-        );
+        let layout_controls = Row::new()
+            .spacing(10)
+            .align_items(Alignment::Center)
+            .push(
+                tooltip(add_pane_button, "Manage Panes", tooltip::Position::Bottom).style(style::tooltip))
+            .push(
+                tooltip(layout_lock_button, "Layout Lock", tooltip::Position::Bottom).style(style::tooltip)
+            );
 
         let ws_button = if self.selected_ticker.is_some() {
             button(if self.ws_running { "Disconnect" } else { "Connect" })
@@ -1226,6 +874,7 @@ impl Application for State {
         }
 
         let content = Column::new()
+            .padding(10)
             .spacing(10)
             .align_items(Alignment::Start)
             .width(Length::Fill)
@@ -1234,21 +883,71 @@ impl Application for State {
                 Row::new()
                     .spacing(10)
                     .push(ws_controls)
-                    .push(Space::with_width(Length::Fill))
-                    .push(mb)                
-                    .push(
-                        tooltip(layout_lock_button, "Layout Lock", tooltip::Position::Bottom).style(theme::Container::Box)
-                    )
+                    .push(Space::with_width(Length::Fill))                
+                    .push(layout_controls)
             )
             .push(pane_grid);
 
-        Container::new(content)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .padding(10)
-            .center_x()
-            .center_y()
-            .into()
+        if self.show_layout_modal {
+            let mut buttons = Column::new().spacing(2).align_items(Alignment::Start);
+
+            let candlestick_chart_button = button("Candlesticks 1")
+                .width(iced::Pixels(200.0));
+            if let Some((false, _)) = self.panes_open.get(&PaneId::CandlestickChart) {
+                buttons = buttons.push(candlestick_chart_button.on_press(Message::Split(pane_grid::Axis::Vertical, self.first_pane, PaneId::CandlestickChart)));
+            } else {
+                buttons = buttons.push(candlestick_chart_button);
+            }
+
+            let custom_chart_button = button("Candlesticks 2")
+                .width(iced::Pixels(200.0));
+            if let Some((false, _)) = self.panes_open.get(&PaneId::CustomChart) {
+                buttons = buttons.push(custom_chart_button.on_press(Message::Split(pane_grid::Axis::Vertical, self.first_pane, PaneId::CustomChart)));
+            } else {
+                buttons = buttons.push(custom_chart_button);
+            }
+
+            let heatmap_chart_button = button("Heatmap")
+                .width(iced::Pixels(200.0));
+            if let Some((false, _)) = self.panes_open.get(&PaneId::HeatmapChart) {
+                buttons = buttons.push(heatmap_chart_button.on_press(Message::Split(pane_grid::Axis::Vertical, self.first_pane, PaneId::HeatmapChart)));
+            } else {
+                buttons = buttons.push(heatmap_chart_button);
+            }
+
+            let time_and_sales_button = button("Time&Sales")
+                .width(iced::Pixels(200.0));
+            if let Some((false, _)) = self.panes_open.get(&PaneId::TimeAndSales) {
+                buttons = buttons.push(time_and_sales_button.on_press(Message::Split(pane_grid::Axis::Vertical, self.first_pane, PaneId::TimeAndSales)));
+            } else {
+                buttons = buttons.push(time_and_sales_button);
+            }
+
+            let signup = container(
+                Column::new()
+                    .spacing(10)
+                    .align_items(Alignment::Center)
+                    .push(
+                        Text::new("Add a new pane")
+                            .size(20)
+                    )
+                    .push(buttons)
+                    .push(
+                        Column::new()
+                            .align_items(Alignment::Center)
+                            .push(
+                                button("Close")
+                                    .on_press(Message::HideLayoutModal)
+                            )
+                    )
+            )
+            .width(Length::Shrink)
+            .padding(20)
+            .style(style::title_bar_active);
+            modal(content, signup, Message::HideLayoutModal)
+        } else {
+            content.into()
+        }  
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -1279,43 +978,35 @@ impl Application for State {
     }    
 
     fn theme(&self) -> Self::Theme {
-        Theme::Oxocarbon
+        Theme::KanagawaDragon
     }
 }
 
-fn debug_button<'a>(label: PaneId, is_open: &bool, pane_to_split: pane_grid::Pane) -> button::Button<'a, Message, iced::Theme, iced::Renderer> {
-    if *is_open {
-        disabled_labeled_button(&format!("{:?}", label))
-    } else {
-        labeled_button(&format!("{:?}", label), Message::Split(pane_grid::Axis::Vertical, pane_to_split, label))
-    }
-}
-fn labeled_button<'a>(
-    label: &str,
-    msg: Message,
-) -> button::Button<'a, Message, iced::Theme, iced::Renderer> {
-    base_button(
-        text(label).vertical_alignment(alignment::Vertical::Center),
-        msg,
-    )
-}
-fn disabled_labeled_button<'a>(
-    label: &str,
-) -> button::Button<'a, Message, iced::Theme, iced::Renderer> {
-    let content = text(label)
-        .vertical_alignment(alignment::Vertical::Center);
-    button(content)
-        .padding([4, 8])
-        .width(150)
-}
-fn base_button<'a>(
-    content: impl Into<Element<'a, Message, iced::Theme, iced::Renderer>>,
-    msg: Message,
-) -> button::Button<'a, Message, iced::Theme, iced::Renderer> {
-    button(content)
-        .padding([4, 8])
-        .width(150)
-        .on_press(msg)
+fn modal<'a, Message>(
+    base: impl Into<Element<'a, Message>>,
+    content: impl Into<Element<'a, Message>>,
+    on_blur: Message,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    stack![
+        base.into(),
+        mouse_area(center(opaque(content)).style(|_theme| {
+            container::Style {
+                background: Some(
+                    Color {
+                        a: 0.8,
+                        ..Color::BLACK
+                    }
+                    .into(),
+                ),
+                ..container::Style::default()
+            }
+        }))
+        .on_press(on_blur)
+    ]
+    .into()
 }
 
 fn view_content<'a, 'b: 'a>(
@@ -1326,61 +1017,65 @@ fn view_content<'a, 'b: 'a>(
     sync_heatmap: bool,
     _total_panes: usize,
     _size: Size,
+    heatmap_chart: &'a Option<Heatmap>,
     time_and_sales: &'a Option<TimeAndSales>,
-    trades_chart: &'a Option<LineChart>,
     candlestick_chart: &'a Option<CustomLine>,
     custom_line: &'a Option<CustomLine>,
-    qty_input_val: Option<String>,
-    price_input_val: Option<String>, 
-    orders_header: &'b scrollable::Id,
-    orders_body: &'b scrollable::Id,
-    pos_header: &'b scrollable::Id,
-    pos_body: &'b scrollable::Id,
-    orders_columns: &'b Vec<TableColumn>,
-    orders_rows: &'b Vec<TableRow>,
-    position_columns: &'b Vec<PosTableColumn>,
-    position_rows: &'b Vec<PosTableRow>,
-    min_width_enabled: &'b bool,
-    resize_columns_enabled: &'b bool,
-    order_form_active_tab: &'b usize,
-    table_active_tab: &'b usize,
-    account_info_usdt: &'b Option<user_data::FetchedBalance>,
 ) -> Element<'a, Message> {
     let content: Element<Message, Theme, Renderer> = match pane_id {
         PaneId::HeatmapChart => {
-            let underlay = trades_chart.as_ref().map(LineChart::view).unwrap_or_else(|| Text::new("No data").into());
-            let overlay = if show_modal {
-                Some(
-                    Card::new(
-                        Text::new("Heatmap Chart -> Settings"),
-                        Column::new()
-                            .push(Text::new("Size Filtering"))
-                            .push(
-                                Slider::new(0.0..=50000.0, *size_filter_heatmap, move |value| Message::SliderChanged(PaneId::HeatmapChart, value))
-                                    .step(500.0)
-                            ),
-                    )
-                    .foot(
-                        Row::new()
-                            .spacing(10)
-                            .padding(5)
-                            .width(Length::Fill)
-                            .push(
-                                Text::new(format!("${}", size_filter_heatmap)).size(16)
-                            )
-                    )
-                    .max_width(500.0)
-                    .on_close(Message::CloseModal)
-                )
+            let underlay; 
+            if let Some(heatmap_chart) = heatmap_chart {
+                underlay =
+                    heatmap_chart
+                        .view()
+                        .map(move |message| Message::Heatmap(message));
             } else {
-                None
-            };
+                underlay = Text::new("No data")
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into();
+            }
 
-            modal(underlay, overlay)
-                .backdrop(Message::CloseModal)
-                .on_esc(Message::CloseModal)
-                .align_y(alignment::Vertical::Center)
-                .into()
+            if show_modal {
+                let signup: Container<Message, Theme, _> = container(
+                    Column::new()
+                        .spacing(10)
+                        .align_items(Alignment::Center)
+                        .push(
+                            Text::new("Heatmap > Settings")
+                                .size(16)
+                        )
+                        .push(
+                            Column::new()
+                                .align_items(Alignment::Center)
+                                .push(Text::new("Size Filtering"))
+                                .push(
+                                    Slider::new(0.0..=50000.0, *size_filter_heatmap, move |value| Message::SliderChanged(PaneId::HeatmapChart, value))
+                                        .step(500.0)
+                                )
+                                .push(
+                                    Text::new(format!("${}", size_filter_heatmap)).size(16)
+                                )
+                        )
+                        .push( 
+                            Row::new()
+                                .spacing(10)
+                                .push(
+                                    button("Close")
+                                    .on_press(Message::CloseModal)
+                                )
+                        )
+                )
+                .width(Length::Shrink)
+                .padding(20)
+                .max_width(500)
+                .style(style::title_bar_active);
+
+                return modal(underlay, signup, Message::CloseModal);
+            } else {
+                underlay
+            }
         }, 
         
         PaneId::CandlestickChart => { 
@@ -1391,36 +1086,12 @@ fn view_content<'a, 'b: 'a>(
                         .view()
                         .map(move |message| Message::Candlestick(message));
             } else {
-                underlay = Text::new("No data").into();
+                underlay = Text::new("No data")
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into();
             }
-            let overlay = if show_modal {
-                Some(
-                    Card::new(
-                        Text::new("Candlestick Chart -> Settings"),
-                        Column::new()
-                            .push(Text::new("Test"))
-                    )
-                    .foot(
-                        Row::new()
-                            .spacing(10)
-                            .padding(5)
-                            .width(Length::Fill)
-                            .push(
-                                Text::new("Footer").size(16)
-                            )
-                    )
-                    .max_width(500.0)
-                    .on_close(Message::CloseModal)
-                )
-            } else {
-                None
-            };
-
-            modal(underlay, overlay)
-                .backdrop(Message::CloseModal)
-                .on_esc(Message::CloseModal)
-                .align_y(alignment::Vertical::Center)
-                .into()
+            underlay
         },
 
         PaneId::CustomChart => { 
@@ -1431,212 +1102,68 @@ fn view_content<'a, 'b: 'a>(
                         .view()
                         .map(move |message| Message::CustomLine(message));
             } else {
-                underlay = Text::new("No data").into();
+                underlay = Text::new("No data")
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into();
             }
-
-            let overlay = if show_modal {
-                Some(
-                    Card::new(
-                        Text::new("Custom Chart -> Settings"),
-                        Column::new()
-                            .push(Text::new("Test"))
-                    )
-                    .foot(
-                        Row::new()
-                            .spacing(10)
-                            .padding(5)
-                            .width(Length::Fill)
-                            .push(
-                                Text::new("Footer").size(16)
-                            )
-                    )
-                    .max_width(500.0)
-                    .on_close(Message::CloseModal)
-                )
-            } else {
-                None
-            };
-
-            modal(underlay, overlay)
-                .backdrop(Message::CloseModal)
-                .on_esc(Message::CloseModal)
-                .align_y(alignment::Vertical::Center)
-                .into()
+            underlay
         },
         
         PaneId::TimeAndSales => { 
-            let underlay = time_and_sales.as_ref().map(TimeAndSales::view).unwrap_or_else(|| Text::new("No data").into()); 
-            let overlay = if show_modal {
-                Some(
-                    Card::new(
-                        Text::new("Time & Sales -> Settings"),
-                        Column::new()
-                            .push(Text::new("Size Filtering"))
-                            .push(
-                                Slider::new(0.0..=50000.0, *size_filter_timesales, move |value| Message::SliderChanged(PaneId::TimeAndSales, value))
-                                    .step(500.0)
-                            ),
-                    )
-                    .foot(
-                        Row::new()
-                            .spacing(10)
-                            .padding(5)
-                            .width(Length::Fill)
-                            .push(
-                                Text::new(format!("${}", size_filter_timesales)).size(16)
-                            )
-                            .push(Space::with_width(Length::Fill))
-                            .push(
-                                checkbox("Sync Heatmap with", sync_heatmap)
-                                    .on_toggle(Message::SyncWithHeatmap)
-                            )
-                    )
-                    .max_width(500.0)
-                    .on_close(Message::CloseModal)
-                )
-            } else {
-                None
-            };
+            let underlay = time_and_sales.as_ref().map(TimeAndSales::view)
+                .unwrap_or_else(|| Text::new("No data")
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into()); 
 
-            modal(underlay, overlay)
-                .backdrop(Message::CloseModal)
-                .on_esc(Message::CloseModal)
-                .align_y(alignment::Vertical::Center)
-                .into()
+            if show_modal {
+                let signup = container(
+                    Column::new()
+                        .spacing(10)
+                        .align_items(Alignment::Center)
+                        .push(
+                            Text::new("Time&Sales > Settings")
+                                .size(16)
+                        )
+                        .push(
+                            Column::new()
+                                .align_items(Alignment::Center)
+                                .push(Text::new("Size Filtering"))
+                                .push(
+                                    Slider::new(0.0..=50000.0, *size_filter_timesales, move |value| Message::SliderChanged(PaneId::TimeAndSales, value))
+                                        .step(500.0)
+                                )
+                                .push(
+                                    Text::new(format!("${}", size_filter_timesales)).size(16)
+                                )
+                                .push(
+                                    checkbox("Sync Heatmap with", sync_heatmap)
+                                        .on_toggle(Message::SyncWithHeatmap)
+                                )
+                        )
+                        .push( 
+                            Row::new()
+                                .spacing(10)
+                                .push(
+                                    button("Close")
+                                    .on_press(Message::CloseModal)
+                                )
+                        )
+                )
+                .width(Length::Shrink)
+                .padding(20)
+                .max_width(500)
+                .style(style::title_bar_active);
+
+                return modal(underlay, signup, Message::CloseModal);
+            } else {
+                underlay
+            }
         },  
         
-        PaneId::TradePanel => if account_info_usdt.is_none() {
+        PaneId::TradePanel => {
             Text::new("No account info found").into()
-        } else {
-            let form_select_0_button = button("Market Order")
-                .on_press(Message::TabSelected(0, "order_form".to_string()));
-            let form_select_1_button = button("Limit Order") 
-                .on_press(Message::TabSelected(1, "order_form".to_string()));
-
-            let (buy_button, sell_button) = match *order_form_active_tab {
-                0 => {
-                    (
-                        button("Limit Buy").on_press(Message::LimitOrder("BUY".to_string())),
-                        button("Limit Sell").on_press(Message::LimitOrder("SELL".to_string()))
-                    )
-                },
-                1 => {
-                    (
-                        button("Market Buy").on_press(Message::MarketOrder("BUY".to_string())),
-                        button("Market Sell").on_press(Message::MarketOrder("SELL".to_string()))
-                    )
-                },
-                _ => {
-                    (
-                        button("Buy").on_press(Message::LimitOrder("BUY".to_string())),
-                        button("Sell").on_press(Message::LimitOrder("SELL".to_string()))
-                    )
-                },
-            };
-            let order_buttons = Row::new()
-                .push(buy_button)
-                .push(sell_button)
-                .align_items(Alignment::Center)
-                .spacing(5);
-        
-            let qty_input = text_input("Quantity...", qty_input_val.as_deref().unwrap_or(""))
-                .on_input(|input| Message::InputChanged(("qty".to_string(), input)));
-        
-            let inputs = if *order_form_active_tab == 0 {
-                let price_input = text_input("Price...", price_input_val.as_deref().unwrap_or(""))
-                    .on_input(|input| Message::InputChanged(("price".to_string(), input)));
-        
-                Row::new()
-                    .push(form_select_1_button)
-                    .push(price_input)
-                    .push(qty_input)                       
-                    .push(order_buttons)
-                    .align_items(Alignment::Center)
-                    .padding([20, 10])
-                    .spacing(5)
-            } else {
-                Row::new()
-                    .push(form_select_0_button)
-                    .push(qty_input)
-                    .push(order_buttons)
-                    .align_items(Alignment::Center)
-                    .padding([20, 10])
-                    .spacing(5)
-            };
-
-            if *table_active_tab == 0 {
-                let table = responsive(move |size| {
-                    let mut table = table(
-                        orders_header.clone(),
-                        orders_body.clone(),
-                        &orders_columns,
-                        &orders_rows,
-                        Message::SyncHeader,
-                    );
-                    if *min_width_enabled { table = table.min_width(size.width); }
-                    if *resize_columns_enabled {
-                        table = table.on_column_resize(Message::TableResizing, Message::TableResized);
-                    }
-            
-                    Container::new(table).padding(10).into()
-                });
-                Column::new()
-                    .push(inputs)
-                    .push(
-                        Row::new()
-                            .push(
-                                button("Positions")
-                                .on_press(Message::TabSelected(1, "table".to_string()))
-                            )
-                            .push(
-                                button("Open Orders")
-                            )
-                            .push(Space::with_width(Length::Fill)) 
-                            .push(account_info_usdt.as_ref().map(|info| {
-                                Text::new(format!("USDT: {:.2}", info.balance))
-                            }).unwrap_or_else(|| Text::new("").size(16)))
-                            .padding([0, 10, 0, 10])
-                    )
-                    .push(table)
-                    .align_items(Alignment::Center)
-                    .into()
-            } else {
-                let table = responsive(move |size| {
-                    let mut table = table(
-                        pos_header.clone(),
-                        pos_body.clone(),
-                        &position_columns,
-                        &position_rows,
-                        Message::SyncHeader,
-                    );
-                    if *min_width_enabled { table = table.min_width(size.width); }
-                    if *resize_columns_enabled {
-                        table = table.on_column_resize(Message::TableResizing, Message::TableResized);
-                    }
-            
-                    Container::new(table).padding(10).into()
-                });
-                Column::new()
-                    .push(inputs)
-                    .push(
-                        Row::new()
-                            .push(
-                                button("Positions")
-                            )
-                            .push(
-                                button("Open Orders")
-                                .on_press(Message::TabSelected(0, "table".to_string()))
-                            )
-                            .push(Space::with_width(Length::Fill)) 
-                            .push(account_info_usdt.as_ref().map(|info| {
-                                Text::new(format!("USDT: {:.2}", info.balance))
-                            }).unwrap_or_else(|| Text::new("").size(16)))
-                            .padding([0, 10, 0, 10])
-                    )
-                    .push(table)
-                    .align_items(Alignment::Center)
-                    .into()
-            }        
         },
     };
 
@@ -1655,37 +1182,38 @@ fn view_controls<'a>(
 ) -> Element<'a, Message> {
     let mut row = row![].spacing(5);
 
-    if total_panes > 1 {
-        let (icon, message) = if is_maximized {
-            (Icon::ResizeSmall, Message::Restore)
-        } else {
-            (Icon::ResizeFull, Message::Maximize(pane))
-        };
+    let (icon, message) = if is_maximized {
+        (Icon::ResizeSmall, Message::Restore)
+    } else {
+        (Icon::ResizeFull, Message::Maximize(pane))
+    };
 
-        if pane_id == PaneId::CandlestickChart || pane_id == PaneId::CustomChart {
-            let timeframe_picker = pick_list(
-                &Timeframe::ALL[..],
-                selected_timeframe,
-                move |timeframe| Message::TimeframeSelected(timeframe, pane),
-            ).placeholder("Choose a timeframe...").text_size(11);
-            row = row.push(timeframe_picker);
-        }
-
-        let buttons = vec![
-            (container(text(char::from(Icon::Cog).to_string()).font(ICON).size(14)).width(25).center_x(), Message::OpenModal(pane)),
-            (container(text(char::from(icon).to_string()).font(ICON).size(14)).width(25).center_x(), message),
-            (container(text(char::from(Icon::Close).to_string()).font(ICON).size(14)).width(25).center_x(), Message::Close(pane)),
-        ];
-
-        for (content, message) in buttons {        
-            row = row.push(
-                button(content)
-                    .padding(3)
-                    .on_press(message),
-            );
-        } 
+    if pane_id == PaneId::CandlestickChart || pane_id == PaneId::CustomChart {
+        let timeframe_picker = pick_list(
+            &Timeframe::ALL[..],
+            selected_timeframe,
+            move |timeframe| Message::TimeframeSelected(timeframe, pane),
+        ).placeholder("Choose a timeframe...").text_size(11).width(iced::Pixels(80.0));
+        row = row.push(timeframe_picker);
     }
-    
+
+    let mut buttons = vec![
+        (container(text(char::from(Icon::Cog).to_string()).font(ICON).size(14)).width(25).center_x(iced::Pixels(25.0)), Message::OpenModal(pane)),
+        (container(text(char::from(icon).to_string()).font(ICON).size(14)).width(25).center_x(iced::Pixels(25.0)), message),
+    ];
+
+    if total_panes > 1 {
+        buttons.push((container(text(char::from(Icon::Close).to_string()).font(ICON).size(14)).width(25).center_x(iced::Pixels(25.0)), Message::Close(pane)));
+    }
+
+    for (content, message) in buttons {        
+        row = row.push(
+            button(content)
+                .padding(3)
+                .on_press(message),
+        );
+    } 
+
     row.into()
 }
 
@@ -1733,18 +1261,25 @@ impl TimeAndSales {
             .height(Length::Fill)
             .padding(10);
 
-        let filtered_trades: Vec<&ConvertedTrade> = self.recent_trades.iter().filter(|trade| (trade.qty*trade.price) >= self.size_filter).collect();
+        let filtered_trades: Vec<_> = self.recent_trades.iter().filter(|trade| (trade.qty*trade.price) >= self.size_filter).collect();
 
         let max_qty = filtered_trades.iter().map(|trade| trade.qty).fold(0.0, f32::max);
     
         if filtered_trades.is_empty() {
-            trades_column = trades_column.push(Text::new("No trades").size(16));
+            trades_column = trades_column.push(
+                Text::new("No trades")
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .size(16)
+            );
         } else {
             for trade in filtered_trades.iter().rev().take(80) {
+                let trade: &ConvertedTrade = *trade;
+
                 let trade_row = Row::new()
                     .push(
                         container(Text::new(format!("{}", trade.time.format("%M:%S.%3f"))).size(14))
-                            .width(Length::FillPortion(8)).center_x()
+                            .width(Length::FillPortion(8)).align_x(alignment::Horizontal::Center)
                     )
                     .push(
                         container(Text::new(format!("{}", trade.price)).size(14))
@@ -1752,7 +1287,7 @@ impl TimeAndSales {
                     )
                     .push(
                         container(Text::new(if trade.is_sell { "Sell" } else { "Buy" }).size(14))
-                            .width(Length::FillPortion(4))
+                            .width(Length::FillPortion(4)).align_x(alignment::Horizontal::Left)
                     )
                     .push(
                         container(Text::new(format!("{}", trade.qty)).size(14))
@@ -1762,7 +1297,7 @@ impl TimeAndSales {
                 let color_alpha = trade.qty / max_qty;
     
                 trades_column = trades_column.push(container(trade_row)
-                    .style(if trade.is_sell { style::sell_side_red(color_alpha) } else { style::buy_side_green(color_alpha) }));
+                    .style( move |_| if trade.is_sell { style::sell_side_red(color_alpha) } else { style::buy_side_green(color_alpha) }));
     
                 trades_column = trades_column.push(Container::new(Space::new(Length::Fixed(0.0), Length::Fixed(5.0))));
             }
@@ -1773,31 +1308,66 @@ impl TimeAndSales {
 }
 
 mod style {
-    use iced::widget::container;
-    use iced::{Border, Color, Theme};
+    use iced::widget::container::Style;
+    use iced::{theme, Border, Color, Theme};
 
-    pub fn title_bar_active(theme: &Theme) -> container::Appearance {
-        let palette = theme.extended_palette();
-
-        container::Appearance {
-            text_color: Some(palette.background.strong.text),
-            background: Some(palette.background.strong.color.into()),
+    fn styled(pair: theme::palette::Pair) -> Style {
+        Style {
+            background: Some(pair.color.into()),
+            text_color: pair.text.into(),
             ..Default::default()
         }
     }
-    pub fn title_bar_focused(theme: &Theme) -> container::Appearance {
+
+    pub fn primary(theme: &Theme) -> Style {
         let palette = theme.extended_palette();
 
-        container::Appearance {
+        styled(palette.primary.weak)
+    }
+
+    pub fn tooltip(theme: &Theme) -> Style {
+        let palette = theme.extended_palette();
+
+        Style {
+            background: Some(palette.background.weak.color.into()),
+            border: Border {
+                width: 1.0,
+                color: palette.primary.weak.color,
+                radius: 4.0.into(),
+                ..Border::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    pub fn title_bar_active(theme: &Theme) -> Style {
+        let palette = theme.extended_palette();
+
+        Style {
+            text_color: Some(palette.background.strong.text),
+            background: Some(palette.background.strong.color.into()),
+            border: Border {
+                width: 1.0,
+                color: palette.primary.strong.color,
+                radius: 4.0.into(), 
+                ..Border::default()
+            },
+            ..Default::default()
+        }
+    }
+    pub fn title_bar_focused(theme: &Theme) -> Style {
+        let palette = theme.extended_palette();
+
+        Style {
             text_color: Some(palette.primary.strong.text),
             background: Some(palette.primary.strong.color.into()),
             ..Default::default()
         }
     }
-    pub fn pane_active(theme: &Theme) -> container::Appearance {
+    pub fn pane_active(theme: &Theme) -> Style {
         let palette = theme.extended_palette();
 
-        container::Appearance {
+        Style {
             background: Some(Color::BLACK.into()),
             border: Border {
                 width: 1.0,
@@ -1807,10 +1377,10 @@ mod style {
             ..Default::default()
         }
     }
-    pub fn pane_focused(theme: &Theme) -> container::Appearance {
+    pub fn pane_focused(theme: &Theme) -> Style {
         let palette = theme.extended_palette();
 
-        container::Appearance {
+        Style {
             background: Some(Color::BLACK.into()),
             border: Border {
                 width: 1.0,
@@ -1820,10 +1390,8 @@ mod style {
             ..Default::default()
         }
     }
-    pub fn sell_side_red(color_alpha: f32) -> container::Appearance {
-        //let palette = theme.extended_palette();
-
-        container::Appearance {
+    pub fn sell_side_red(color_alpha: f32) -> Style {
+        Style {
             text_color: Color::from_rgba(192.0 / 255.0, 80.0 / 255.0, 77.0 / 255.0, 1.0).into(),
             border: Border {
                 width: 1.0,
@@ -1833,10 +1401,9 @@ mod style {
             ..Default::default()
         }
     }
-    pub fn buy_side_green(color_alpha: f32) -> container::Appearance {
-        //let palette = theme.extended_palette();
 
-        container::Appearance {
+    pub fn buy_side_green(color_alpha: f32) -> Style {
+        Style {
             text_color: Color::from_rgba(81.0 / 255.0, 205.0 / 255.0, 160.0 / 255.0, 1.0).into(),
             border: Border {
                 width: 1.0,
@@ -1845,218 +1412,5 @@ mod style {
             },
             ..Default::default()
         }
-    }
-}
-struct TableColumn {
-    kind: ColumnKind,
-    width: f32,
-    resize_offset: Option<f32>,
-}
-impl TableColumn {
-    fn new(kind: ColumnKind) -> Self {
-        let width = match kind {
-            ColumnKind::UpdateTime => 130.0,
-            ColumnKind::Symbol => 80.0,
-            ColumnKind::OrderType => 50.0,
-            ColumnKind::Side => 50.0,
-            ColumnKind::Price => 100.0,
-            ColumnKind::OrigQty => 80.0,
-            ColumnKind::ExecutedQty => 80.0,
-            ColumnKind::ReduceOnly => 100.0,
-            ColumnKind::TimeInForce => 50.0,
-            ColumnKind::CancelOrder => 60.0,
-        };
-
-        Self {
-            kind,
-            width,
-            resize_offset: None,
-        }
-    }
-}
-enum ColumnKind {
-    Symbol,
-    Side,
-    Price,
-    OrigQty,
-    ExecutedQty,
-    TimeInForce,
-    OrderType,
-    ReduceOnly,
-    UpdateTime,
-    CancelOrder
-}
-struct TableRow {
-    order: user_data::NewOrder,
-}
-impl TableRow {
-    fn add_row(order: user_data::NewOrder) -> Self {
-        Self {
-            order,
-        }
-    }
-    fn update_row(&mut self, order: user_data::NewOrder) {
-        self.order = order;
-    }
-    fn remove_row(order_id: i64, rows: &mut Vec<TableRow>) {
-        if let Some(index) = rows.iter().position(|r| r.order.order_id == order_id) {
-            rows.remove(index);
-        }
-    }
-}
-impl<'a> table::Column<'a, Message, Theme, Renderer> for TableColumn {
-    type Row = TableRow;
-
-    fn header(&'a self, _col_index: usize) -> Element<'a, Message> {
-        let content = match self.kind {
-            ColumnKind::UpdateTime => "Time",
-            ColumnKind::Symbol => "Symbol",
-            ColumnKind::OrderType => "Type",
-            ColumnKind::Side => "Side",
-            ColumnKind::Price => "Price",
-            ColumnKind::OrigQty => "Amount",
-            ColumnKind::ExecutedQty => "Filled",
-            ColumnKind::ReduceOnly => "Reduce Only",
-            ColumnKind::TimeInForce => "TIF",
-            ColumnKind::CancelOrder => "Cancel",
-        };
-
-        container(text(content)).height(24).center_y().into()
-    }
-
-    fn cell(
-        &'a self,
-        _col_index: usize,
-        row_index: usize,
-        row: &'a Self::Row,
-    ) -> Element<'a, Message> {
-        let content: Element<_> = match self.kind {
-            ColumnKind::UpdateTime => text(row.order.update_time.to_string()).into(),
-            ColumnKind::Symbol => text(&row.order.symbol).into(),
-            ColumnKind::OrderType => text(&row.order.order_type).into(),
-            ColumnKind::Side => text(&row.order.side).into(),
-            ColumnKind::Price => text(&row.order.price).into(),
-            ColumnKind::OrigQty => text(&row.order.orig_qty).into(),
-            ColumnKind::ExecutedQty => text(&row.order.executed_qty).into(),
-            ColumnKind::ReduceOnly => text(row.order.reduce_only.to_string()).into(),
-            ColumnKind::TimeInForce => text(&row.order.time_in_force).into(),
-            ColumnKind::CancelOrder => button("X").on_press(Message::CancelOrder(row.order.order_id.to_string())).into(),
-        };
-
-        container(content)
-            .width(Length::Fill)
-            .height(32)
-            .center_y()
-            .into()
-    }
-
-    fn width(&self) -> f32 {
-        self.width
-    }
-
-    fn resize_offset(&self) -> Option<f32> {
-        self.resize_offset
-    }
-}
-
-struct PosTableColumn {
-    kind: PosColumnKind,
-    width: f32,
-    resize_offset: Option<f32>,
-}
-impl PosTableColumn {
-    fn new(kind: PosColumnKind) -> Self {
-        let width = match kind {
-            PosColumnKind::Symbol => 100.0,
-            PosColumnKind::PosSize => 100.0,
-            PosColumnKind::EntryPrice => 100.0,
-            PosColumnKind::Breakeven => 100.0,
-            PosColumnKind::MarkPrice => 100.0,
-            PosColumnKind::LiqPrice => 100.0,
-            PosColumnKind::MarginAmt => 100.0,
-            PosColumnKind::UnrealPnL => 100.0,
-        };
-
-        Self {
-            kind,
-            width,
-            resize_offset: None,
-        }
-    }
-}
-enum PosColumnKind {
-    Symbol,
-    PosSize,
-    EntryPrice,
-    Breakeven,
-    MarkPrice,
-    LiqPrice,
-    MarginAmt,
-    UnrealPnL,
-}
-#[derive(Debug, Clone)]
-struct PosTableRow {
-    position: user_data::PositionInTable,
-}
-impl PosTableRow {
-    fn add_row(position: user_data::PositionInTable) -> Self {
-        Self {
-            position,
-        }
-    }
-    fn remove_row(symbol: &String, rows: &mut Vec<PosTableRow>) {
-        if let Some(index) = rows.iter().position(|r| r.position.symbol == *symbol) {
-            rows.remove(index);
-        }
-    }
-}
-impl<'a> table::Column<'a, Message, Theme, Renderer> for PosTableColumn {
-    type Row = PosTableRow;
-
-    fn header(&'a self, _col_index: usize) -> Element<'a, Message> {
-        let content = match self.kind {
-            PosColumnKind::Symbol => "Symbol",
-            PosColumnKind::PosSize => "Size",
-            PosColumnKind::EntryPrice => "Entry",
-            PosColumnKind::Breakeven => "Breakeven",
-            PosColumnKind::MarkPrice => "Mark Price",
-            PosColumnKind::LiqPrice => "Liq Price",
-            PosColumnKind::MarginAmt => "Margin",
-            PosColumnKind::UnrealPnL => "PnL",
-        };
-
-        container(text(content)).height(24).center_y().into()
-    }
-
-    fn cell(
-        &'a self,
-        _col_index: usize,
-        row_index: usize,
-        row: &'a Self::Row,
-    ) -> Element<'a, Message> {
-        let content: Element<_> = match self.kind {
-            PosColumnKind::Symbol => text(row.position.symbol.to_string()).into(),
-            PosColumnKind::PosSize => text(&row.position.size).into(),
-            PosColumnKind::EntryPrice => text(&row.position.entry_price).into(),
-            PosColumnKind::Breakeven => text(&row.position.breakeven_price).into(),
-            PosColumnKind::MarkPrice => text(&row.position.mark_price).into(),
-            PosColumnKind::LiqPrice => text(&row.position.liquidation_price).into(),
-            PosColumnKind::MarginAmt => text(&row.position.margin_amt).into(),
-            PosColumnKind::UnrealPnL => text(&row.position.unrealized_pnl).into(),
-        };
-
-        container(content)
-            .width(Length::Fill)
-            .height(32)
-            .center_y()
-            .into()
-    }
-
-    fn width(&self) -> f32 {
-        self.width
-    }
-
-    fn resize_offset(&self) -> Option<f32> {
-        self.resize_offset
     }
 }

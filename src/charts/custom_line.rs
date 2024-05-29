@@ -1,7 +1,7 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, vec};
 use chrono::{DateTime, Utc, TimeZone, LocalResult, Duration, NaiveDateTime, Timelike};
 use iced::{
-    alignment, mouse, widget::{button, canvas::{self, event::{self, Event}, stroke::Stroke, Cache, Canvas, Geometry, Path}}, window, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector
+    alignment, color, mouse, widget::{button, canvas::{self, event::{self, Event}, path, stroke::Stroke, Cache, Canvas, Geometry, Path}}, window, Border, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector
 };
 use iced::widget::{Column, Row, Container, Text};
 use crate::{market_data::Kline, Timeframe};
@@ -23,6 +23,8 @@ pub struct CustomLine {
     crosshair_cache: Cache,
     x_labels_cache: Cache,
     y_labels_cache: Cache,
+    y_croshair_cache: Cache,
+    x_crosshair_cache: Cache,
     translation: Vector,
     scaling: f32,
     klines_raw: BTreeMap<DateTime<Utc>, (f32, f32, f32, f32, f32, f32)>,
@@ -68,6 +70,8 @@ impl CustomLine {
             crosshair_cache: canvas::Cache::default(),
             x_labels_cache: canvas::Cache::default(),
             y_labels_cache: canvas::Cache::default(),
+            y_croshair_cache: canvas::Cache::default(),
+            x_crosshair_cache: canvas::Cache::default(),
             timeframe,
             klines_raw,
             translation: Vector::default(),
@@ -181,7 +185,11 @@ impl CustomLine {
             }
             Message::CrosshairMoved(position) => {
                 self.crosshair_position = position;
-                self.crosshair_cache.clear();
+                if self.crosshair {
+                    self.crosshair_cache.clear();
+                    self.y_croshair_cache.clear();
+                    self.x_crosshair_cache.clear();
+                }
             }
         }
     }
@@ -196,7 +204,7 @@ impl CustomLine {
                 labels_cache: &self.x_labels_cache, 
                 min: self.x_min_time, 
                 max: self.x_max_time, 
-                crosshair_cache: &self.crosshair_cache, 
+                crosshair_cache: &self.x_crosshair_cache, 
                 crosshair_position: self.crosshair_position, 
                 crosshair: self.crosshair,
                 timeframe: self.timeframe
@@ -210,7 +218,7 @@ impl CustomLine {
         let axis_labels_y = Canvas::new(
             AxisLabelYCanvas { 
                 labels_cache: &self.y_labels_cache, 
-                crosshair_cache: &self.crosshair_cache, 
+                y_croshair_cache: &self.y_croshair_cache, 
                 min: self.y_min_price,
                 max: self.y_max_price,
                 last_close_price, 
@@ -229,7 +237,7 @@ impl CustomLine {
             .width(Length::Fill)
             .height(Length::Fill)
             .on_press(Message::AutoscaleToggle)
-            .style(MinDarkButtonStyleSheet::new(self.autoscale));
+            .style(|_theme: &Theme, _status: iced::widget::button::Status| chart_button(_theme, &_status, self.autoscale));
         let crosshair_button = button(
             Text::new("+")
                 .size(12)
@@ -238,7 +246,7 @@ impl CustomLine {
             .width(Length::Fill)
             .height(Length::Fill)
             .on_press(Message::CrosshairToggle)
-            .style(MinDarkButtonStyleSheet::new(self.crosshair));
+            .style(|_theme: &Theme, _status: iced::widget::button::Status| chart_button(_theme, &_status, self.crosshair));
     
         let chart_controls = Container::new(
             Row::new()
@@ -266,60 +274,22 @@ impl CustomLine {
     }
 }
 
-pub struct MinDarkButtonStyleSheet {
-    is_active: bool,
-}
-
-impl MinDarkButtonStyleSheet {
-    pub fn new(is_active: bool) -> iced::theme::Button {
-        iced::theme::Button::Custom(Box::new(Self { is_active }))
-    }
-}
-
-impl button::StyleSheet for MinDarkButtonStyleSheet {
-    type Style = iced::Theme;
-
-    fn active(&self, _style: &Self::Style) -> button::Appearance {
-        let background = if self.is_active {
-            iced::Background::Color(Color::from_rgba8(20, 20, 20, 255.0)) 
-        } else {
-            iced::Background::Color(Color::from_rgba8(0, 0, 0, 255.0)) 
-        };
-        let border_color = if self.is_active {
-            Color::from_rgba8(50, 50, 50, 255.0)
-        } else {
-            Color::from_rgba8(20, 20, 20, 255.0)
-        };
-
-        button::Appearance {
-            background: Some(background),
-            text_color: Color::WHITE,
-            border: iced::Border {
-                color: border_color,
-                width: 1.0,
-                radius: 3.0.into(),
+fn chart_button(_theme: &Theme, _status: &button::Status, is_active: bool) -> button::Style {
+    button::Style {
+        background: Some(Color::from_rgba8(20, 20, 20, 1.0).into()),
+        border: Border {
+            color: {
+                if is_active {
+                    Color::from_rgba8(50, 50, 50, 1.0)
+                } else {
+                    Color::from_rgba8(20, 20, 20, 1.0)
+                }
             },
-            ..Default::default()
-        }
-    }
-    fn hovered(&self, _style: &Self::Style) -> button::Appearance {    
-        let background = iced::Background::Color(Color::from_rgba8(40, 40, 40,255.0));
-        let border_color = if self.is_active {
-            Color::from_rgba8(50, 50, 50, 255.0)
-        } else {
-            Color::from_rgba8(20, 20, 20, 255.0)
-        };
-
-        button::Appearance {
-            background: Some(background),
-            text_color: Color::WHITE,
-            border: iced::Border {
-                color: border_color,
-                width: 1.0,
-                radius: 3.0.into(),
-            },
-            ..Default::default()
-        }
+            width: 1.0,
+            radius: 2.0.into(),
+        },
+        text_color: Color::WHITE,
+        ..button::Style::default()
     }
 }
 
@@ -550,46 +520,45 @@ impl canvas::Program<Message> for CustomLine {
             });
         });
 
-        let candlesticks = 
-            self.candles_cache.draw(renderer, bounds.size(), |frame| {
-                for (time, (open, high, low, close, buy_volume, sell_volume)) in visible_klines {
-                    let x_position: f64 = ((time.timestamp() - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
-                    
-                    let y_open = candlesticks_area_height - ((open - lowest) / y_range * candlesticks_area_height);
-                    let y_high = candlesticks_area_height - ((high - lowest) / y_range * candlesticks_area_height);
-                    let y_low = candlesticks_area_height - ((low - lowest) / y_range * candlesticks_area_height);
-                    let y_close = candlesticks_area_height - ((close - lowest) / y_range * candlesticks_area_height);
-                    
-                    let color = if close >= open { Color::from_rgb8(81, 205, 160) } else { Color::from_rgb8(192, 80, 77) };
+        let candlesticks = self.candles_cache.draw(renderer, bounds.size(), |frame| {
+            for (time, (open, high, low, close, buy_volume, sell_volume)) in visible_klines {
+                let x_position: f64 = ((time.timestamp() - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
+                
+                let y_open = candlesticks_area_height - ((open - lowest) / y_range * candlesticks_area_height);
+                let y_high = candlesticks_area_height - ((high - lowest) / y_range * candlesticks_area_height);
+                let y_low = candlesticks_area_height - ((low - lowest) / y_range * candlesticks_area_height);
+                let y_close = candlesticks_area_height - ((close - lowest) / y_range * candlesticks_area_height);
+                
+                let color = if close >= open { Color::from_rgb8(81, 205, 160) } else { Color::from_rgb8(192, 80, 77) };
 
-                    let body = Path::rectangle(
-                        Point::new(x_position as f32 - (2.0 * self.scaling), y_open.min(y_close)), 
-                        Size::new(4.0 * self.scaling, (y_open - y_close).abs())
-                    );                    
-                    frame.fill(&body, color);
-                    
-                    let wick = Path::line(
-                        Point::new(x_position as f32, y_high), 
-                        Point::new(x_position as f32, y_low)
-                    );
-                    frame.stroke(&wick, Stroke::default().with_color(color).with_width(1.0));
+                let body = Path::rectangle(
+                    Point::new(x_position as f32 - (2.0 * self.scaling), y_open.min(y_close)), 
+                    Size::new(4.0 * self.scaling, (y_open - y_close).abs())
+                );                    
+                frame.fill(&body, color);
+                
+                let wick = Path::line(
+                    Point::new(x_position as f32, y_high), 
+                    Point::new(x_position as f32, y_low)
+                );
+                frame.stroke(&wick, Stroke::default().with_color(color).with_width(1.0));
 
-                    let buy_bar_height = (buy_volume / max_volume) * volume_area_height;
-                    let sell_bar_height = (sell_volume / max_volume) * volume_area_height;
-                    
-                    let buy_bar = Path::rectangle(
-                        Point::new(x_position as f32, (bounds.height - buy_bar_height) as f32), 
-                        Size::new(2.0 * self.scaling, buy_bar_height as f32)
-                    );
-                    frame.fill(&buy_bar, Color::from_rgb8(81, 205, 160)); 
-                    
-                    let sell_bar = Path::rectangle(
-                        Point::new(x_position as f32 - (2.0 * self.scaling), (bounds.height - sell_bar_height) as f32), 
-                        Size::new(2.0 * self.scaling, sell_bar_height as f32)
-                    );
-                    frame.fill(&sell_bar, Color::from_rgb8(192, 80, 77)); 
-                }
-            });
+                let buy_bar_height = (buy_volume / max_volume) * volume_area_height;
+                let sell_bar_height = (sell_volume / max_volume) * volume_area_height;
+                
+                let buy_bar = Path::rectangle(
+                    Point::new(x_position as f32, (bounds.height - buy_bar_height) as f32), 
+                    Size::new(2.0 * self.scaling, buy_bar_height as f32)
+                );
+                frame.fill(&buy_bar, Color::from_rgb8(81, 205, 160)); 
+                
+                let sell_bar = Path::rectangle(
+                    Point::new(x_position as f32 - (2.0 * self.scaling), (bounds.height - sell_bar_height) as f32), 
+                    Size::new(2.0 * self.scaling, sell_bar_height as f32)
+                );
+                frame.fill(&sell_bar, Color::from_rgb8(192, 80, 77)); 
+            }
+        });
 
         if self.crosshair {
             let crosshair = self.crosshair_cache.draw(renderer, bounds.size(), |frame| {
@@ -659,7 +628,7 @@ impl canvas::Program<Message> for CustomLine {
                     mouse::Interaction::default()
                 }
             }
-            Interaction::None => mouse::Interaction::default(),
+            Interaction::None => { mouse::Interaction::default() }
         }
     }
 }
@@ -846,7 +815,7 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
 }
 pub struct AxisLabelYCanvas<'a> {
     labels_cache: &'a Cache,
-    crosshair_cache: &'a Cache,
+    y_croshair_cache: &'a Cache,
     min: f32,
     max: f32,
     last_close_price: f32,
@@ -932,7 +901,7 @@ impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
                 frame.fill(&triangle, triangle_color);
             });
         });
-        let crosshair = self.crosshair_cache.draw(renderer, bounds.size(), |frame| {
+        let crosshair = self.y_croshair_cache.draw(renderer, bounds.size(), |frame| {
             if self.crosshair && self.crosshair_position.y > 0.0 {
                 let text_size = 12.0;
                 let y_range = self.max - self.min;
