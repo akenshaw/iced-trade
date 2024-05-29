@@ -704,9 +704,9 @@ impl Application for State {
                     self.sync_heatmap = false;
                 }
 
-                //self.trades_chart.as_mut().map(|chart| {
-                //    chart.set_size_filter(self.size_filter_heatmap);
-                //});
+                if let Some(heatmap_chart) = &mut self.heatmap_chart {
+                    heatmap_chart.set_size_filter(self.size_filter_heatmap);
+                }
                 self.time_and_sales.as_mut().map(|time_and_sales| {
                     time_and_sales.set_size_filter(self.size_filter_timesales);
                 });
@@ -718,9 +718,9 @@ impl Application for State {
             
                 if sync {
                     self.size_filter_heatmap = self.size_filter_timesales;
-                    //self.trades_chart.as_mut().map(|chart| {
-                    //    chart.set_size_filter(self.size_filter_heatmap);
-                    //});
+                    if let Some(heatmap_chart) = &mut self.heatmap_chart {
+                        heatmap_chart.set_size_filter(self.size_filter_heatmap);
+                    }
                 }
             
                 Command::none()
@@ -834,9 +834,10 @@ impl Application for State {
         let layout_controls = Row::new()
             .spacing(10)
             .align_items(Alignment::Center)
-            .push(add_pane_button)
             .push(
-                tooltip(layout_lock_button, "Layout Lock", tooltip::Position::Bottom)
+                tooltip(add_pane_button, "Manage Panes", tooltip::Position::Bottom).style(style::tooltip))
+            .push(
+                tooltip(layout_lock_button, "Layout Lock", tooltip::Position::Bottom).style(style::tooltip)
             );
 
         let ws_button = if self.selected_ticker.is_some() {
@@ -1030,10 +1031,51 @@ fn view_content<'a, 'b: 'a>(
                         .view()
                         .map(move |message| Message::Heatmap(message));
             } else {
-                underlay = Text::new("No data").into();
+                underlay = Text::new("No data")
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into();
             }
 
-            underlay
+            if show_modal {
+                let signup: Container<Message, Theme, _> = container(
+                    Column::new()
+                        .spacing(10)
+                        .align_items(Alignment::Center)
+                        .push(
+                            Text::new("Heatmap > Settings")
+                                .size(16)
+                        )
+                        .push(
+                            Column::new()
+                                .align_items(Alignment::Center)
+                                .push(Text::new("Size Filtering"))
+                                .push(
+                                    Slider::new(0.0..=50000.0, *size_filter_heatmap, move |value| Message::SliderChanged(PaneId::HeatmapChart, value))
+                                        .step(500.0)
+                                )
+                                .push(
+                                    Text::new(format!("${}", size_filter_heatmap)).size(16)
+                                )
+                        )
+                        .push( 
+                            Row::new()
+                                .spacing(10)
+                                .push(
+                                    button("Close")
+                                    .on_press(Message::CloseModal)
+                                )
+                        )
+                )
+                .width(Length::Shrink)
+                .padding(20)
+                .max_width(500)
+                .style(style::title_bar_active);
+
+                return modal(underlay, signup, Message::CloseModal);
+            } else {
+                underlay
+            }
         }, 
         
         PaneId::CandlestickChart => { 
@@ -1044,7 +1086,10 @@ fn view_content<'a, 'b: 'a>(
                         .view()
                         .map(move |message| Message::Candlestick(message));
             } else {
-                underlay = Text::new("No data").into();
+                underlay = Text::new("No data")
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into();
             }
             underlay
         },
@@ -1057,16 +1102,64 @@ fn view_content<'a, 'b: 'a>(
                         .view()
                         .map(move |message| Message::CustomLine(message));
             } else {
-                underlay = Text::new("No data").into();
+                underlay = Text::new("No data")
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into();
             }
-
             underlay
         },
         
         PaneId::TimeAndSales => { 
-            let underlay = time_and_sales.as_ref().map(TimeAndSales::view).unwrap_or_else(|| Text::new("No data").into()); 
+            let underlay = time_and_sales.as_ref().map(TimeAndSales::view)
+                .unwrap_or_else(|| Text::new("No data")
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into()); 
 
-            underlay
+            if show_modal {
+                let signup = container(
+                    Column::new()
+                        .spacing(10)
+                        .align_items(Alignment::Center)
+                        .push(
+                            Text::new("Time&Sales > Settings")
+                                .size(16)
+                        )
+                        .push(
+                            Column::new()
+                                .align_items(Alignment::Center)
+                                .push(Text::new("Size Filtering"))
+                                .push(
+                                    Slider::new(0.0..=50000.0, *size_filter_timesales, move |value| Message::SliderChanged(PaneId::TimeAndSales, value))
+                                        .step(500.0)
+                                )
+                                .push(
+                                    Text::new(format!("${}", size_filter_timesales)).size(16)
+                                )
+                                .push(
+                                    checkbox("Sync Heatmap with", sync_heatmap)
+                                        .on_toggle(Message::SyncWithHeatmap)
+                                )
+                        )
+                        .push( 
+                            Row::new()
+                                .spacing(10)
+                                .push(
+                                    button("Close")
+                                    .on_press(Message::CloseModal)
+                                )
+                        )
+                )
+                .width(Length::Shrink)
+                .padding(20)
+                .max_width(500)
+                .style(style::title_bar_active);
+
+                return modal(underlay, signup, Message::CloseModal);
+            } else {
+                underlay
+            }
         },  
         
         PaneId::TradePanel => {
@@ -1173,7 +1266,12 @@ impl TimeAndSales {
         let max_qty = filtered_trades.iter().map(|trade| trade.qty).fold(0.0, f32::max);
     
         if filtered_trades.is_empty() {
-            trades_column = trades_column.push(Text::new("No trades").size(16));
+            trades_column = trades_column.push(
+                Text::new("No trades")
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .size(16)
+            );
         } else {
             for trade in filtered_trades.iter().rev().take(80) {
                 let trade: &ConvertedTrade = *trade;
@@ -1189,7 +1287,7 @@ impl TimeAndSales {
                     )
                     .push(
                         container(Text::new(if trade.is_sell { "Sell" } else { "Buy" }).size(14))
-                            .width(Length::FillPortion(4))
+                            .width(Length::FillPortion(4)).align_x(alignment::Horizontal::Left)
                     )
                     .push(
                         container(Text::new(format!("{}", trade.qty)).size(14))
@@ -1225,6 +1323,21 @@ mod style {
         let palette = theme.extended_palette();
 
         styled(palette.primary.weak)
+    }
+
+    pub fn tooltip(theme: &Theme) -> Style {
+        let palette = theme.extended_palette();
+
+        Style {
+            background: Some(palette.background.weak.color.into()),
+            border: Border {
+                width: 1.0,
+                color: palette.primary.weak.color,
+                radius: 4.0.into(),
+                ..Border::default()
+            },
+            ..Default::default()
+        }
     }
 
     pub fn title_bar_active(theme: &Theme) -> Style {
