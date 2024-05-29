@@ -451,12 +451,18 @@ impl canvas::Program<Message> for Heatmap {
         let latest = self.x_max_time;
         let earliest = self.x_min_time;
     
-        let visible_trades: Vec<&(DateTime<Utc>, f32, f32, bool)> = self.data_points.iter()
+        let (filtered_visible_trades, visible_trades) = self.data_points.iter()
             .filter(|(time, _, _, _)| {
                 let timestamp = time.timestamp_millis();
                 timestamp >= earliest && timestamp <= latest
             })
-            .collect::<Vec<_>>();
+            .fold((vec![], vec![]), |(mut filtered, mut visible), trade| {
+                visible.push(*trade);
+                if (trade.2 * trade.1) >= self.size_filter {
+                    filtered.push(*trade);
+                }
+                (filtered, visible)
+            });
 
         let visible_depth: Vec<&(DateTime<Utc>, Vec<(f32, f32)>, Vec<(f32, f32)>)> = self.depth.iter()
             .filter(|(time, _, _)| {
@@ -474,38 +480,20 @@ impl canvas::Program<Message> for Heatmap {
         let heatmap_area_height = bounds.height - volume_area_height;
 
         let heatmap = self.heatmap_cache.draw(renderer, bounds.size(), |frame| {
-            let (qty_max, qty_min) = visible_trades.iter().map(|(_, _, qty, _)| qty).fold((0.0f32, f32::MAX), |(max, min), &qty| (max.max(qty), min.min(qty)));
-
+            // volume bars
             let mut aggregated_volumes: HashMap<i64, (f32, f32)> = HashMap::new();
-            
-            for &(time, price, qty, is_sell) in &visible_trades {
+            for &(time, _, qty, is_sell) in &visible_trades {
                 let timestamp = time.timestamp_millis();
                 aggregated_volumes.entry(timestamp).and_modify(|e| {
-                    if *is_sell {
+                    if is_sell {
                         e.1 += qty;
                     } else {
                         e.0 += qty;
                     }
-                }).or_insert(if *is_sell { (0.0, *qty) } else { (*qty, 0.0) });
-
-                let x_position = ((timestamp - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
-
-                let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
-
-                let color = if *is_sell {
-                    Color::from_rgba8(192, 80, 77, 1.0)
-                } else {
-                    Color::from_rgba8(81, 205, 160, 1.0)
-                };
-
-                let radius = 1.0 + (qty - qty_min) * (35.0 - 1.0) / (qty_max - qty_min);
-
-                let circle = Path::circle(Point::new(x_position as f32, y_position), radius);
-                frame.fill(&circle, color);
+                }).or_insert(if is_sell { (0.0, qty) } else { (qty, 0.0) });
             }
 
             let max_volume = aggregated_volumes.iter().map(|(_, (buy, sell))| buy.max(*sell)).max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(0.0);
-
             for (&timestamp, &(buy_volume, sell_volume)) in &aggregated_volumes {
                 let x_position = ((timestamp - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
 
@@ -524,12 +512,33 @@ impl canvas::Program<Message> for Heatmap {
                 );
                 frame.fill(&buy_bar, Color::from_rgb8(81, 205, 160)); 
             }
-        
+
+            // trades
+            if filtered_visible_trades.len() > 1 {
+                let (qty_max, qty_min) = filtered_visible_trades.iter().map(|(_, _, qty, _)| qty).fold((0.0f32, f32::MAX), |(max, min), &qty| (max.max(qty), min.min(qty)));
+                for &(time, price, qty, is_sell) in &filtered_visible_trades {
+                    let timestamp = time.timestamp_millis();
+                    let x_position = ((timestamp - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
+                    let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
+
+                    let color = if is_sell {
+                        Color::from_rgba8(192, 80, 77, 1.0)
+                    } else {
+                        Color::from_rgba8(81, 205, 160, 1.0)
+                    };
+
+                    let radius = 1.0 + (qty - qty_min) * (35.0 - 1.0) / (qty_max - qty_min);
+
+                    let circle = Path::circle(Point::new(x_position as f32, y_position), radius);
+                    frame.fill(&circle, color);
+                }
+            }
+            
+            // orderbook heatmap
             let max_order_quantity = visible_depth.iter()
                 .map(|(_, bids, asks)| {
                 bids.iter().map(|(_, qty)| qty).chain(asks.iter().map(|(_, qty)| qty)).fold(f32::MIN, |current_max: f32, qty: &f32| f32::max(current_max, *qty))
             }).fold(f32::MIN, f32::max);
-
             for i in 0..20 { 
                 let bids_i: Vec<(DateTime<Utc>, f32, f32)> = visible_depth.iter()
                     .map(|&(time, bid, _ask)| ((*time).clone(), bid[i].0, bid[i].1)).collect();
