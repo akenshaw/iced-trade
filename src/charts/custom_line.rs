@@ -498,7 +498,7 @@ impl canvas::Program<Message> for CustomLine {
                             Point::new(x_position as f32, 0.0), 
                             Point::new(x_position as f32, bounds.height as f32)
                         );
-                        frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(40, 40, 40, 1.0)).with_width(1.0))
+                        frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(27, 27, 27, 1.0)).with_width(1.0))
                     }
                     
                     time = time + time_step;
@@ -514,7 +514,7 @@ impl canvas::Program<Message> for CustomLine {
                         Point::new(0.0, y_position), 
                         Point::new(bounds.width as f32, y_position)
                     );
-                    frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(40, 40, 40, 1.0)).with_width(1.0));
+                    frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(27, 27, 27, 1.0)).with_width(1.0));
                     y += step;
                 }
             });
