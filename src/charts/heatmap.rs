@@ -1,10 +1,10 @@
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::BTreeMap;
 use chrono::NaiveDateTime;
 use iced::{
-    advanced::graphics::core::time, alignment, color, mouse, widget::{button, canvas::{self, event::{self, Event}, path, stroke::Stroke, Cache, Canvas, Geometry, Path}}, window, Border, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector
+    alignment, color, mouse, widget::{button, canvas::{self, event::{self, Event}, path, stroke::Stroke, Cache, Canvas, Geometry, Path}}, window, Border, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector
 };
 use iced::widget::{Column, Row, Container, Text};
-use crate::data_providers::binance::market_data::Trade;
+use crate::data_providers::binance::market_data::{Trade, Depth};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -27,8 +27,7 @@ pub struct Heatmap {
     translation: Vector,
     scaling: f32,
     
-    data_points: VecDeque<(i64, f32, f32, bool)>,
-    depth: VecDeque<(i64, Vec<(f32, f32)>, Vec<(f32, f32)>)>,
+    data_points: BTreeMap<i64, (Depth, Vec<Trade>, (f32, f32))>,
     size_filter: f32,
 
     autoscale: bool,
@@ -45,6 +44,8 @@ pub struct Heatmap {
 impl Heatmap {
     const MIN_SCALING: f32 = 0.4;
     const MAX_SCALING: f32 = 3.6;
+    const SEVEN_MINUTES: i64 = 7 * 60 * 1000;
+    const FIVE_MINUTES: i64 = 5 * 60 * 1000;
 
     pub fn new() -> Heatmap {
         let _size = window::Settings::default().size;
@@ -57,8 +58,7 @@ impl Heatmap {
             y_croshair_cache: canvas::Cache::default(),
             x_crosshair_cache: canvas::Cache::default(),
 
-            data_points: VecDeque::new(),
-            depth: VecDeque::new(),
+            data_points: BTreeMap::new(),
             size_filter: 0.0,
 
             translation: Vector::default(),
@@ -79,50 +79,43 @@ impl Heatmap {
         self.size_filter = size_filter;
     }
 
-    pub fn insert_datapoint(&mut self, mut trades_buffer: Vec<Trade>, depth_update: u64, bids: Vec<(f32, f32)>, asks: Vec<(f32, f32)>) {
+    pub fn insert_datapoint(&mut self, mut trades_buffer: Vec<Trade>, depth_update: i64, depth: Depth) {
         let aggregate_time = 100; // 100 ms
-        let rounded_depth_update = ((depth_update / aggregate_time) * aggregate_time) as i64;
+        let rounded_depth_update = (depth_update / aggregate_time) * aggregate_time;
+
+        self.data_points.entry(rounded_depth_update).or_insert((depth, vec![], (0.0, 0.0)));
         
         for trade in trades_buffer.drain(..) {
-            self.data_points.push_back((rounded_depth_update, trade.price, trade.qty, trade.is_sell));
-        }
-        if let Some((time, _, _)) = self.depth.back() {
-            if *time == rounded_depth_update {
-                self.depth.pop_back();
+            if let Some((_, trades, volume)) = self.data_points.get_mut(&rounded_depth_update) {
+                if trade.is_sell {
+                    volume.1 += trade.qty;
+                } else {
+                    volume.0 += trade.qty;
+                }
+                trades.push(trade);
             }
-        }
-        self.depth.push_back((rounded_depth_update, bids, asks));
-
-        while self.data_points.len() > 6000 {
-            self.data_points.pop_front();
-        }
-        while self.depth.len() > 1000 {
-            self.depth.pop_front();
         }
 
         self.render_start();
     }
     
     pub fn render_start(&mut self) {    
-        let timestamp_latest = match self.depth.back() {
-            Some((time, _, _)) => *time,
-            None => return,
-        };
+        self.heatmap_cache.clear();
 
-        let latest: i64 = timestamp_latest as i64 - ((self.translation.x*100.0)*(self.timeframe as f32)) as i64;
+        let timestamp_latest = self.data_points.keys().last().unwrap_or(&0);
+
+        let latest: i64 = *timestamp_latest as i64 - ((self.translation.x*100.0)*(self.timeframe as f32)) as i64;
         let earliest: i64 = latest - ((64000.0*self.timeframe as f32) / (self.scaling / (self.bounds.width/800.0))) as i64;
     
         let mut highest: f32 = 0.0;
         let mut lowest: f32 = std::f32::MAX;
     
-        for (time, bids, asks) in &self.depth {
-            if *time >= earliest && *time <= latest {
-                if let Some(max_price) = asks.iter().map(|(price, _)| price).max_by(|a, b| a.partial_cmp(b).unwrap()) {
-                    highest = highest.max(*max_price);
-                }
-                if let Some(min_price) = bids.iter().map(|(price, _)| price).min_by(|a, b| a.partial_cmp(b).unwrap()) {
-                    lowest = lowest.min(*min_price);
-                }
+        for (_, (depth, _, _)) in self.data_points.range(earliest..=latest) {
+            if let Some(max_price) = depth.asks.iter().map(|order| order.price).max_by(|a, b| a.partial_cmp(b).unwrap()) {
+                highest = highest.max(max_price);
+            }            
+            if let Some(min_price) = depth.bids.iter().map(|order| order.price).min_by(|a, b| a.partial_cmp(b).unwrap()) {
+                lowest = lowest.min(min_price);
             }
         }
     
@@ -140,9 +133,7 @@ impl Heatmap {
         self.y_min_price = lowest;
         self.y_max_price = highest;
         
-        self.crosshair_cache.clear();
-
-        self.heatmap_cache.clear();
+        self.crosshair_cache.clear();        
     }
 
     pub fn update(&mut self, message: Message) {
@@ -438,109 +429,91 @@ impl canvas::Program<Message> for Heatmap {
         let heatmap_area_height: f32 = bounds.height - volume_area_height;
 
         let heatmap = self.heatmap_cache.draw(renderer, bounds.size(), |frame| {
-            let (filtered_visible_trades, visible_trades) = self.data_points.iter()
-                .filter(|(time, _, _, _)| {
-                    *time >= earliest && *time <= latest
-                })
-                .fold((vec![], vec![]), |(mut filtered, mut visible), trade| {
-                    visible.push(*trade);
-                    if (trade.2 * trade.1) >= self.size_filter {
-                        filtered.push(*trade);
+            let mut max_trade_qty: f32 = 0.0;
+            let mut min_trade_qty: f32 = 0.0;
+
+            let mut max_volume: f32 = 0.0;
+        
+            let mut max_depth_qty: f32 = 0.0;
+
+            if self.data_points.len() > 1 {
+                for (_, (depth, trades, volume)) in self.data_points.range(earliest..=latest) {
+                    for trade in trades {
+                        max_trade_qty = max_trade_qty.max(trade.qty);
+                        min_trade_qty = min_trade_qty.min(trade.qty);
                     }
-                    (filtered, visible)
-                });
             
-            // volume bars
-            let mut aggregated_volumes: HashMap<i64, (f32, f32)> = HashMap::new();
-            for &(time, _, qty, is_sell) in &visible_trades {
-                aggregated_volumes.entry(time).and_modify(|e: &mut (f32, f32)| {
-                    if is_sell {
-                        e.1 += qty;
-                    } else {
-                        e.0 += qty;
+                    for bid in &depth.bids {
+                        max_depth_qty = max_depth_qty.max(bid.qty);
+                    } 
+                    for ask in &depth.asks {
+                        max_depth_qty = max_depth_qty.max(ask.qty);
                     }
-                }).or_insert(if is_sell { (0.0, qty) } else { (qty, 0.0) });
-            }
-
-            let max_volume = aggregated_volumes.iter().map(|(_, (buy, sell))| buy.max(*sell)).max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(0.0);
-            for (&timestamp, &(buy_volume, sell_volume)) in &aggregated_volumes {
-                let x_position = ((timestamp - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
-
-                let buy_bar_height = (buy_volume / max_volume) * volume_area_height;
-                let sell_bar_height = (sell_volume / max_volume) * volume_area_height;
-
-                let sell_bar = Path::rectangle(
-                    Point::new(x_position as f32, (bounds.height - sell_bar_height) as f32), 
-                    Size::new(1.0, sell_bar_height as f32)
-                );
-                frame.fill(&sell_bar, Color::from_rgb8(192, 80, 77)); 
-
-                let buy_bar = Path::rectangle(
-                    Point::new(x_position as f32 + 2.0, (bounds.height - buy_bar_height) as f32), 
-                    Size::new(1.0, buy_bar_height as f32)
-                );
-                frame.fill(&buy_bar, Color::from_rgb8(81, 205, 160)); 
-            }
-
-            // trades
-            if filtered_visible_trades.len() > 1 {
-                let (qty_max, qty_min) = filtered_visible_trades.iter().map(|(_, _, qty, _)| qty).fold((0.0f32, f32::MAX), |(max, min), &qty| (max.max(qty), min.min(qty)));
-                for &(time, price, qty, is_sell) in &filtered_visible_trades {
-                    let x_position = ((time - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
-                    let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
-
-                    let color = if is_sell {
-                        Color::from_rgba8(192, 80, 77, 1.0)
-                    } else {
-                        Color::from_rgba8(81, 205, 160, 1.0)
-                    };
-
-                    let radius = 1.0 + (qty - qty_min) * (35.0 - 1.0) / (qty_max - qty_min);
-
-                    let circle = Path::circle(Point::new(x_position as f32, y_position), radius);
-                    frame.fill(&circle, color);
+            
+                    max_volume = max_volume.max(volume.0).max(volume.1);
                 }
+                
+                for (time, (depth, trades, volume)) in self.data_points.range(earliest..=latest) {
+                    let x_position = ((time - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
+
+                    for trade in trades {
+                        if trade.qty * trade.price > self.size_filter {
+                            let x_position = ((time - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
+                            let y_position = heatmap_area_height - ((trade.price - lowest) / y_range * heatmap_area_height);
+
+                            let color = if trade.is_sell {
+                                Color::from_rgba8(192, 80, 77, 1.0)
+                            } else {
+                                Color::from_rgba8(81, 205, 160, 1.0)
+                            };
+
+                            let radius = 1.0 + (trade.qty - min_trade_qty) * (35.0 - 1.0) / (max_trade_qty - min_trade_qty);
+
+                            let circle = Path::circle(Point::new(x_position as f32, y_position), radius);
+                            frame.fill(&circle, color)
+                        }
+                    }
+
+                    for order in &depth.bids {
+                        let y_position = heatmap_area_height - ((order.price - lowest) / y_range * heatmap_area_height);
+                        let color_alpha = (order.qty / max_depth_qty).min(1.0);
+
+                        let circle = Path::circle(Point::new(x_position as f32, y_position), 1.0);
+                        frame.fill(&circle, Color::from_rgba8(0, 144, 144, color_alpha));
+                    }
+                    for order in &depth.asks {
+                        let y_position = heatmap_area_height - ((order.price - lowest) / y_range * heatmap_area_height);
+                        let color_alpha = (order.qty / max_depth_qty).min(1.0);
+
+                        let circle = Path::circle(Point::new(x_position as f32, y_position), 1.0);
+                        frame.fill(&circle, Color::from_rgba8(192, 0, 192, color_alpha));
+                    }
+
+                    if max_volume > 0.0 {
+                        let buy_bar_height = (volume.0 / max_volume) * volume_area_height;
+                        let sell_bar_height = (volume.1 / max_volume) * volume_area_height;
+
+                        let sell_bar = Path::rectangle(
+                            Point::new(x_position as f32, (bounds.height - sell_bar_height) as f32), 
+                            Size::new(1.0, sell_bar_height as f32)
+                        );
+                        frame.fill(&sell_bar, Color::from_rgb8(192, 80, 77)); 
+
+                        let buy_bar = Path::rectangle(
+                            Point::new(x_position as f32 + 2.0, (bounds.height - buy_bar_height) as f32), 
+                            Size::new(1.0, buy_bar_height as f32)
+                        );
+                        frame.fill(&buy_bar, Color::from_rgb8(81, 205, 160));
+                    }
+                } 
             }
-            
+        
             // orderbook heatmap
-            let visible_depth: Vec<&(i64, Vec<(f32, f32)>, Vec<(f32, f32)>)> = self.depth.iter()
-                .filter(|(time, _, _)| {
-                    *time >= earliest && *time <= latest
-                })
-                .collect::<Vec<_>>();
+            if let Some(latest_data_points) = self.data_points.iter().last() {
+                let latest_timestamp = latest_data_points.0 + 200;
 
-            let max_order_quantity = visible_depth.iter()
-                .map(|(_, bids, asks)| {
-                bids.iter().map(|(_, qty)| qty).chain(asks.iter().map(|(_, qty)| qty)).fold(f32::MIN, |current_max: f32, qty: &f32| f32::max(current_max, *qty))
-            }).fold(f32::MIN, f32::max);
-            for i in 0..20 { 
-                let bids_i: Vec<(&i64, f32, f32)> = visible_depth.iter()
-                    .map(|&(time, bid, _ask)| (time, bid[i].0, bid[i].1)).collect();
-                let asks_i: Vec<(&i64, f32, f32)> = visible_depth.iter()
-                    .map(|&(time, _bid, ask)| (time, ask[i].0, ask[i].1)).collect();
-
-                bids_i.iter().zip(asks_i.iter()).for_each(|((time, bid_price, bid_qty), (_, ask_price, ask_qty))| {
-                    let bid_y_position = heatmap_area_height - ((bid_price - lowest) / y_range * heatmap_area_height);
-                    let ask_y_position = heatmap_area_height - ((ask_price - lowest) / y_range * heatmap_area_height);
-
-                    let x_position = ((**time - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
-
-                    let bid_color_alpha = (bid_qty / max_order_quantity).min(1.0);
-                    let ask_color_alpha = (ask_qty / max_order_quantity).min(1.0);
-
-                    let bid_circle = Path::circle(Point::new(x_position as f32, bid_y_position), 1.0);
-                    frame.fill(&bid_circle, Color::from_rgba8(0, 144, 144, bid_color_alpha));
-
-                    let ask_circle = Path::circle(Point::new(x_position as f32, ask_y_position), 1.0);
-                    frame.fill(&ask_circle, Color::from_rgba8(192, 0, 192, ask_color_alpha));
-                });
-            }
-
-            if let Some(latest_depth) = visible_depth.last() {
-                let latest_timestamp = latest_depth.0 + 200;
-
-                let latest_bids = latest_depth.1.iter().map(|(price, qty)| (*price, *qty)).collect::<Vec<_>>();
-                let latest_asks = latest_depth.2.iter().map(|(price, qty)| (*price, *qty)).collect::<Vec<_>>();
+                let latest_bids: Vec<(f32, f32)> = latest_data_points.1.0.bids.iter().map(|order| (order.price, order.qty)).collect::<Vec<_>>();
+                let latest_asks: Vec<(f32, f32)> = latest_data_points.1.0.asks.iter().map(|order| (order.price, order.qty)).collect::<Vec<_>>();
 
                 let max_qty = latest_bids.iter().map(|(_, qty)| qty).chain(latest_asks.iter().map(|(_, qty)| qty)).fold(f32::MIN, |arg0: f32, other: &f32| f32::max(arg0, *other));
 
@@ -573,9 +546,9 @@ impl canvas::Program<Message> for Heatmap {
                 );
                 frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(100, 100, 100, 0.1)).with_width(1.0));
 
-                let text_size = 8.0;
+                let text_size = 9.0;
                 let text_content = format!("{:.2}", max_qty);
-                let text_position = Point::new(x_position + 46.0, bounds.height as f32 - 20.0);
+                let text_position = Point::new(x_position + 60.0, 0.0);
                 frame.fill_text(canvas::Text {
                     content: text_content,
                     position: text_position,
@@ -583,6 +556,32 @@ impl canvas::Program<Message> for Heatmap {
                     color: Color::from_rgba8(81, 81, 81, 1.0),
                     ..canvas::Text::default()
                 });
+
+                let text_content = format!("{:.2}", max_volume);
+                if x_position > bounds.width {      
+                    let text_width = (text_content.len() as f32 * text_size) / 1.5;
+
+                    let text_position = Point::new(bounds.width - text_width, bounds.height - volume_area_height);
+                    
+                    frame.fill_text(canvas::Text {
+                        content: text_content,
+                        position: text_position,
+                        size: iced::Pixels(text_size),
+                        color: Color::from_rgba8(81, 81, 81, 1.0),
+                        ..canvas::Text::default()
+                    });
+
+                } else {
+                    let text_position = Point::new(x_position + 5.0, bounds.height - volume_area_height);
+
+                    frame.fill_text(canvas::Text {
+                        content: text_content,
+                        position: text_position,
+                        size: iced::Pixels(text_size),
+                        color: Color::from_rgba8(81, 81, 81, 1.0),
+                        ..canvas::Text::default()
+                    });
+                }
             };
         });
 
@@ -640,13 +639,28 @@ impl canvas::Program<Message> for Heatmap {
     }
 }
 
+const PRICE_STEPS: [f32; 15] = [
+    1000.0,
+    500.0,
+    200.0,
+    100.0,
+    50.0,
+    20.0,
+    10.0,
+    5.0,
+    2.0,
+    1.0,
+    0.5,
+    0.2,
+    0.1,
+    0.05,
+    0.01,
+];
 fn calculate_price_step(highest: f32, lowest: f32, labels_can_fit: i32) -> (f32, f32) {
     let range = highest - lowest;
     let mut step = 1000.0; 
 
-    let steps = [1000.0, 500.0, 200.0, 100.0, 50.0, 20.0, 10.0, 5.0, 2.0, 1.0, 0.5, 0.2, 0.1, 0.05];
-
-    for &s in steps.iter().rev() {
+    for &s in PRICE_STEPS.iter().rev() {
         if range / s <= labels_can_fit as f32 {
             step = s;
             break;
@@ -656,7 +670,8 @@ fn calculate_price_step(highest: f32, lowest: f32, labels_can_fit: i32) -> (f32,
 
     (step, rounded_lowest)
 }
-const STEPS: [i64; 8] = [
+
+const TIME_STEPS: [i64; 8] = [
     60 * 1000, // 1 minute
     30 * 1000, // 30 seconds
     15 * 1000, // 15 seconds
@@ -669,8 +684,8 @@ const STEPS: [i64; 8] = [
 fn calculate_time_step(earliest: i64, latest: i64, labels_can_fit: i32) -> (i64, i64) {
     let duration = latest - earliest;
 
-    let mut selected_step = STEPS[0];
-    for &step in STEPS.iter() {
+    let mut selected_step = TIME_STEPS[0];
+    for &step in TIME_STEPS.iter() {
         if duration / step >= labels_can_fit as i64 {
             selected_step = step;
             break;
@@ -858,10 +873,11 @@ impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
                     let y_position = candlesticks_area_height - ((y - self.min) / y_range * candlesticks_area_height);
 
                     let text_size = 12.0;
-                    let decimal_places = if step.fract() == 0.0 { 0 } else { 1 };
+                    let decimal_places = if (step.fract() * 100.0).fract() == 0.0 { 2 } else if step.fract() == 0.0 { 0 } else { 1 };
                     let label_content = match decimal_places {
                         0 => format!("{:.0}", y),
-                        _ => format!("{:.1}", y),
+                        1 => format!("{:.1}", y),
+                        _ => format!("{:.2}", y),
                     };
                     let label = canvas::Text {
                         content: label_content,
@@ -883,7 +899,8 @@ impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
             if self.crosshair && self.crosshair_position.y > 0.0 {
                 let text_size = 12.0;
                 let y_range = self.max - self.min;
-                let label_content = format!("{:.1}", self.min + (y_range * (candlesticks_area_height - self.crosshair_position.y) / candlesticks_area_height));
+                let decimal_places = if (step.fract() * 100.0).fract() == 0.0 { 2 } else if step.fract() == 0.0 { 0 } else { 1 };
+                let label_content = format!("{:.*}", decimal_places, self.min + (y_range * (candlesticks_area_height - self.crosshair_position.y) / candlesticks_area_height));
                 
                 let growth_amount = 3.0; 
                 let rectangle_position = Point::new(8.0 - growth_amount, self.crosshair_position.y - text_size / 2.0 - 3.0);
