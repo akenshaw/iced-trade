@@ -5,14 +5,11 @@ use data_providers::binance::{user_data, market_data};
 mod charts;
 use charts::custom_line::{self, CustomLine};
 use charts::heatmap::{self, Heatmap};
-use hmac::digest::consts::False;
-use hmac::digest::CtOutput;
 
-use std::{sync::Arc, vec};
-use std::cell::RefCell;
+use std::vec;
 use chrono::{NaiveDateTime, DateTime, Utc};
 use iced::{
-    advanced::widget, alignment, executor, font, theme::{self, Custom}, widget::{
+    alignment, executor, font, widget::{
         button, center, checkbox, mouse_area, opaque, pick_list, stack, text_input, tooltip, Column, Container, Row, Slider, Space, Text
     }, Alignment, Color, Command, Element, Font, Length, Renderer, Settings, Size, Subscription, Theme
 };
@@ -460,14 +457,14 @@ impl Application for State {
                             Some(StreamType::DepthAndTrades(ticker)) => ticker,
                             Some(StreamType::Klines(ticker, _)) => ticker,
                             _ => {
-                                dbg!("No ticker selected");
+                                dbg!("No ticker selected", pane_id);
                                 continue; 
                             }
                         };
                         let selected_timeframe = match stream_type {
                             Some(StreamType::Klines(_, timeframe)) => timeframe,
                             _ => {
-                                dbg!("No timeframe selected");
+                                dbg!("No timeframe selected", pane_id);
                                 continue;   
                             }
                         };                            
@@ -525,12 +522,12 @@ impl Application for State {
                     market_data::Event::Disconnected => {
                         self.ws_state = WsState::Disconnected;
                     }
-                    market_data::Event::DepthReceived(depth_update, bids, asks, trades_buffer) => {
+                    market_data::Event::DepthReceived(depth_update, depth, trades_buffer) => {
                         if let Some(time_and_sales) = &mut self.time_and_sales {
                             time_and_sales.update(&trades_buffer);
                         } 
                         if let Some(chart) = &mut self.heatmap_chart {
-                            chart.insert_datapoint(trades_buffer, depth_update, bids, asks)
+                            chart.insert_datapoint(trades_buffer, depth_update, depth);
                         } 
                     }
                     market_data::Event::KlineReceived(kline, timeframe) => {
