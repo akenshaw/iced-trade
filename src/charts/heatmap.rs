@@ -873,12 +873,8 @@ impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
                     let y_position = candlesticks_area_height - ((y - self.min) / y_range * candlesticks_area_height);
 
                     let text_size = 12.0;
-                    let decimal_places = if (step.fract() * 100.0).fract() == 0.0 { 2 } else if step.fract() == 0.0 { 0 } else { 1 };
-                    let label_content = match decimal_places {
-                        0 => format!("{:.0}", y),
-                        1 => format!("{:.1}", y),
-                        _ => format!("{:.2}", y),
-                    };
+                    let decimal_places = if step < 0.5 { 2 } else if step < 1.0 { 1 } else { 0 };
+                    let label_content = format!("{:.*}", decimal_places, y);
                     let label = canvas::Text {
                         content: label_content,
                         position: Point::new(10.0, y_position - text_size / 2.0),
@@ -899,7 +895,7 @@ impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
             if self.crosshair && self.crosshair_position.y > 0.0 {
                 let text_size = 12.0;
                 let y_range = self.max - self.min;
-                let decimal_places = if (step.fract() * 100.0).fract() == 0.0 { 2 } else if step.fract() == 0.0 { 0 } else { 1 };
+                let decimal_places = if step < 1.0 { 2 } else { 1 };
                 let label_content = format!("{:.*}", decimal_places, self.min + (y_range * (candlesticks_area_height - self.crosshair_position.y) / candlesticks_area_height));
                 
                 let growth_amount = 3.0; 
