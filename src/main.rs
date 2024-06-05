@@ -238,7 +238,6 @@ struct State {
     // data streams
     listen_key: Option<String>,
     selected_ticker: Option<Ticker>,
-    selected_timeframe: Option<Timeframe>,
     selected_exchange: Option<&'static str>,
     ws_state: WsState,
     user_ws_state: UserWsState,
@@ -292,7 +291,6 @@ impl Application for State {
 
                 listen_key: None,
                 selected_ticker: None,
-                selected_timeframe: Some(Timeframe::M1),
                 selected_exchange: Some("Binance Futures"),
                 ws_state: WsState::Disconnected,
                 user_ws_state: UserWsState::Disconnected,
@@ -984,26 +982,24 @@ impl Application for State {
 
     fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = Vec::new();
-    
-        if self.ws_running {
-            self.selected_ticker.and_then(|ticker| {
-                self.selected_timeframe.map(|_timeframe| {
-                    let binance_market_stream = market_data::connect_market_stream(ticker).map(Message::MarketWsEvent);
-                    subscriptions.push(binance_market_stream);
 
-                    let mut streams: Vec<(Ticker, Timeframe)> = vec![];
-                    
-                    for (_pane_id, (_is_open, stream_type)) in &self.panes_open {
-                        if let Some(StreamType::Klines(ticker, timeframe)) = stream_type {
-                            streams.push((*ticker, *timeframe));
-                        }
+        if self.ws_running {
+            if let Some(ticker) = &self.selected_ticker {
+                let binance_market_stream = market_data::connect_market_stream(*ticker).map(Message::MarketWsEvent);
+                subscriptions.push(binance_market_stream);
+
+                let mut streams: Vec<(Ticker, Timeframe)> = vec![];
+                
+                for (_pane_id, (_is_open, stream_type)) in &self.panes_open {
+                    if let Some(StreamType::Klines(ticker, timeframe)) = stream_type {
+                        streams.push((*ticker, *timeframe));
                     }
-                    if !streams.is_empty() && self.kline_stream {
-                        let binance_kline_streams = market_data::connect_kline_stream(streams).map(Message::MarketWsEvent);
-                        subscriptions.push(binance_kline_streams);
-                    }
-                })
-            });
+                }
+                if !streams.is_empty() && self.kline_stream {
+                    let binance_kline_streams = market_data::connect_kline_stream(streams).map(Message::MarketWsEvent);
+                    subscriptions.push(binance_kline_streams);
+                }
+            }
         }
         
         Subscription::batch(subscriptions)
