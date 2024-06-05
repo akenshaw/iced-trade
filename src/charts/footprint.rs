@@ -1,10 +1,10 @@
-use std::{collections::{BTreeMap, HashMap}};
+use std::collections::{BTreeMap, HashMap};
 use chrono::NaiveDateTime;
 use iced::{
-    alignment, color, mouse, widget::{button, canvas::{self, event::{self, Event}, path, stroke::Stroke, Cache, Canvas, Geometry, Path}}, window, Border, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector
+    alignment, color, mouse, widget::{button, canvas::{self, event::{self, Event}, stroke::Stroke, Cache, Canvas, Geometry, Path}}, window, Border, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector
 };
 use iced::widget::{Column, Row, Container, Text};
-use crate::data_providers::binance::market_data::{Depth, Kline, Trade};
+use crate::data_providers::binance::market_data::{Kline, Trade};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -75,7 +75,7 @@ impl Footprint {
     }
 
     pub fn insert_datapoint(&mut self, mut trades_buffer: Vec<Trade>, depth_update: i64) {
-        let aggregate_time = 1000 * 60; // 1 minute
+        let aggregate_time = 1000 * 60 * self.timeframe as i64;
         let rounded_depth_update = (depth_update / aggregate_time) * aggregate_time;
     
         self.data_points.entry(rounded_depth_update).or_insert((HashMap::new(), (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)));
@@ -114,8 +114,6 @@ impl Footprint {
     }
     
     pub fn render_start(&mut self) {    
-        self.heatmap_cache.clear();
-
         let timestamp_latest = self.data_points.keys().last().unwrap_or(&0);
 
         let latest: i64 = *timestamp_latest as i64 - ((self.translation.x*1000.0)*(self.timeframe as f32)) as i64;
@@ -124,20 +122,19 @@ impl Footprint {
         let mut highest: f32 = 0.0;
         let mut lowest: f32 = std::f32::MAX;
     
-        for (_, (trades, _)) in self.data_points.range(earliest..=latest) {
-            for trade in trades {
-                let price = *trade.0 as f32 / 100.0;
-                if price > highest {
-                    highest = price;
-                }
-                if price < lowest {
-                    lowest = price;
-                }
+        for (_, (_, kline)) in self.data_points.range(earliest..=latest) {
+            if kline.1 > highest {
+                highest = kline.1;
+            }
+            if kline.2 < lowest {
+                lowest = kline.2;
             }
         }
-
-        highest = highest + (highest*0.0005);
-        lowest = lowest - (lowest*0.0005);
+        if highest == 0.0 || lowest == std::f32::MAX || lowest == 0.0 {
+            return;
+        }
+        highest = highest + (highest - lowest) * 0.05;
+        lowest = lowest - (highest - lowest) * 0.05;
     
         if earliest != self.x_min_time || latest != self.x_max_time {            
             self.x_labels_cache.clear();
@@ -153,7 +150,9 @@ impl Footprint {
         self.y_min_price = lowest;
         self.y_max_price = highest;
         
-        self.crosshair_cache.clear();        
+        self.crosshair_cache.clear();   
+
+        self.heatmap_cache.clear();     
     }
 
     pub fn update(&mut self, message: Message) {
@@ -215,6 +214,7 @@ impl Footprint {
                 crosshair_cache: &self.x_crosshair_cache, 
                 crosshair_position: self.crosshair_position, 
                 crosshair: self.crosshair,
+                timeframe: self.timeframe
             })
             .width(Length::FillPortion(10))
             .height(Length::Fixed(26.0));
@@ -467,17 +467,17 @@ impl canvas::Program<Message> for Footprint {
                     let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
 
                     if trade.1.0 > 0.0 {
-                        let bar_width = (trade.1.0 / max_trade_qty) * bounds.width / 20.0 * self.scaling;
+                        let bar_width = (trade.1.0 / max_trade_qty) * bounds.width / 30.0 * self.scaling;
                         let bar = Path::rectangle(
-                            Point::new(x_position + 5.0, y_position), 
+                            Point::new(x_position + (5.0*self.scaling), y_position), 
                             Size::new(bar_width, 1.0) 
                         );
                         frame.fill(&bar, Color::from_rgba8(81, 205, 160, 1.0));
                     } 
                     if trade.1.1 > 0.0 {
-                        let bar_width = -(trade.1.1 / max_trade_qty) * bounds.width / 20.0 * self.scaling;
+                        let bar_width = -(trade.1.1 / max_trade_qty) * bounds.width / 30.0 * self.scaling;
                         let bar = Path::rectangle(
-                            Point::new(x_position - 5.0, y_position), 
+                            Point::new(x_position - (5.0*self.scaling), y_position), 
                             Size::new(bar_width, 1.0) 
                         );
                         frame.fill(&bar, Color::from_rgba8(192, 80, 77, 1.0));
@@ -506,7 +506,7 @@ impl canvas::Program<Message> for Footprint {
                 let y_low = heatmap_area_height - ((kline.2 - lowest) / y_range * heatmap_area_height);
                 let y_close = heatmap_area_height - ((kline.3 - lowest) / y_range * heatmap_area_height);
                 
-                let color = if kline.3 >= kline.0 { Color::from_rgb8(81, 205, 160) } else { Color::from_rgb8(192, 80, 77) };
+                let color = if kline.3 >= kline.0 { Color::from_rgba8(81, 205, 160, 0.5) } else { Color::from_rgba8(192, 80, 77, 0.5) };
 
                 let body = Path::rectangle(
                     Point::new(x_position as f32 - (2.0 * self.scaling), y_open.min(y_close)), 
@@ -546,12 +546,10 @@ impl canvas::Program<Message> for Footprint {
                     frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(200, 200, 200, 0.6)).with_width(1.0));
 
                     let crosshair_ratio = cursor_position.x as f64 / bounds.width as f64;
-                    let crosshair_millis = (earliest as f64 + crosshair_ratio * (latest as f64 - earliest as f64)).round() / 100.0 * 100.0;
-                    let crosshair_time = NaiveDateTime::from_timestamp((crosshair_millis / 1000.0).floor() as i64, ((crosshair_millis % 1000.0) * 1_000_000.0).round() as u32);
+                    let crosshair_millis = earliest as f64 + crosshair_ratio * (latest - earliest) as f64;
+                    let rounded_timestamp = (crosshair_millis / (self.timeframe as f64 * 60.0 * 1000.0)).round() as i64 * self.timeframe as i64 * 60 * 1000;
 
-                    let crosshair_timestamp = crosshair_time.timestamp_millis() as i64;
-
-                    let snap_ratio = (crosshair_timestamp as f64 - earliest as f64) / ((latest as f64) - (earliest as f64));
+                    let snap_ratio = (rounded_timestamp as f64 - earliest as f64) / (latest as f64 - earliest as f64);
                     let snap_x = snap_ratio * bounds.width as f64;
 
                     let line = Path::line(
@@ -559,6 +557,23 @@ impl canvas::Program<Message> for Footprint {
                         Point::new(snap_x as f32, bounds.height as f32)
                     );
                     frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(200, 200, 200, 0.6)).with_width(1.0));
+
+                    if let Some((_, kline)) = self.data_points.iter()
+                        .find(|(time, _)| **time == rounded_timestamp) {
+                            let tooltip_text = format!(
+                                "O: {} H: {} L: {} C: {}\nBuyV: {:.0} SellV: {:.0}",
+                                kline.1.0, kline.1.1, kline.1.2, kline.1.3, kline.1.4, kline.1.5
+                            );
+
+                            let text = canvas::Text {
+                                content: tooltip_text,
+                                position: Point::new(10.0, 10.0),
+                                size: iced::Pixels(12.0),
+                                color: Color::from_rgba8(120, 120, 120, 1.0),
+                                ..canvas::Text::default()
+                            };
+                            frame.fill_text(text);
+                    }
                 }
             });
 
@@ -655,6 +670,7 @@ pub struct AxisLabelXCanvas<'a> {
     crosshair: bool,
     min: i64,
     max: i64,
+    timeframe: f32,
 }
 impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
     type State = Interaction;
@@ -723,17 +739,18 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
         let crosshair = self.crosshair_cache.draw(renderer, bounds.size(), |frame| {
             if self.crosshair && self.crosshair_position.x > 0.0 {
                 let crosshair_ratio = self.crosshair_position.x as f64 / bounds.width as f64;
-                let crosshair_millis = (earliest_in_millis as f64 + crosshair_ratio * (latest_in_millis as f64 - earliest_in_millis as f64)).round() / 100.0 * 100.0;
-                let crosshair_time = NaiveDateTime::from_timestamp((crosshair_millis / 1000.0).floor() as i64, ((crosshair_millis % 1000.0) * 1_000_000.0).round() as u32);
-                
-                let crosshair_timestamp = crosshair_time.timestamp_millis() as i64;
-                let time = NaiveDateTime::from_timestamp(crosshair_timestamp / 1000, 0);
+                let crosshair_millis = earliest_in_millis as f64 + crosshair_ratio * (latest_in_millis - earliest_in_millis) as f64;
+                let crosshair_time = NaiveDateTime::from_timestamp((crosshair_millis / 1000.0) as i64, 0);
 
-                let snap_ratio = (crosshair_timestamp as f64 - earliest_in_millis as f64) / (latest_in_millis as f64 - earliest_in_millis as f64);
+                let crosshair_timestamp = crosshair_time.timestamp();
+                let rounded_timestamp = (crosshair_timestamp as f64 / (self.timeframe as f64 * 60.0)).round() as i64 * self.timeframe as i64 * 60;
+                let rounded_time = NaiveDateTime::from_timestamp(rounded_timestamp, 0);
+
+                let snap_ratio = (rounded_timestamp as f64 * 1000.0 - earliest_in_millis as f64) / (latest_in_millis as f64 - earliest_in_millis as f64);
                 let snap_x = snap_ratio * bounds.width as f64;
 
                 let text_size = 12.0;
-                let text_content = time.format("%M:%S").to_string();
+                let text_content = rounded_time.format("%H:%M").to_string();
                 let growth_amount = 6.0; 
                 let rectangle_position = Point::new(snap_x as f32 - 14.0 - growth_amount, bounds.height as f32 - 20.0);
                 let text_position = Point::new(snap_x as f32 - 14.0, bounds.height as f32 - 20.0);
