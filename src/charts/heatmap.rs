@@ -776,18 +776,17 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
                 let crosshair_time = NaiveDateTime::from_timestamp((crosshair_millis / 1000.0).floor() as i64, ((crosshair_millis % 1000.0) * 1_000_000.0).round() as u32);
                 
                 let crosshair_timestamp = crosshair_time.timestamp_millis() as i64;
-                let time = NaiveDateTime::from_timestamp(crosshair_timestamp / 1000, 0);
 
                 let snap_ratio = (crosshair_timestamp as f64 - earliest_in_millis as f64) / (latest_in_millis as f64 - earliest_in_millis as f64);
                 let snap_x = snap_ratio * bounds.width as f64;
 
                 let text_size = 12.0;
-                let text_content = time.format("%M:%S").to_string();
+                let text_content = crosshair_time.format("%M:%S:%3f").to_string().replace(".", "");
                 let growth_amount = 6.0; 
-                let rectangle_position = Point::new(snap_x as f32 - 14.0 - growth_amount, bounds.height as f32 - 20.0);
-                let text_position = Point::new(snap_x as f32 - 14.0, bounds.height as f32 - 20.0);
+                let rectangle_position = Point::new(snap_x as f32 - 26.0 - growth_amount, bounds.height as f32 - 20.0);
+                let text_position = Point::new(snap_x as f32 - 26.0, bounds.height as f32 - 20.0);
 
-                let text_background = canvas::Path::rectangle(rectangle_position, Size::new(text_content.len() as f32 * text_size/2.0 + 2.0 * growth_amount + 1.0, text_size + text_size/2.0));
+                let text_background = canvas::Path::rectangle(rectangle_position, Size::new(text_content.len() as f32 * text_size/2.0 + 2.0 * growth_amount, text_size + text_size/2.0));
                 frame.fill(&text_background, Color::from_rgba8(200, 200, 200, 1.0));
 
                 let crosshair_label = canvas::Text {
