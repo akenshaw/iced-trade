@@ -224,6 +224,8 @@ pub enum Message {
 
     ShowLayoutModal,
     HideLayoutModal,
+
+    TicksizeSelected(f32),
 }
 
 struct State {
@@ -255,6 +257,7 @@ struct State {
     sync_heatmap: bool,
 
     kline_stream: bool,
+    tick_size: Option<f32>,
 }
 
 impl Application for State {
@@ -269,7 +272,7 @@ impl Application for State {
 
         let mut panes_open: HashMap<PaneId, (bool, Option<StreamType>)> = HashMap::new();
         panes_open.insert(PaneId::HeatmapChart, (true, Some(StreamType::DepthAndTrades(Ticker::BTCUSDT))));
-        panes_open.insert(PaneId::FootprintChart, (false, Some(StreamType::Klines(Ticker::BTCUSDT, Timeframe::M1))));
+        panes_open.insert(PaneId::FootprintChart, (false, Some(StreamType::Klines(Ticker::BTCUSDT, Timeframe::M3))));
         panes_open.insert(PaneId::TimeAndSales, (false, Some(StreamType::DepthAndTrades(Ticker::BTCUSDT))));
         panes_open.insert(PaneId::CandlestickChart, (false, Some(StreamType::Klines(Ticker::BTCUSDT, Timeframe::M15))));
         panes_open.insert(PaneId::CustomChart, (true, Some(StreamType::Klines(Ticker::BTCUSDT, Timeframe::M1))));
@@ -300,6 +303,7 @@ impl Application for State {
                 focus: None,
                 first_pane,
                 pane_lock: false,
+                tick_size: Some(1.0), 
             },
             Command::batch(vec![
                 font::load(ICON_BYTES).map(Message::FontLoaded),
@@ -452,13 +456,11 @@ impl Application for State {
                             if *pane_id == PaneId::HeatmapChart {
                                 self.heatmap_chart = Some(Heatmap::new());
                             }
-                            if *pane_id == PaneId::FootprintChart {
-                                self.footprint_chart = Some(Footprint::new());
-                            }
                             if *pane_id == PaneId::TimeAndSales {
                                 self.time_and_sales = Some(TimeAndSales::new());
                             }
                         }
+
                         let selected_ticker = match stream_type {
                             Some(StreamType::DepthAndTrades(ticker)) => ticker,
                             Some(StreamType::Klines(ticker, _)) => ticker,
@@ -473,7 +475,7 @@ impl Application for State {
                                 dbg!("No timeframe selected", pane_id);
                                 continue;   
                             }
-                        };                            
+                        };
 
                         let pane_id = *pane_id;
                         let fetch_klines = Command::perform(
@@ -509,6 +511,32 @@ impl Application for State {
                                 },
                                 PaneId::CandlestickChart => {
                                     self.candlestick_chart = Some(CustomLine::new(klines, *timeframe));
+                                },
+                                PaneId::FootprintChart => {
+                                    if let Some(heatmap_chart) = &mut self.heatmap_chart {
+                                        let copied_trades = heatmap_chart.get_raw_trades();
+
+                                        let mut klines_raw: Vec<(i64, f32, f32, f32, f32, f32, f32)> = vec![];
+                                        for kline in &klines {
+                                            let buy_volume = kline.taker_buy_base_asset_volume;
+                                            let sell_volume = kline.volume - buy_volume;
+
+                                            klines_raw.push((kline.time as i64, kline.open, kline.high, kline.low, kline.close, buy_volume, sell_volume));
+                                        }
+
+                                        // get the latest 20 klines
+                                        let copied_klines = klines_raw.iter().rev().take(20).rev().cloned().collect::<Vec<(i64, f32, f32, f32, f32, f32, f32)>>();
+
+                                        let timeframe_u16: u16 = match timeframe {
+                                            Timeframe::M1 => 1,
+                                            Timeframe::M3 => 3,
+                                            Timeframe::M5 => 5,
+                                            Timeframe::M15 => 15,
+                                            Timeframe::M30 => 30,
+                                        };
+
+                                        self.footprint_chart = Some(Footprint::new(timeframe_u16, self.tick_size.unwrap_or(1.0), copied_klines, copied_trades));
+                                    }
                                 },
                                 _ => {}
                             }
@@ -758,6 +786,20 @@ impl Application for State {
                 self.show_layout_modal = false;
                 Command::none()
             },
+
+            Message::TicksizeSelected(ticksize) => {
+                if let Some(heatmap_chart) = &mut self.heatmap_chart {
+                    let copied_trades = heatmap_chart.get_raw_trades();
+
+                    if let Some(footprint_chart) = &mut self.footprint_chart {
+                        footprint_chart.change_tick_size(copied_trades, ticksize);
+
+                        self.tick_size = Some(ticksize);
+                    }
+                }
+
+                Command::none()
+            },
         }
     }
 
@@ -818,7 +860,8 @@ impl Application for State {
                         pane.id,
                         total_panes,
                         is_maximized,
-                        pane_timeframe
+                        pane_timeframe,
+                        self.tick_size.as_ref(),
                     ))
                     .padding(4)
                     .style(style::title_bar_focused);
@@ -1224,6 +1267,7 @@ fn view_controls<'a>(
     total_panes: usize,
     is_maximized: bool,
     selected_timeframe: Option<&'a Timeframe>,
+    selected_ticksize: Option<&'a f32>,
 ) -> Element<'a, Message> {
     let mut row = row![].spacing(5);
 
@@ -1233,13 +1277,21 @@ fn view_controls<'a>(
         (Icon::ResizeFull, Message::Maximize(pane))
     };
 
-    if pane_id == PaneId::CandlestickChart || pane_id == PaneId::CustomChart {
+    if pane_id == PaneId::CandlestickChart || pane_id == PaneId::CustomChart || pane_id == PaneId::FootprintChart {
         let timeframe_picker = pick_list(
             &Timeframe::ALL[..],
             selected_timeframe,
             move |timeframe| Message::TimeframeSelected(timeframe, pane),
         ).placeholder("Choose a timeframe...").text_size(11).width(iced::Pixels(80.0));
         row = row.push(timeframe_picker);
+    }
+    if pane_id == PaneId::FootprintChart {
+        let ticksize_picker = pick_list(
+            [0.1, 0.5, 1.0, 5.0, 10.0, 25.0, 50.0],
+            selected_ticksize,
+            move |ticksize| Message::TicksizeSelected(ticksize),
+        ).placeholder("Choose a ticksize...").text_size(11).width(iced::Pixels(80.0));
+        row = row.push(ticksize_picker);
     }
 
     let mut buttons = vec![
