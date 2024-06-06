@@ -98,6 +98,16 @@ impl Heatmap {
 
         self.render_start();
     }
+
+    pub fn get_raw_trades(&mut self) -> Vec<Trade> {
+        let mut trades_source = vec![];
+
+        for (_, (_, trades, _)) in self.data_points.iter() {
+            trades_source.extend(trades.iter().cloned());
+        }
+
+        trades_source
+    }
     
     pub fn render_start(&mut self) {    
         self.heatmap_cache.clear();
@@ -527,7 +537,7 @@ impl canvas::Program<Message> for Heatmap {
                         Point::new(x_position, y_position), 
                         Size::new(bar_width, 1.0) 
                     );
-                    frame.fill(&bar, Color::from_rgba8(0, 144, 144, 0.4));
+                    frame.fill(&bar, Color::from_rgba8(0, 144, 144, 0.5));
                 }
                 for (_, (price, qty)) in latest_asks.iter().enumerate() {
                     let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
@@ -537,7 +547,7 @@ impl canvas::Program<Message> for Heatmap {
                         Point::new(x_position, y_position), 
                         Size::new(bar_width, 1.0)
                     );
-                    frame.fill(&bar, Color::from_rgba8(192, 0, 192, 0.4));
+                    frame.fill(&bar, Color::from_rgba8(192, 0, 192, 0.5));
                 }
 
                 let line = Path::line(
