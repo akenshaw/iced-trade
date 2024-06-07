@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, vec};
 use chrono::{DateTime, Utc, TimeZone, LocalResult, Duration, NaiveDateTime, Timelike};
 use iced::{
-    alignment, color, mouse, widget::{button, canvas::{self, event::{self, Event}, path, stroke::Stroke, Cache, Canvas, Geometry, Path}}, window, Border, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector
+    alignment, mouse, widget::{button, canvas::{self, event::{self, Event}, stroke::Stroke, Cache, Canvas, Geometry, Path}}, window, Border, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector
 };
 use iced::widget::{Column, Row, Container, Text};
 use crate::{market_data::Kline, Timeframe};
@@ -496,12 +496,12 @@ impl canvas::Program<Message> for CustomLine {
                     if x_position >= 0.0 && x_position <= bounds.width as f64 {
                         let line = Path::line(
                             Point::new(x_position as f32, 0.0), 
-                            Point::new(x_position as f32, bounds.height as f32)
+                            Point::new(x_position as f32, bounds.height)
                         );
                         frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(27, 27, 27, 1.0)).with_width(1.0))
                     }
                     
-                    time = time + time_step;
+                    time += time_step;
                 }
             });
             
@@ -512,7 +512,7 @@ impl canvas::Program<Message> for CustomLine {
                     let y_position = candlesticks_area_height - ((y - lowest) / y_range * candlesticks_area_height);
                     let line = Path::line(
                         Point::new(0.0, y_position), 
-                        Point::new(bounds.width as f32, y_position)
+                        Point::new(bounds.width, y_position)
                     );
                     frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(27, 27, 27, 1.0)).with_width(1.0));
                     y += step;
@@ -547,14 +547,14 @@ impl canvas::Program<Message> for CustomLine {
                 let sell_bar_height = (sell_volume / max_volume) * volume_area_height;
                 
                 let buy_bar = Path::rectangle(
-                    Point::new(x_position as f32, (bounds.height - buy_bar_height) as f32), 
-                    Size::new(2.0 * self.scaling, buy_bar_height as f32)
+                    Point::new(x_position as f32, bounds.height - buy_bar_height), 
+                    Size::new(2.0 * self.scaling, buy_bar_height)
                 );
                 frame.fill(&buy_bar, Color::from_rgb8(81, 205, 160)); 
                 
                 let sell_bar = Path::rectangle(
-                    Point::new(x_position as f32 - (2.0 * self.scaling), (bounds.height - sell_bar_height) as f32), 
-                    Size::new(2.0 * self.scaling, sell_bar_height as f32)
+                    Point::new(x_position as f32 - (2.0 * self.scaling), bounds.height - sell_bar_height), 
+                    Size::new(2.0 * self.scaling, sell_bar_height)
                 );
                 frame.fill(&sell_bar, Color::from_rgb8(192, 80, 77)); 
             }
@@ -565,7 +565,7 @@ impl canvas::Program<Message> for CustomLine {
                 if let Some(cursor_position) = cursor.position_in(bounds) {
                     let line = Path::line(
                         Point::new(0.0, cursor_position.y), 
-                        Point::new(bounds.width as f32, cursor_position.y)
+                        Point::new(bounds.width, cursor_position.y)
                     );
                     frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(200, 200, 200, 0.6)).with_width(1.0));
 
@@ -581,7 +581,7 @@ impl canvas::Program<Message> for CustomLine {
 
                     let line = Path::line(
                         Point::new(snap_x as f32, 0.0), 
-                        Point::new(snap_x as f32, bounds.height as f32)
+                        Point::new(snap_x as f32, bounds.height)
                     );
                     frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(200, 200, 200, 0.6)).with_width(1.0));
 
@@ -605,9 +605,9 @@ impl canvas::Program<Message> for CustomLine {
                 }
             });
 
-            return vec![background, crosshair, candlesticks];
+            vec![background, crosshair, candlesticks]
         }   else {
-            return vec![background, candlesticks];
+            vec![background, candlesticks]
         }
     }
 
@@ -683,7 +683,7 @@ fn calculate_time_step(earliest: i64, latest: i64, labels_can_fit: i32) -> (Dura
     let step_minutes = selected_step.num_minutes() as u32;
     let remainder = minutes % step_minutes;
     if remainder > 0 {
-        rounded_earliest = rounded_earliest + Duration::minutes((step_minutes - remainder) as i64);
+        rounded_earliest += Duration::minutes((step_minutes - remainder) as i64)
     }
 
     (selected_step, rounded_earliest)
@@ -742,7 +742,7 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
                         let text_size = 12.0;
                         let label = canvas::Text {
                             content: time.format("%H:%M").to_string(),
-                            position: Point::new(x_position as f32 - text_size, bounds.height as f32 - 20.0),
+                            position: Point::new(x_position as f32 - text_size, bounds.height - 20.0),
                             size: iced::Pixels(text_size),
                             color: Color::from_rgba8(200, 200, 200, 1.0),
                             ..canvas::Text::default()
@@ -753,7 +753,7 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
                         });
                     }
                     
-                    time = time + time_step;
+                    time += time_step;
                 }
             });
         });
@@ -773,8 +773,8 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
                 let text_size = 12.0;
                 let text_content = rounded_time.format("%H:%M").to_string();
                 let growth_amount = 6.0; 
-                let rectangle_position = Point::new(snap_x as f32 - 14.0 - growth_amount, bounds.height as f32 - 20.0);
-                let text_position = Point::new(snap_x as f32 - 14.0, bounds.height as f32 - 20.0);
+                let rectangle_position = Point::new(snap_x as f32 - (text_size*4.0/3.0) - growth_amount, bounds.height - 20.0);
+                let text_position = Point::new(snap_x as f32 - (text_size*4.0/3.0), bounds.height - 20.0);
 
                 let text_background = canvas::Path::rectangle(rectangle_position, Size::new(text_content.len() as f32 * text_size/2.0 + 2.0 * growth_amount + 1.0, text_size + text_size/2.0));
                 frame.fill(&text_background, Color::from_rgba8(200, 200, 200, 1.0));

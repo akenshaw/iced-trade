@@ -308,7 +308,7 @@ impl Application for State {
             Command::batch(vec![
                 font::load(ICON_BYTES).map(Message::FontLoaded),
 
-                if API_KEY != "" && SECRET_KEY != "" {
+                if !SECRET_KEY.is_empty() && !SECRET_KEY.is_empty() {
                     Command::perform(user_data::get_listen_key(API_KEY, SECRET_KEY), |res| {
                         match res {
                             Ok(listen_key) => {
@@ -368,11 +368,11 @@ impl Application for State {
             },
 
             Message::TickerSelected(ticker) => {
-                self.selected_ticker = Some(ticker.clone());
+                self.selected_ticker = Some(ticker);
 
                 for value in self.panes_open.values_mut() {
                     if let (true, Some(StreamType::Klines(_, timeframe))) = value {
-                        *value = (true, Some(StreamType::Klines(ticker.clone(), *timeframe)));
+                        *value = (true, Some(StreamType::Klines(ticker, *timeframe)));
                     }
                 }
 
@@ -395,25 +395,23 @@ impl Application for State {
                 let mut commands = vec![];
                 let mut dropped_streams = vec![];
 
-                self.panes.panes.get(&pane).map(|pane| {
-                    if let Some((_, stream_type)) = self.panes_open.get(&pane.id) {
-                        if let Some(StreamType::Klines(ticker, _)) = stream_type {
-                            self.panes_open.insert(pane.id, (true, Some(StreamType::Klines(*ticker, timeframe))));   
+                if let Some(pane) = self.panes.panes.get(&pane) {
+                    if let Some((_, Some(StreamType::Klines(ticker, _)))) = self.panes_open.get(&pane.id) {
+                        self.panes_open.insert(pane.id, (true, Some(StreamType::Klines(*ticker, timeframe))));   
 
-                            let pane_id = pane.id;
-                            let fetch_klines = Command::perform(
-                            market_data::fetch_klines(*selected_ticker, timeframe)
-                                .map_err(|err| format!("{}", err)), 
-                            move |klines| {
-                                Message::FetchEvent(klines, pane_id)
-                            });
+                        let pane_id = pane.id;
+                        let fetch_klines = Command::perform(
+                        market_data::fetch_klines(*selected_ticker, timeframe)
+                            .map_err(|err| format!("{}", err)), 
+                        move |klines| {
+                            Message::FetchEvent(klines, pane_id)
+                        });
 
-                            dropped_streams.push(pane_id);
-                            
-                            commands.push(fetch_klines);                                  
-                        };
-                    }
-                });
+                        dropped_streams.push(pane_id);
+                        
+                        commands.push(fetch_klines);                                  
+                    };
+                };
         
                 // sleep to drop existent stream and create new one
                 let remove_active_stream = Command::perform(
@@ -431,7 +429,7 @@ impl Application for State {
                 Command::none()
             },
             Message::WsToggle() => {
-                self.ws_running =! self.ws_running;
+                self.ws_running = !self.ws_running;
 
                 if self.ws_running {  
                     let mut commands = vec![];
@@ -623,7 +621,7 @@ impl Application for State {
                     value.0 = true;
                 }
 
-                if Some(focus_pane) != None {
+                if Some(focus_pane).is_some() {
                     self.focus = focus_pane;
 
                     let selected_ticker = match &self.selected_ticker {
@@ -673,7 +671,7 @@ impl Application for State {
                 Command::none()
             },
             Message::Close(pane) => {
-                self.panes.get(pane).map(|pane| {
+                if let Some(pane) = self.panes.get(pane) {
                     match pane.id {
                         PaneId::HeatmapChart => {
                             if let Some(value) = self.panes_open.get_mut(&PaneId::HeatmapChart) {
@@ -706,7 +704,7 @@ impl Application for State {
                             }
                         },  
                     }
-                });
+                };
                 
                 if let Some((_, sibling)) = self.panes.close(pane) {
                     self.focus = Some(sibling);
@@ -729,9 +727,9 @@ impl Application for State {
             },
 
             Message::OpenModal(pane) => {
-                self.panes.get_mut(pane).map(|pane| {
+                if let Some(pane) = self.panes.get_mut(pane) {
                     pane.show_modal = true;
-                });
+                };
                 Command::none()
             },
             Message::CloseModal => {
@@ -755,9 +753,9 @@ impl Application for State {
                 if let Some(heatmap_chart) = &mut self.heatmap_chart {
                     heatmap_chart.set_size_filter(self.size_filter_heatmap);
                 }
-                self.time_and_sales.as_mut().map(|time_and_sales| {
+                if let Some(time_and_sales) = &mut self.time_and_sales {
                     time_and_sales.set_size_filter(self.size_filter_timesales);
-                });
+                };
 
                 Command::none()
             },
@@ -1033,7 +1031,7 @@ impl Application for State {
 
                 let mut streams: Vec<(Ticker, Timeframe)> = vec![];
                 
-                for (_pane_id, (_is_open, stream_type)) in &self.panes_open {
+                for (_is_open, stream_type) in self.panes_open.values() {
                     if let Some(StreamType::Klines(ticker, timeframe)) = stream_type {
                         streams.push((*ticker, *timeframe));
                     }
@@ -1101,7 +1099,7 @@ fn view_content<'a, 'b: 'a>(
                 underlay =
                     heatmap_chart
                         .view()
-                        .map(move |message| Message::Heatmap(message));
+                        .map(Message::Heatmap);
             } else {
                 underlay = Text::new("No data")
                     .width(Length::Fill)
@@ -1156,7 +1154,7 @@ fn view_content<'a, 'b: 'a>(
                 underlay =
                     footprint_chart
                         .view()
-                        .map(move |message| Message::Footprint(message));
+                        .map(Message::Footprint);
             } else {
                 underlay = Text::new("No data")
                     .width(Length::Fill)
@@ -1172,7 +1170,7 @@ fn view_content<'a, 'b: 'a>(
                 underlay =
                     candlestick_chart
                         .view()
-                        .map(move |message| Message::Candlestick(message));
+                        .map(Message::Candlestick);
             } else {
                 underlay = Text::new("No data")
                     .width(Length::Fill)
@@ -1188,7 +1186,7 @@ fn view_content<'a, 'b: 'a>(
                 underlay =
                     custom_line
                         .view()
-                        .map(move |message| Message::CustomLine(message));
+                        .map(Message::CustomLine);
             } else {
                 underlay = Text::new("No data")
                     .width(Length::Fill)
@@ -1289,7 +1287,7 @@ fn view_controls<'a>(
         let ticksize_picker = pick_list(
             [0.1, 0.5, 1.0, 5.0, 10.0, 25.0, 50.0],
             selected_ticksize,
-            move |ticksize| Message::TicksizeSelected(ticksize),
+            Message::TicksizeSelected,
         ).placeholder("Choose a ticksize...").text_size(11).width(iced::Pixels(80.0));
         row = row.push(ticksize_picker);
     }
@@ -1338,7 +1336,7 @@ impl TimeAndSales {
 
     fn update(&mut self, trades_buffer: &Vec<Trade>) {
         for trade in trades_buffer {
-            let trade_time = NaiveDateTime::from_timestamp(trade.time as i64 / 1000, (trade.time % 1000) as u32 * 1_000_000);
+            let trade_time = NaiveDateTime::from_timestamp(trade.time / 1000, (trade.time % 1000) as u32 * 1_000_000);
             let converted_trade = ConvertedTrade {
                 time: trade_time,
                 price: trade.price,
@@ -1371,7 +1369,7 @@ impl TimeAndSales {
             );
         } else {
             for trade in filtered_trades.iter().rev().take(80) {
-                let trade: &ConvertedTrade = *trade;
+                let trade: &ConvertedTrade = trade;
 
                 let trade_row = Row::new()
                     .push(
@@ -1431,7 +1429,6 @@ mod style {
                 width: 1.0,
                 color: palette.primary.weak.color,
                 radius: 4.0.into(),
-                ..Border::default()
             },
             ..Default::default()
         }
@@ -1447,7 +1444,6 @@ mod style {
                 width: 1.0,
                 color: palette.primary.strong.color,
                 radius: 4.0.into(), 
-                ..Border::default()
             },
             ..Default::default()
         }
@@ -1492,7 +1488,7 @@ mod style {
             text_color: Color::from_rgba(192.0 / 255.0, 80.0 / 255.0, 77.0 / 255.0, 1.0).into(),
             border: Border {
                 width: 1.0,
-                color: Color::from_rgba(192.0 / 255.0, 80.0 / 255.0, 77.0 / 255.0, color_alpha).into(),
+                color: Color::from_rgba(192.0 / 255.0, 80.0 / 255.0, 77.0 / 255.0, color_alpha),
                 ..Border::default()
             },
             ..Default::default()
@@ -1504,7 +1500,7 @@ mod style {
             text_color: Color::from_rgba(81.0 / 255.0, 205.0 / 255.0, 160.0 / 255.0, 1.0).into(),
             border: Border {
                 width: 1.0,
-                color: Color::from_rgba(81.0 / 255.0, 205.0 / 255.0, 160.0 / 255.0, color_alpha).into(),
+                color: Color::from_rgba(81.0 / 255.0, 205.0 / 255.0, 160.0 / 255.0, color_alpha),
                 ..Border::default()
             },
             ..Default::default()

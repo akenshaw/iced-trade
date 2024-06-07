@@ -503,14 +503,14 @@ impl canvas::Program<Message> for Heatmap {
                         let sell_bar_height = (volume.1 / max_volume) * volume_area_height;
 
                         let sell_bar = Path::rectangle(
-                            Point::new(x_position as f32, (bounds.height - sell_bar_height) as f32), 
-                            Size::new(1.0, sell_bar_height as f32)
+                            Point::new(x_position as f32, bounds.height - sell_bar_height), 
+                            Size::new(1.0, sell_bar_height)
                         );
                         frame.fill(&sell_bar, Color::from_rgb8(192, 80, 77)); 
 
                         let buy_bar = Path::rectangle(
-                            Point::new(x_position as f32 + 2.0, (bounds.height - buy_bar_height) as f32), 
-                            Size::new(1.0, buy_bar_height as f32)
+                            Point::new(x_position as f32 + 2.0, bounds.height - buy_bar_height), 
+                            Size::new(1.0, buy_bar_height)
                         );
                         frame.fill(&buy_bar, Color::from_rgb8(81, 205, 160));
                     }
@@ -526,9 +526,9 @@ impl canvas::Program<Message> for Heatmap {
 
                 let max_qty = latest_bids.iter().map(|(_, qty)| qty).chain(latest_asks.iter().map(|(_, qty)| qty)).fold(f32::MIN, |arg0: f32, other: &f32| f32::max(arg0, *other));
 
-                let x_position = ((latest_timestamp - earliest) as f32 / (latest - earliest) as f32) * bounds.width as f32;
+                let x_position = ((latest_timestamp - earliest) as f32 / (latest - earliest) as f32) * bounds.width;
 
-                for (_, (price, qty)) in latest_bids.iter().enumerate() {      
+                for (price, qty) in latest_bids.iter() {     
                     let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
 
                     let bar_width = (qty / max_qty) * depth_area_width;
@@ -538,7 +538,7 @@ impl canvas::Program<Message> for Heatmap {
                     );
                     frame.fill(&bar, Color::from_rgba8(0, 144, 144, 0.5));
                 }
-                for (_, (price, qty)) in latest_asks.iter().enumerate() {
+                for (price, qty) in latest_asks.iter() {
                     let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
 
                     let bar_width = (qty / max_qty) * depth_area_width; 
@@ -551,7 +551,7 @@ impl canvas::Program<Message> for Heatmap {
 
                 let line = Path::line(
                     Point::new(x_position, 0.0), 
-                    Point::new(x_position, bounds.height as f32)
+                    Point::new(x_position, bounds.height)
                 );
                 frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(100, 100, 100, 0.1)).with_width(1.0));
 
@@ -599,7 +599,7 @@ impl canvas::Program<Message> for Heatmap {
                 if let Some(cursor_position) = cursor.position_in(bounds) {
                     let line = Path::line(
                         Point::new(0.0, cursor_position.y), 
-                        Point::new(bounds.width as f32, cursor_position.y)
+                        Point::new(bounds.width, cursor_position.y)
                     );
                     frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(200, 200, 200, 0.6)).with_width(1.0));
 
@@ -607,22 +607,22 @@ impl canvas::Program<Message> for Heatmap {
                     let crosshair_millis = (earliest as f64 + crosshair_ratio * (latest as f64 - earliest as f64)).round() / 100.0 * 100.0;
                     let crosshair_time = NaiveDateTime::from_timestamp((crosshair_millis / 1000.0).floor() as i64, ((crosshair_millis % 1000.0) * 1_000_000.0).round() as u32);
 
-                    let crosshair_timestamp = crosshair_time.timestamp_millis() as i64;
+                    let crosshair_timestamp = crosshair_time.timestamp_millis();
 
                     let snap_ratio = (crosshair_timestamp as f64 - earliest as f64) / ((latest as f64) - (earliest as f64));
                     let snap_x = snap_ratio * bounds.width as f64;
 
                     let line = Path::line(
                         Point::new(snap_x as f32, 0.0), 
-                        Point::new(snap_x as f32, bounds.height as f32)
+                        Point::new(snap_x as f32, bounds.height)
                     );
                     frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(200, 200, 200, 0.6)).with_width(1.0));
                 }
             });
 
-            return vec![crosshair, heatmap];
+            vec![crosshair, heatmap]
         }   else {
-            return vec![heatmap];
+            vec![heatmap]
         }
     }
 
@@ -687,7 +687,7 @@ const TIME_STEPS: [i64; 8] = [
     10 * 1000, // 10 seconds
     5 * 1000,  // 5 seconds
     2 * 1000,  // 2 seconds
-    1 * 1000,  // 1 second
+    1000,  // 1 second
     500,       // 500 milliseconds
 ];
 fn calculate_time_step(earliest: i64, latest: i64, labels_can_fit: i32) -> (i64, i64) {
@@ -750,14 +750,14 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
                 let latest_time: i64 = latest_in_millis;
 
                 while time <= latest_time {                    
-                    let x_position = ((time as i64 - earliest_in_millis as i64) as f64 / (latest_in_millis - earliest_in_millis) as f64) * bounds.width as f64;
+                    let x_position = ((time - earliest_in_millis) as f64 / (latest_in_millis - earliest_in_millis) as f64) * bounds.width as f64;
 
                     if x_position >= 0.0 && x_position <= bounds.width as f64 {
                         let text_size = 12.0;
-                        let time_as_datetime = NaiveDateTime::from_timestamp((time / 1000) as i64, 0);
+                        let time_as_datetime = NaiveDateTime::from_timestamp(time / 1000, 0);
                         let label = canvas::Text {
                             content: time_as_datetime.format("%M:%S").to_string(),
-                            position: Point::new(x_position as f32 - text_size, bounds.height as f32 - 20.0),
+                            position: Point::new(x_position as f32 - text_size, bounds.height - 20.0),
                             size: iced::Pixels(text_size),
                             color: Color::from_rgba8(200, 200, 200, 1.0),
                             ..canvas::Text::default()
@@ -768,12 +768,12 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
                         });
                     }
                     
-                    time = time + time_step;
+                    time += time_step;
                 }
 
                 let line = Path::line(
-                    Point::new(0.0, bounds.height as f32 - 30.0), 
-                    Point::new(bounds.width as f32, bounds.height as f32 - 30.0)
+                    Point::new(0.0, bounds.height - 30.0), 
+                    Point::new(bounds.width, bounds.height - 30.0)
                 );
                 frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(81, 81, 81, 0.2)).with_width(1.0));
             });
@@ -784,7 +784,7 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
                 let crosshair_millis = (earliest_in_millis as f64 + crosshair_ratio * (latest_in_millis as f64 - earliest_in_millis as f64)).round() / 100.0 * 100.0;
                 let crosshair_time = NaiveDateTime::from_timestamp((crosshair_millis / 1000.0).floor() as i64, ((crosshair_millis % 1000.0) * 1_000_000.0).round() as u32);
                 
-                let crosshair_timestamp = crosshair_time.timestamp_millis() as i64;
+                let crosshair_timestamp = crosshair_time.timestamp_millis();
 
                 let snap_ratio = (crosshair_timestamp as f64 - earliest_in_millis as f64) / (latest_in_millis as f64 - earliest_in_millis as f64);
                 let snap_x = snap_ratio * bounds.width as f64;
@@ -792,8 +792,8 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
                 let text_size = 12.0;
                 let text_content = crosshair_time.format("%M:%S:%3f").to_string().replace(".", "");
                 let growth_amount = 6.0; 
-                let rectangle_position = Point::new(snap_x as f32 - 26.0 - growth_amount, bounds.height as f32 - 20.0);
-                let text_position = Point::new(snap_x as f32 - 26.0, bounds.height as f32 - 20.0);
+                let rectangle_position = Point::new(snap_x as f32 - 26.0 - growth_amount, bounds.height - 20.0);
+                let text_position = Point::new(snap_x as f32 - 26.0, bounds.height - 20.0);
 
                 let text_background = canvas::Path::rectangle(rectangle_position, Size::new(text_content.len() as f32 * text_size/2.0 + 2.0 * growth_amount, text_size + text_size/2.0));
                 frame.fill(&text_background, Color::from_rgba8(200, 200, 200, 1.0));

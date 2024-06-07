@@ -69,12 +69,10 @@ impl Footprint {
                 } else {
                     *buy_qty += trade.qty;
                 }
+            } else if trade.is_sell {
+                entry.0.insert(price_level, (0.0, trade.qty));
             } else {
-                if trade.is_sell {
-                    entry.0.insert(price_level, (0.0, trade.qty));
-                } else {
-                    entry.0.insert(price_level, (trade.qty, 0.0));
-                }
+                entry.0.insert(price_level, (trade.qty, 0.0));
             }
         }
     
@@ -121,12 +119,10 @@ impl Footprint {
                     } else {
                         *buy_qty += trade.qty;
                     }
+                } else if trade.is_sell {
+                    trades.insert(price_level, (0.0, trade.qty));
                 } else {
-                    if trade.is_sell {
-                        trades.insert(price_level, (0.0, trade.qty));
-                    } else {
-                        trades.insert(price_level, (trade.qty, 0.0));
-                    }
+                    trades.insert(price_level, (trade.qty, 0.0));
                 }
             }
         }
@@ -156,12 +152,10 @@ impl Footprint {
                 } else {
                     *buy_qty += trade.qty;
                 }
-            } else {
-                if trade.is_sell {
+            } else if trade.is_sell {
                     entry.0.insert(price_level, (0.0, trade.qty));
-                } else {
-                    entry.0.insert(price_level, (trade.qty, 0.0));
-                }
+            } else {
+                entry.0.insert(price_level, (trade.qty, 0.0));
             }
         }
     
@@ -183,7 +177,7 @@ impl Footprint {
     pub fn render_start(&mut self) {
         let timestamp_latest = self.data_points.keys().last().unwrap_or(&0);
 
-        let latest: i64 = *timestamp_latest as i64 - ((self.translation.x*1000.0)*(self.timeframe as f32)) as i64;
+        let latest: i64 = *timestamp_latest - ((self.translation.x*1000.0)*(self.timeframe as f32)) as i64;
         let earliest: i64 = latest - ((640000.0*self.timeframe as f32) / (self.scaling / (self.bounds.width/800.0))) as i64;
     
         let mut highest: f32 = 0.0;
@@ -531,7 +525,7 @@ impl canvas::Program<Message> for Footprint {
             }
             
             for (time, (trades, kline)) in self.data_points.range(earliest..=latest) {
-                let x_position: f32 = ((time - earliest) as f32 / (latest - earliest) as f32) * bounds.width as f32;
+                let x_position: f32 = ((time - earliest) as f32 / (latest - earliest) as f32) * bounds.width;
 
                 if x_position.is_nan() || x_position.is_infinite() {
                     continue;
@@ -566,14 +560,14 @@ impl canvas::Program<Message> for Footprint {
                     let sell_bar_width = 8.0 * self.scaling;
                     let sell_bar_x_position = x_position - (5.0*self.scaling) - sell_bar_width;
                     let sell_bar = Path::rectangle(
-                        Point::new(sell_bar_x_position, (bounds.height - sell_bar_height) as f32), 
-                        Size::new(sell_bar_width, sell_bar_height as f32)
+                        Point::new(sell_bar_x_position, bounds.height - sell_bar_height), 
+                        Size::new(sell_bar_width, sell_bar_height)
                     );
                     frame.fill(&sell_bar, Color::from_rgb8(192, 80, 77)); 
 
                     let buy_bar = Path::rectangle(
-                        Point::new(x_position + (5.0*self.scaling), (bounds.height - buy_bar_height) as f32), 
-                        Size::new(8.0 * self.scaling, buy_bar_height as f32)
+                        Point::new(x_position + (5.0*self.scaling), bounds.height - buy_bar_height), 
+                        Size::new(8.0 * self.scaling, buy_bar_height)
                     );
                     frame.fill(&buy_bar, Color::from_rgb8(81, 205, 160));
                 }
@@ -586,13 +580,13 @@ impl canvas::Program<Message> for Footprint {
                 let color = if kline.3 >= kline.0 { Color::from_rgba8(81, 205, 160, 0.6) } else { Color::from_rgba8(192, 80, 77, 0.6) };
 
                 let wick = Path::line(
-                    Point::new(x_position as f32, y_high), 
-                    Point::new(x_position as f32, y_low)
+                    Point::new(x_position, y_high), 
+                    Point::new(x_position, y_low)
                 );
                 frame.stroke(&wick, Stroke::default().with_color(color).with_width(1.0));
 
                 let body = Path::rectangle(
-                    Point::new(x_position as f32 - (2.0 * self.scaling), y_open.min(y_close)), 
+                    Point::new(x_position - (2.0 * self.scaling), y_open.min(y_close)), 
                     Size::new(4.0 * self.scaling, (y_open - y_close).abs())
                 );                    
                 frame.fill(&body, color);
@@ -618,7 +612,7 @@ impl canvas::Program<Message> for Footprint {
                 if let Some(cursor_position) = cursor.position_in(bounds) {
                     let line = Path::line(
                         Point::new(0.0, cursor_position.y), 
-                        Point::new(bounds.width as f32, cursor_position.y)
+                        Point::new(bounds.width, cursor_position.y)
                     );
                     frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(200, 200, 200, 0.6)).with_width(1.0));
 
@@ -631,7 +625,7 @@ impl canvas::Program<Message> for Footprint {
 
                     let line = Path::line(
                         Point::new(snap_x as f32, 0.0), 
-                        Point::new(snap_x as f32, bounds.height as f32)
+                        Point::new(snap_x as f32, bounds.height)
                     );
                     frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(200, 200, 200, 0.6)).with_width(1.0));
 
@@ -654,9 +648,9 @@ impl canvas::Program<Message> for Footprint {
                 }
             });
 
-            return vec![crosshair, heatmap];
+            vec![crosshair, heatmap]
         }   else {
-            return vec![heatmap];
+            vec![heatmap]
         }
     }
 
@@ -822,14 +816,14 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
                 let latest_time: i64 = latest_in_millis;
 
                 while time <= latest_time {                    
-                    let x_position = ((time as i64 - earliest_in_millis as i64) as f64 / (latest_in_millis - earliest_in_millis) as f64) * bounds.width as f64;
+                    let x_position = ((time - earliest_in_millis) as f64 / (latest_in_millis - earliest_in_millis) as f64) * bounds.width as f64;
 
                     if x_position >= 0.0 && x_position <= bounds.width as f64 {
                         let text_size = 12.0;
-                        let time_as_datetime = NaiveDateTime::from_timestamp((time / 1000) as i64, 0);
+                        let time_as_datetime = NaiveDateTime::from_timestamp(time / 1000, 0);
                         let label = canvas::Text {
                             content: time_as_datetime.format("%H:%M").to_string(),
-                            position: Point::new(x_position as f32 - text_size, bounds.height as f32 - 20.0),
+                            position: Point::new(x_position as f32 - (text_size*4.0/3.0), bounds.height - 20.0),
                             size: iced::Pixels(text_size),
                             color: Color::from_rgba8(200, 200, 200, 1.0),
                             ..canvas::Text::default()
@@ -840,12 +834,12 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
                         });
                     }
                     
-                    time = time + time_step;
+                    time += time_step;
                 }
 
                 let line = Path::line(
-                    Point::new(0.0, bounds.height as f32 - 30.0), 
-                    Point::new(bounds.width as f32, bounds.height as f32 - 30.0)
+                    Point::new(0.0, bounds.height - 30.0), 
+                    Point::new(bounds.width, bounds.height - 30.0)
                 );
                 frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(81, 81, 81, 0.2)).with_width(1.0));
             });
@@ -866,8 +860,8 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
                 let text_size = 12.0;
                 let text_content = rounded_time.format("%H:%M").to_string();
                 let growth_amount = 6.0; 
-                let rectangle_position = Point::new(snap_x as f32 - 14.0 - growth_amount, bounds.height as f32 - 20.0);
-                let text_position = Point::new(snap_x as f32 - 14.0, bounds.height as f32 - 20.0);
+                let rectangle_position = Point::new(snap_x as f32 - 14.0 - growth_amount, bounds.height - 20.0);
+                let text_position = Point::new(snap_x as f32 - 14.0, bounds.height - 20.0);
 
                 let text_background = canvas::Path::rectangle(rectangle_position, Size::new(text_content.len() as f32 * text_size/2.0 + 2.0 * growth_amount + 1.0, text_size + text_size/2.0));
                 frame.fill(&text_background, Color::from_rgba8(200, 200, 200, 1.0));
