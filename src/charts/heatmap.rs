@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use chrono::NaiveDateTime;
 use iced::{
-    alignment, color, mouse, widget::{button, canvas::{self, event::{self, Event}, path, stroke::Stroke, Cache, Canvas, Geometry, Path}}, window, Border, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector
+    alignment, mouse, widget::{button, canvas::{self, event::{self, Event}, stroke::Stroke, Cache, Canvas, Geometry, Path}}, window, Border, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector
 };
 use iced::widget::{Column, Row, Container, Text};
 use crate::data_providers::binance::market_data::{Trade, Depth};
@@ -38,14 +38,10 @@ pub struct Heatmap {
     y_min_price: f32,
     y_max_price: f32,
     bounds: Rectangle,
-
-    timeframe: f32,
 }
 impl Heatmap {
     const MIN_SCALING: f32 = 0.4;
     const MAX_SCALING: f32 = 3.6;
-    const SEVEN_MINUTES: i64 = 7 * 60 * 1000;
-    const FIVE_MINUTES: i64 = 5 * 60 * 1000;
 
     pub fn new() -> Heatmap {
         let _size = window::Settings::default().size;
@@ -71,7 +67,6 @@ impl Heatmap {
             y_min_price: 0.0,
             y_max_price: 0.0,
             bounds: Rectangle::default(),
-            timeframe: 0.5,
         }
     }
 
@@ -112,13 +107,12 @@ impl Heatmap {
     pub fn render_start(&mut self) {    
         self.heatmap_cache.clear();
 
-        let timestamp_latest = self.data_points.keys().last().unwrap_or(&0);
+        let timestamp_latest: &i64 = self.data_points.keys().last().unwrap_or(&0);
 
-        let latest: i64 = *timestamp_latest as i64 - ((self.translation.x*100.0)*(self.timeframe as f32)) as i64;
-        let earliest: i64 = latest - ((64000.0*self.timeframe as f32) / (self.scaling / (self.bounds.width/800.0))) as i64;
+        let latest: i64 = *timestamp_latest - (self.translation.x*80.0) as i64;
+        let earliest: i64 = latest - (64000.0 / (self.scaling / (self.bounds.width/800.0))) as i64;
     
-        let mut highest: f32 = 0.0;
-        let mut lowest: f32 = std::f32::MAX;
+        let (mut lowest, mut highest) = (f32::MAX, 0.0f32);
     
         for (_, (depth, _, _)) in self.data_points.range(earliest..=latest) {
             if let Some(max_price) = depth.asks.iter().map(|order| order.price).max_by(|a, b| a.partial_cmp(b).unwrap()) {
@@ -382,8 +376,8 @@ impl canvas::Program<Message> for Heatmap {
 
                             let scaling = (self.scaling * (1.0 + y / 30.0))
                                 .clamp(
-                                    Self::MIN_SCALING,  // 0.1
-                                    Self::MAX_SCALING,  // 2.0
+                                    Self::MIN_SCALING, 
+                                    Self::MAX_SCALING,  
                                 );
 
                             //let translation =
@@ -434,13 +428,14 @@ impl canvas::Program<Message> for Heatmap {
         let (lowest, highest) = (self.y_min_price, self.y_max_price);
 
         let y_range: f32 = highest - lowest;
-
+        
         let volume_area_height: f32 = bounds.height / 8.0; 
         let heatmap_area_height: f32 = bounds.height - volume_area_height;
 
+        let depth_area_width: f32 = bounds.width / 20.0;
+
         let heatmap = self.heatmap_cache.draw(renderer, bounds.size(), |frame| {
-            let mut max_trade_qty: f32 = 0.0;
-            let mut min_trade_qty: f32 = 0.0;
+            let (mut min_trade_qty, mut max_trade_qty) = (f32::MAX, 0.0f32);
 
             let mut max_volume: f32 = 0.0;
         
@@ -477,10 +472,14 @@ impl canvas::Program<Message> for Heatmap {
                                 Color::from_rgba8(81, 205, 160, 1.0)
                             };
 
-                            let radius = 1.0 + (trade.qty - min_trade_qty) * (35.0 - 1.0) / (max_trade_qty - min_trade_qty);
+                            let radius: f32 = if max_trade_qty != min_trade_qty {
+                                1.0 + (trade.qty - min_trade_qty) * (35.0 - 1.0) / (max_trade_qty - min_trade_qty)
+                            } else {
+                                1.0
+                            };
 
                             let circle = Path::circle(Point::new(x_position as f32, y_position), radius);
-                            frame.fill(&circle, color)
+                            frame.fill(&circle, color);
                         }
                     }
 
@@ -518,7 +517,7 @@ impl canvas::Program<Message> for Heatmap {
                 } 
             }
         
-            // orderbook heatmap
+            // current orderbook as bars
             if let Some(latest_data_points) = self.data_points.iter().last() {
                 let latest_timestamp = latest_data_points.0 + 200;
 
@@ -532,7 +531,7 @@ impl canvas::Program<Message> for Heatmap {
                 for (_, (price, qty)) in latest_bids.iter().enumerate() {      
                     let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
 
-                    let bar_width = (qty / max_qty) * bounds.width / 20.0;
+                    let bar_width = (qty / max_qty) * depth_area_width;
                     let bar = Path::rectangle(
                         Point::new(x_position, y_position), 
                         Size::new(bar_width, 1.0) 
@@ -542,7 +541,7 @@ impl canvas::Program<Message> for Heatmap {
                 for (_, (price, qty)) in latest_asks.iter().enumerate() {
                     let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
 
-                    let bar_width = (qty / max_qty) * bounds.width / 20.0; 
+                    let bar_width = (qty / max_qty) * depth_area_width; 
                     let bar = Path::rectangle(
                         Point::new(x_position, y_position), 
                         Size::new(bar_width, 1.0)
@@ -558,7 +557,7 @@ impl canvas::Program<Message> for Heatmap {
 
                 let text_size = 9.0;
                 let text_content = format!("{:.2}", max_qty);
-                let text_position = Point::new(x_position + 60.0, 0.0);
+                let text_position = Point::new(x_position + depth_area_width, 0.0);
                 frame.fill_text(canvas::Text {
                     content: text_content,
                     position: text_position,
