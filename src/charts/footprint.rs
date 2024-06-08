@@ -6,7 +6,7 @@ use iced::{
 use iced::widget::{Column, Row, Container, Text};
 use crate::data_providers::binance::market_data::{Kline, Trade};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum Message {
     Translated(Vector),
     Scaled(f32, Option<Vector>),
@@ -134,7 +134,7 @@ impl Footprint {
         let mut new_data_points = BTreeMap::new();
         let aggregate_time = 1000 * 60 * self.timeframe as i64;
 
-        for (time, (_, kline_values)) in self.data_points.iter() {
+        for (time, (_, kline_values)) in &self.data_points {
             new_data_points.entry(*time).or_insert((HashMap::new(), *kline_values));
         }
 
@@ -163,7 +163,7 @@ impl Footprint {
         self.tick_size = new_tick_size;
     }
 
-    pub fn update_latest_kline(&mut self, kline: Kline) {
+    pub fn update_latest_kline(&mut self, kline: &Kline) {
         if let Some((_, kline_value)) = self.data_points.get_mut(&(kline.time as i64)) {
             kline_value.0 = kline.open;
             kline_value.1 = kline.high;
@@ -216,26 +216,26 @@ impl Footprint {
         self.heatmap_cache.clear();     
     }
 
-    pub fn update(&mut self, message: Message) {
+    pub fn update(&mut self, message: &Message) {
         match message {
             Message::Translated(translation) => {
                 if self.autoscale {
                     self.translation.x = translation.x;
                 } else {
-                    self.translation = translation;
+                    self.translation = *translation;
                 }
                 self.crosshair_position = Point::new(0.0, 0.0);
 
                 self.render_start();
             }
             Message::Scaled(scaling, translation) => {
-                self.scaling = scaling;
+                self.scaling = *scaling;
                 
                 if let Some(translation) = translation {
                     if self.autoscale {
                         self.translation.x = translation.x;
                     } else {
-                        self.translation = translation;
+                        self.translation = *translation;
                     }
                 }
                 self.crosshair_position = Point::new(0.0, 0.0);
@@ -243,7 +243,7 @@ impl Footprint {
                 self.render_start();
             }
             Message::ChartBounds(bounds) => {
-                self.bounds = bounds;
+                self.bounds = *bounds;
             }
             Message::AutoscaleToggle => {
                 self.autoscale = !self.autoscale;
@@ -252,7 +252,7 @@ impl Footprint {
                 self.crosshair = !self.crosshair;
             }
             Message::CrosshairMoved(position) => {
-                self.crosshair_position = position;
+                self.crosshair_position = *position;
                 if self.crosshair {
                     self.crosshair_cache.clear();
                     self.y_croshair_cache.clear();
@@ -300,7 +300,7 @@ impl Footprint {
             .width(Length::Fill)
             .height(Length::Fill)
             .on_press(Message::AutoscaleToggle)
-            .style(|_theme: &Theme, _status: iced::widget::button::Status| chart_button(_theme, &_status, self.autoscale));
+            .style(|_theme: &Theme, _status: iced::widget::button::Status| chart_button(_theme, _status, self.autoscale));
         let crosshair_button = button(
             Text::new("+")
                 .size(12)
@@ -309,7 +309,7 @@ impl Footprint {
             .width(Length::Fill)
             .height(Length::Fill)
             .on_press(Message::CrosshairToggle)
-            .style(|_theme: &Theme, _status: iced::widget::button::Status| chart_button(_theme, &_status, self.crosshair));
+            .style(|_theme: &Theme, _status: iced::widget::button::Status| chart_button(_theme, _status, self.crosshair));
     
         let chart_controls = Container::new(
             Row::new()
@@ -337,7 +337,7 @@ impl Footprint {
     }
 }
 
-fn chart_button(_theme: &Theme, _status: &button::Status, is_active: bool) -> button::Style {
+fn chart_button(_theme: &Theme, _status: button::Status, is_active: bool) -> button::Style {
     button::Style {
         background: Some(Color::from_rgba8(20, 20, 20, 1.0).into()),
         border: Border {
@@ -593,7 +593,7 @@ impl canvas::Program<Message> for Footprint {
             } 
             
             let text_size = 9.0;
-            let text_content = format!("{:.2}", max_volume);
+            let text_content = format!("{max_volume:.2}");
             let text_width = (text_content.len() as f32 * text_size) / 1.5;
 
             let text_position = Point::new(bounds.width - text_width, bounds.height - volume_area_height);
@@ -949,8 +949,8 @@ impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
                     let y_position = candlesticks_area_height - ((y - self.min) / y_range * candlesticks_area_height);
 
                     let text_size = 12.0;
-                    let decimal_places = if step < 0.5 { 2 } else if step < 1.0 { 1 } else { 0 };
-                    let label_content = format!("{:.*}", decimal_places, y);
+                    let decimal_places = if step < 0.5 { 2 } else { usize::from(step < 1.0) };
+                    let label_content = format!("{y:.decimal_places$}");
                     let label = canvas::Text {
                         content: label_content,
                         position: Point::new(10.0, y_position - text_size / 2.0),

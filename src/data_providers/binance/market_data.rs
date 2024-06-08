@@ -48,30 +48,23 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
                 Ticker::LTCUSDT => "ltcusdt",
             };
 
-            let stream_1 = format!("{}@aggTrade", symbol_str);
-            let stream_2 = format!("{}@depth20@100ms", symbol_str);
+            let stream_1 = format!("{symbol_str}@aggTrade");
+            let stream_2 = format!("{symbol_str}@depth20@100ms");
             
             loop {
                 match &mut state {
                     State::Disconnected => {        
-                        let websocket_server = format!("wss://fstream.binance.com/stream?streams={}/{}", stream_1, stream_2);
+                        let websocket_server = format!("wss://fstream.binance.com/stream?streams={stream_1}/{stream_2}");
 
-                        match async_tungstenite::tokio::connect_async(
+                        if let Ok((websocket, _)) = async_tungstenite::tokio::connect_async(
                             websocket_server,
                         )
-                        .await
-                        {
-                            Ok((websocket, _)) => {
-                                state = State::Connected(websocket);
-                            }
-                            Err(_) => {
-                                tokio::time::sleep(
-                                    tokio::time::Duration::from_secs(1),
-                                )
-                                .await;
-
-                                let _ = output.send(Event::Disconnected).await;
-                            }
+                        .await {
+                           state = State::Connected(websocket);
+                        } else {
+                            tokio::time::sleep(tokio::time::Duration::from_secs(1))
+                           .await;
+                           let _ = output.send(Event::Disconnected).await;
                         }
                     }
                     State::Connected(websocket) => {
@@ -81,7 +74,7 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
                             received = fused_websocket.select_next_some() => {
                                 match received {
                                     Ok(tungstenite::Message::Text(message)) => {
-                                        let stream: Stream = serde_json::from_str(&message).unwrap_or(Stream { stream: "".to_string() });
+                                        let stream: Stream = serde_json::from_str(&message).unwrap_or(Stream { stream: String::new() });
                                         if stream.stream == stream_1 {
                                             let agg_trade: AggTrade = serde_json::from_str(&message).unwrap();
                                             trades_buffer.push(agg_trade.data);
@@ -140,30 +133,23 @@ pub fn connect_kline_stream(vec: Vec<(Ticker, Timeframe)>) -> Subscription<Event
                     Timeframe::M15 => "15m",
                     Timeframe::M30 => "30m",
                 };
-                format!("{}@kline_{}", symbol_str, timeframe_str)
+                format!("{symbol_str}@kline_{timeframe_str}")
             }).collect::<Vec<String>>().join("/");
  
             loop {
                 match &mut state {
                     State::Disconnected => {
-                        let websocket_server = format!("wss://fstream.binance.com/stream?streams={}", stream_str);
+                        let websocket_server = format!("wss://fstream.binance.com/stream?streams={stream_str}");
                         
-                        match async_tungstenite::tokio::connect_async(
+                        if let Ok((websocket, _)) = async_tungstenite::tokio::connect_async(
                             websocket_server,
                         )
-                        .await
-                        {
-                            Ok((websocket, _)) => {
-                                state = State::Connected(websocket);
-                            }
-                            Err(_) => {
-                                tokio::time::sleep(
-                                    tokio::time::Duration::from_secs(1),
-                                )
-                                .await;
-
-                                let _ = output.send(Event::Disconnected).await;
-                            }
+                        .await {
+                           state = State::Connected(websocket);
+                        } else {
+                            tokio::time::sleep(tokio::time::Duration::from_secs(1))
+                           .await;
+                           let _ = output.send(Event::Disconnected).await;
                         }
                     }
                     State::Connected(websocket) => {
@@ -274,7 +260,7 @@ impl<'de> Deserialize<'de> for Order {
     }
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, Clone, Copy)]
 pub struct Kline {
     #[serde(rename = "t")]
     pub time: u64,
@@ -334,7 +320,7 @@ pub async fn fetch_klines(ticker: Ticker, timeframe: Timeframe) -> Result<Vec<Kl
         Timeframe::M30 => "30m",
     };
 
-    let url = format!("https://fapi.binance.com/fapi/v1/klines?symbol={}&interval={}&limit=720", symbol_str, timeframe_str);
+    let url = format!("https://fapi.binance.com/fapi/v1/klines?symbol={symbol_str}&interval={timeframe_str}&limit=720");
 
     let response = reqwest::get(&url).await?;
     let text = response.text().await?;

@@ -68,23 +68,17 @@ pub fn connect_user_stream(listen_key: String) -> Subscription<Event> {
                             listen_key
                         );
         
-                        match async_tungstenite::tokio::connect_async(
+                        if let Ok((websocket, _)) = async_tungstenite::tokio::connect_async(
                             websocket_server,
                         )
-                        .await
-                        {
-                            Ok((websocket, _)) => {
-                                state = State::Connected(websocket);
-                                dbg!("Connected to user stream");
-                            }
-                            Err(_) => {
-                                tokio::time::sleep(
-                                    tokio::time::Duration::from_secs(1),
-                                )
-                                .await;
-                                dbg!("Failed to connect to user stream");
-                                let _ = output.send(Event::Disconnected).await;
-                            }
+                        .await {
+                            state = State::Connected(websocket);
+                            dbg!("Connected to user stream");
+                        } else {
+                            tokio::time::sleep(tokio::time::Duration::from_secs(1))
+                            .await;
+                            dbg!("Failed to connect to user stream");
+                            let _ = output.send(Event::Disconnected).await;
                         }
                     }
                     State::Connected(websocket) => {
@@ -102,7 +96,7 @@ pub fn connect_user_stream(listen_key: String) -> Subscription<Event> {
                                                     if let Some(account_update) = data["a"].as_object() {
                                                         let account_update: AccountUpdate = serde_json::from_value(json!(account_update)).unwrap();
                                                         if account_update.event_type == "ORDER" {
-                                                            event = Event::NewPositions(account_update.positions)
+                                                            event = Event::NewPositions(account_update.positions);
                                                         } else {
                                                             event = Event::TestEvent("Account Update".to_string());
                                                         }
@@ -173,7 +167,7 @@ pub fn fetch_user_stream(api_key: &str, secret_key: &str) -> Subscription<Event>
                             let _ = output.send(Event::FetchedPositions(positions)).await;
                         }
                         Err(e) => {
-                            eprintln!("Error fetching positions: {:?}", e);
+                            eprintln!("Error fetching positions: {e:?}");
                         }
                     }
 
@@ -182,7 +176,7 @@ pub fn fetch_user_stream(api_key: &str, secret_key: &str) -> Subscription<Event>
                             let _ = output.send(Event::FetchedBalance(balance)).await;
                         }
                         Err(e) => {
-                            eprintln!("Error fetching balance: {:?}", e);
+                            eprintln!("Error fetching balance: {e:?}");
                         }
                     }
 
@@ -368,7 +362,7 @@ pub async fn create_market_order (side: String, qty: String, api_key: &str, secr
     let params = format!("symbol=BTCUSDT&side={}&type=MARKET&quantity={}&timestamp={}", side, qty, Utc::now().timestamp_millis());
     let signature = sign_params(&params, secret_key);
 
-    let url = format!("https://testnet.binancefuture.com/fapi/v1/order?{}&signature={}", params, signature);
+    let url = format!("https://testnet.binancefuture.com/fapi/v1/order?{params}&signature={signature}");
 
     let mut headers = HeaderMap::new();
     headers.insert("X-MBX-APIKEY", HeaderValue::from_str(api_key).unwrap());
@@ -389,7 +383,7 @@ pub async fn cancel_order(order_id: String, api_key: &str, secret_key: &str) -> 
     let params = format!("symbol=BTCUSDT&orderId={}&timestamp={}", order_id, Utc::now().timestamp_millis());
     let signature = sign_params(&params, secret_key);
 
-    let url = format!("https://testnet.binancefuture.com/fapi/v1/order?{}&signature={}", params, signature);
+    let url = format!("https://testnet.binancefuture.com/fapi/v1/order?{params}&signature={signature}");
 
     let mut headers = HeaderMap::new();
     headers.insert("X-MBX-APIKEY", HeaderValue::from_str(api_key).unwrap());
@@ -409,7 +403,7 @@ pub async fn fetch_open_orders(symbol: String, api_key: &str, secret_key: &str) 
     let params = format!("timestamp={}&symbol={}", Utc::now().timestamp_millis(), symbol);
     let signature = sign_params(&params, secret_key);
 
-    let url = format!("https://testnet.binancefuture.com/fapi/v1/openOrders?{}&signature={}", params, signature);
+    let url = format!("https://testnet.binancefuture.com/fapi/v1/openOrders?{params}&signature={signature}");
 
     let mut headers = HeaderMap::new();
     headers.insert("X-MBX-APIKEY", HeaderValue::from_str(api_key).unwrap());
@@ -425,7 +419,7 @@ pub async fn fetch_open_positions(api_key: &str, secret_key: &str) -> Result<Vec
     let params = format!("timestamp={}", Utc::now().timestamp_millis());
     let signature = sign_params(&params, secret_key);
 
-    let url = format!("https://testnet.binancefuture.com/fapi/v2/positionRisk?{}&signature={}", params, signature);
+    let url = format!("https://testnet.binancefuture.com/fapi/v2/positionRisk?{params}&signature={signature}");
 
     let mut headers = HeaderMap::new();
     headers.insert("X-MBX-APIKEY", HeaderValue::from_str(api_key).unwrap());
@@ -442,7 +436,7 @@ pub async fn fetch_acc_balance(api_key: &str, secret_key: &str) -> Result<Vec<Fe
     let params = format!("timestamp={}", Utc::now().timestamp_millis());
     let signature = sign_params(&params, secret_key);
 
-    let url = format!("https://testnet.binancefuture.com/fapi/v2/balance?{}&signature={}", params, signature);
+    let url = format!("https://testnet.binancefuture.com/fapi/v2/balance?{params}&signature={signature}");
 
     let mut headers = HeaderMap::new();
     headers.insert("X-MBX-APIKEY", HeaderValue::from_str(api_key).unwrap());
@@ -458,7 +452,7 @@ pub async fn get_listen_key(api_key: &str, secret_key: &str) -> Result<String, B
     let params = format!("timestamp={}", Utc::now().timestamp_millis());
     let signature = sign_params(&params, secret_key);
 
-    let url = format!("https://testnet.binancefuture.com/fapi/v1/listenKey?{}&signature={}", params, signature);
+    let url = format!("https://testnet.binancefuture.com/fapi/v1/listenKey?{params}&signature={signature}");
 
     let mut headers = HeaderMap::new();
     headers.insert("X-MBX-APIKEY", HeaderValue::from_str(api_key).unwrap());

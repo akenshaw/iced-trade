@@ -344,25 +344,25 @@ impl Application for State {
         match message {
             Message::CustomLine(message) => {
                 if let Some(custom_line) = &mut self.custom_line {
-                    custom_line.update(message);
+                    custom_line.update(&message);
                 }
                 Command::none()
             },
             Message::Candlestick(message) => {
                 if let Some(candlesticks) = &mut self.candlestick_chart {
-                    candlesticks.update(message);
+                    candlesticks.update(&message);
                 }
                 Command::none()
             },
             Message::Heatmap(message) => {
                 if let Some(heatmap) = &mut self.heatmap_chart {
-                    heatmap.update(message);
+                    heatmap.update(&message);
                 }
                 Command::none()
             },
             Message::Footprint(message) => {
                 if let Some(footprint) = &mut self.footprint_chart {
-                    footprint.update(message);
+                    footprint.update(&message);
                 }
                 Command::none()
             },
@@ -383,13 +383,11 @@ impl Application for State {
                     return Command::none();
                 }
 
-                let selected_ticker = match &self.selected_ticker {
-                    Some(ticker) => ticker,
-                    None => {
-                        eprintln!("No ticker selected");
-                        return Command::none();
-                    }
+                let Some(selected_ticker) = &self.selected_ticker else {
+                    eprintln!("No ticker selected");
+                    return Command::none();
                 };
+
                 self.kline_stream = false;
                 
                 let mut commands = vec![];
@@ -402,7 +400,7 @@ impl Application for State {
                         let pane_id = pane.id;
                         let fetch_klines = Command::perform(
                         market_data::fetch_klines(*selected_ticker, timeframe)
-                            .map_err(|err| format!("{}", err)), 
+                            .map_err(|err| format!("{err}")), 
                         move |klines| {
                             Message::FetchEvent(klines, pane_id)
                         });
@@ -418,7 +416,7 @@ impl Application for State {
                     async {
                         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                     },
-                    move |_| Message::CutTheKlineStream
+                    move |()| Message::CutTheKlineStream
                 );
                 commands.push(remove_active_stream);
 
@@ -460,25 +458,21 @@ impl Application for State {
                         }
 
                         let selected_ticker = match stream_type {
-                            Some(StreamType::DepthAndTrades(ticker)) => ticker,
-                            Some(StreamType::Klines(ticker, _)) => ticker,
+                            Some(StreamType::Klines(ticker, _)) | Some(StreamType::DepthAndTrades(ticker)) => ticker,
                             _ => {
                                 dbg!("No ticker selected", pane_id);
                                 continue; 
                             }
                         };
-                        let selected_timeframe = match stream_type {
-                            Some(StreamType::Klines(_, timeframe)) => timeframe,
-                            _ => {
-                                dbg!("No timeframe selected", pane_id);
-                                continue;   
-                            }
+                        let Some(StreamType::Klines(_, selected_timeframe)) = stream_type else {
+                            dbg!("No timeframe selected", pane_id);
+                            continue;  
                         };
 
                         let pane_id = *pane_id;
                         let fetch_klines = Command::perform(
                             market_data::fetch_klines(*selected_ticker, *selected_timeframe)
-                                .map_err(|err| format!("{}", err)), 
+                                .map_err(|err| format!("{err}")), 
                             move |klines| {
                                 Message::FetchEvent(klines, pane_id)
                             }
@@ -523,7 +517,7 @@ impl Application for State {
                                         }
 
                                         // get the latest 20 klines
-                                        let copied_klines = klines_raw.iter().rev().take(20).rev().cloned().collect::<Vec<(i64, f32, f32, f32, f32, f32, f32)>>();
+                                        let copied_klines = klines_raw.iter().rev().take(20).rev().copied().collect::<Vec<(i64, f32, f32, f32, f32, f32, f32)>>();
 
                                         let timeframe_u16: u16 = match timeframe {
                                             Timeframe::M1 => 1,
@@ -541,7 +535,7 @@ impl Application for State {
                         }
                     },
                     Err(err) => {
-                        eprintln!("Error fetching klines: {}", err);
+                        eprintln!("Error fetching klines: {err}");
                         self.candlestick_chart = Some(CustomLine::new(vec![], Timeframe::M1)); 
                     },
                 }
@@ -576,17 +570,17 @@ impl Application for State {
                                     match pane_id {
                                         PaneId::CandlestickChart => {
                                             if let Some(candlestick_chart) = &mut self.candlestick_chart {
-                                                candlestick_chart.insert_datapoint(kline.clone());
+                                                candlestick_chart.insert_datapoint(&kline);
                                             }
                                         },
                                         PaneId::CustomChart => {
                                             if let Some(custom_line) = &mut self.custom_line {
-                                                custom_line.insert_datapoint(kline.clone());
+                                                custom_line.insert_datapoint(&kline);
                                             }
                                         },
                                         PaneId::FootprintChart => {
                                             if let Some(footprint_chart) = &mut self.footprint_chart {
-                                                footprint_chart.update_latest_kline(kline.clone());
+                                                footprint_chart.update_latest_kline(&kline);
                                             }
                                         },
                                         _ => {}
@@ -624,13 +618,10 @@ impl Application for State {
                 if Some(focus_pane).is_some() {
                     self.focus = focus_pane;
 
-                    let selected_ticker = match &self.selected_ticker {
-                        Some(ticker) => ticker,
-                        None => {
+                    let Some(selected_ticker) = &self.selected_ticker else {
                             eprintln!("No ticker selected");
                             return Command::none();
-                        }
-                    };
+                        };
                     
                     if pane_id == PaneId::TimeAndSales {
                         self.time_and_sales = Some(TimeAndSales::new());
@@ -718,7 +709,7 @@ impl Application for State {
             },
 
             Message::Debug(msg) => {
-                println!("{}", msg);
+                println!("{msg}");
                 Command::none()
             },
             Message::FontLoaded(_) => {
@@ -914,7 +905,10 @@ impl Application for State {
             .align_items(Alignment::Center)
             .push(ws_button);
 
-        if !self.ws_running {
+        if self.ws_running {
+            ws_controls = ws_controls.push(
+                Text::new(self.selected_ticker.unwrap_or_else(|| { dbg!("No ticker found"); Ticker::BTCUSDT } ).to_string()).size(20));
+        } else {
             let symbol_pick_list = pick_list(
                 &Ticker::ALL[..],
                 self.selected_ticker,
@@ -926,14 +920,10 @@ impl Application for State {
                 self.selected_exchange,
                 Message::ExchangeSelected,
             ).placeholder("Choose an exchange...");
-        
+
             ws_controls = ws_controls
                 .push(exchange_selector)
-                .push(symbol_pick_list)
-                
-        } else {
-            ws_controls = ws_controls.push(
-                Text::new(self.selected_ticker.unwrap_or_else(|| { dbg!("No ticker found"); Ticker::BTCUSDT } ).to_string()).size(20));
+                .push(symbol_pick_list);
         }
 
         let content = Column::new()
@@ -1125,7 +1115,7 @@ fn view_content<'a, 'b: 'a>(
                                         .step(500.0)
                                 )
                                 .push(
-                                    Text::new(format!("${}", size_filter_heatmap)).size(16)
+                                    Text::new(format!("${size_filter_heatmap}")).size(16)
                                 )
                         )
                         .push( 
@@ -1197,11 +1187,13 @@ fn view_content<'a, 'b: 'a>(
         },
         
         PaneId::TimeAndSales => { 
-            let underlay = time_and_sales.as_ref().map(TimeAndSales::view)
-                .unwrap_or_else(|| Text::new("No data")
+            let underlay = time_and_sales.as_ref().map_or_else(
+                || Text::new("No data")
                     .width(Length::Fill)
                     .height(Length::Fill)
-                    .into()); 
+                    .into(),
+                TimeAndSales::view
+            );
 
             if show_modal {
                 let signup = container(
@@ -1221,7 +1213,7 @@ fn view_content<'a, 'b: 'a>(
                                         .step(500.0)
                                 )
                                 .push(
-                                    Text::new(format!("${}", size_filter_timesales)).size(16)
+                                    Text::new(format!("${size_filter_timesales}")).size(16)
                                 )
                                 .push(
                                     checkbox("Sync Heatmap with", sync_heatmap)

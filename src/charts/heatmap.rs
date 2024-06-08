@@ -6,7 +6,7 @@ use iced::{
 use iced::widget::{Column, Row, Container, Text};
 use crate::data_providers::binance::market_data::{Trade, Depth};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum Message {
     Translated(Vector),
     Scaled(f32, Option<Vector>),
@@ -97,7 +97,7 @@ impl Heatmap {
     pub fn get_raw_trades(&mut self) -> Vec<Trade> {
         let mut trades_source = vec![];
 
-        for (_, (_, trades, _)) in self.data_points.iter() {
+        for (_, (_, trades, _)) in &self.data_points {
             trades_source.extend(trades.iter().cloned());
         }
 
@@ -140,26 +140,26 @@ impl Heatmap {
         self.crosshair_cache.clear();        
     }
 
-    pub fn update(&mut self, message: Message) {
+    pub fn update(&mut self, message: &Message) {
         match message {
             Message::Translated(translation) => {
                 if self.autoscale {
                     self.translation.x = translation.x;
                 } else {
-                    self.translation = translation;
+                    self.translation = *translation;
                 }
                 self.crosshair_position = Point::new(0.0, 0.0);
 
                 self.render_start();
             }
             Message::Scaled(scaling, translation) => {
-                self.scaling = scaling;
+                self.scaling = *scaling;
                 
                 if let Some(translation) = translation {
                     if self.autoscale {
                         self.translation.x = translation.x;
                     } else {
-                        self.translation = translation;
+                        self.translation = *translation;
                     }
                 }
                 self.crosshair_position = Point::new(0.0, 0.0);
@@ -167,7 +167,7 @@ impl Heatmap {
                 self.render_start();
             }
             Message::ChartBounds(bounds) => {
-                self.bounds = bounds;
+                self.bounds = *bounds;
             }
             Message::AutoscaleToggle => {
                 self.autoscale = !self.autoscale;
@@ -176,7 +176,7 @@ impl Heatmap {
                 self.crosshair = !self.crosshair;
             }
             Message::CrosshairMoved(position) => {
-                self.crosshair_position = position;
+                self.crosshair_position = *position;
                 if self.crosshair {
                     self.crosshair_cache.clear();
                     self.y_croshair_cache.clear();
@@ -223,7 +223,7 @@ impl Heatmap {
             .width(Length::Fill)
             .height(Length::Fill)
             .on_press(Message::AutoscaleToggle)
-            .style(|_theme: &Theme, _status: iced::widget::button::Status| chart_button(_theme, &_status, self.autoscale));
+            .style(|_theme: &Theme, _status: iced::widget::button::Status| chart_button(_theme, _status, self.autoscale));
         let crosshair_button = button(
             Text::new("+")
                 .size(12)
@@ -232,7 +232,7 @@ impl Heatmap {
             .width(Length::Fill)
             .height(Length::Fill)
             .on_press(Message::CrosshairToggle)
-            .style(|_theme: &Theme, _status: iced::widget::button::Status| chart_button(_theme, &_status, self.crosshair));
+            .style(|_theme: &Theme, _status: iced::widget::button::Status| chart_button(_theme, _status, self.crosshair));
     
         let chart_controls = Container::new(
             Row::new()
@@ -260,7 +260,7 @@ impl Heatmap {
     }
 }
 
-fn chart_button(_theme: &Theme, _status: &button::Status, is_active: bool) -> button::Style {
+fn chart_button(_theme: &Theme, _status: button::Status, is_active: bool) -> button::Style {
     button::Style {
         background: Some(Color::from_rgba8(20, 20, 20, 1.0).into()),
         border: Border {
@@ -472,10 +472,9 @@ impl canvas::Program<Message> for Heatmap {
                                 Color::from_rgba8(81, 205, 160, 1.0)
                             };
 
-                            let radius: f32 = if max_trade_qty != min_trade_qty {
-                                1.0 + (trade.qty - min_trade_qty) * (35.0 - 1.0) / (max_trade_qty - min_trade_qty)
-                            } else {
-                                1.0
+                            let radius: f32 = match max_trade_qty == min_trade_qty {
+                                true => 1.0,
+                                false => 1.0 + (trade.qty - min_trade_qty) * (35.0 - 1.0) / (max_trade_qty - min_trade_qty),
                             };
 
                             let circle = Path::circle(Point::new(x_position as f32, y_position), radius);
@@ -528,7 +527,7 @@ impl canvas::Program<Message> for Heatmap {
 
                 let x_position = ((latest_timestamp - earliest) as f32 / (latest - earliest) as f32) * bounds.width;
 
-                for (price, qty) in latest_bids.iter() {     
+                for (price, qty) in &latest_bids {     
                     let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
 
                     let bar_width = (qty / max_qty) * depth_area_width;
@@ -538,7 +537,7 @@ impl canvas::Program<Message> for Heatmap {
                     );
                     frame.fill(&bar, Color::from_rgba8(0, 144, 144, 0.5));
                 }
-                for (price, qty) in latest_asks.iter() {
+                for (price, qty) in &latest_asks {
                     let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
 
                     let bar_width = (qty / max_qty) * depth_area_width; 
@@ -556,7 +555,7 @@ impl canvas::Program<Message> for Heatmap {
                 frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(100, 100, 100, 0.1)).with_width(1.0));
 
                 let text_size = 9.0;
-                let text_content = format!("{:.2}", max_qty);
+                let text_content = format!("{max_qty:.2}");
                 let text_position = Point::new(x_position + depth_area_width, 0.0);
                 frame.fill_text(canvas::Text {
                     content: text_content,
@@ -566,7 +565,7 @@ impl canvas::Program<Message> for Heatmap {
                     ..canvas::Text::default()
                 });
 
-                let text_content = format!("{:.2}", max_volume);
+                let text_content = format!("{max_volume:.2}");
                 if x_position > bounds.width {      
                     let text_width = (text_content.len() as f32 * text_size) / 1.5;
 
@@ -694,7 +693,7 @@ fn calculate_time_step(earliest: i64, latest: i64, labels_can_fit: i32) -> (i64,
     let duration = latest - earliest;
 
     let mut selected_step = TIME_STEPS[0];
-    for &step in TIME_STEPS.iter() {
+    for &step in &TIME_STEPS {
         if duration / step >= labels_can_fit as i64 {
             selected_step = step;
             break;
@@ -790,7 +789,7 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
                 let snap_x = snap_ratio * bounds.width as f64;
 
                 let text_size = 12.0;
-                let text_content = crosshair_time.format("%M:%S:%3f").to_string().replace(".", "");
+                let text_content = crosshair_time.format("%M:%S:%3f").to_string().replace('.', "");
                 let growth_amount = 6.0; 
                 let rectangle_position = Point::new(snap_x as f32 - 26.0 - growth_amount, bounds.height - 20.0);
                 let text_position = Point::new(snap_x as f32 - 26.0, bounds.height - 20.0);
@@ -881,8 +880,8 @@ impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
                     let y_position = candlesticks_area_height - ((y - self.min) / y_range * candlesticks_area_height);
 
                     let text_size = 12.0;
-                    let decimal_places = if step < 0.5 { 2 } else if step < 1.0 { 1 } else { 0 };
-                    let label_content = format!("{:.*}", decimal_places, y);
+                    let decimal_places = if step < 0.5 { 2 } else { usize::from(step < 1.0) };
+                    let label_content = format!("{y:.decimal_places$}");
                     let label = canvas::Text {
                         content: label_content,
                         position: Point::new(10.0, y_position - text_size / 2.0),

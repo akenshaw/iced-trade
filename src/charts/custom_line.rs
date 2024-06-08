@@ -6,7 +6,7 @@ use iced::{
 use iced::widget::{Column, Row, Container, Text};
 use crate::{market_data::Kline, Timeframe};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum Message {
     Translated(Vector),
     Scaled(f32, Option<Vector>),
@@ -87,7 +87,7 @@ impl CustomLine {
         }
     }
 
-    pub fn insert_datapoint(&mut self, kline: Kline) {
+    pub fn insert_datapoint(&mut self, kline: &Kline) {
         let time = match Utc.timestamp_opt(kline.time as i64 / 1000, 0) {
             LocalResult::Single(dt) => dt,
             _ => return, 
@@ -148,26 +148,26 @@ impl CustomLine {
         self.crosshair_cache.clear();
     }
 
-    pub fn update(&mut self, message: Message) {
+    pub fn update(&mut self, message: &Message) {
         match message {
             Message::Translated(translation) => {
                 if self.autoscale {
                     self.translation.x = translation.x;
                 } else {
-                    self.translation = translation;
+                    self.translation = *translation;
                 }
                 self.crosshair_position = Point::new(0.0, 0.0);
 
                 self.render_start();
             }
             Message::Scaled(scaling, translation) => {
-                self.scaling = scaling;
+                self.scaling = *scaling;
                 
                 if let Some(translation) = translation {
                     if self.autoscale {
                         self.translation.x = translation.x;
                     } else {
-                        self.translation = translation;
+                        self.translation = *translation;
                     }
                 }
                 self.crosshair_position = Point::new(0.0, 0.0);
@@ -175,7 +175,7 @@ impl CustomLine {
                 self.render_start();
             }
             Message::ChartBounds(bounds) => {
-                self.bounds = bounds;
+                self.bounds = *bounds;
             }
             Message::AutoscaleToggle => {
                 self.autoscale = !self.autoscale;
@@ -184,7 +184,7 @@ impl CustomLine {
                 self.crosshair = !self.crosshair;
             }
             Message::CrosshairMoved(position) => {
-                self.crosshair_position = position;
+                self.crosshair_position = *position;
                 if self.crosshair {
                     self.crosshair_cache.clear();
                     self.y_croshair_cache.clear();
@@ -237,7 +237,7 @@ impl CustomLine {
             .width(Length::Fill)
             .height(Length::Fill)
             .on_press(Message::AutoscaleToggle)
-            .style(|_theme: &Theme, _status: iced::widget::button::Status| chart_button(_theme, &_status, self.autoscale));
+            .style(|_theme: &Theme, _status: iced::widget::button::Status| chart_button(_theme, _status, self.autoscale));
         let crosshair_button = button(
             Text::new("+")
                 .size(12)
@@ -246,7 +246,7 @@ impl CustomLine {
             .width(Length::Fill)
             .height(Length::Fill)
             .on_press(Message::CrosshairToggle)
-            .style(|_theme: &Theme, _status: iced::widget::button::Status| chart_button(_theme, &_status, self.crosshair));
+            .style(|_theme: &Theme, _status: iced::widget::button::Status| chart_button(_theme, _status, self.crosshair));
     
         let chart_controls = Container::new(
             Row::new()
@@ -274,7 +274,7 @@ impl CustomLine {
     }
 }
 
-fn chart_button(_theme: &Theme, _status: &button::Status, is_active: bool) -> button::Style {
+fn chart_button(_theme: &Theme, _status: button::Status, is_active: bool) -> button::Style {
     button::Style {
         background: Some(Color::from_rgba8(20, 20, 20, 1.0).into()),
         border: Border {
@@ -499,7 +499,7 @@ impl canvas::Program<Message> for CustomLine {
                             Point::new(x_position as f32, bounds.height)
                         );
                         frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(27, 27, 27, 1.0)).with_width(1.0))
-                    }
+                    };
                     
                     time += time_step;
                 }
@@ -863,10 +863,10 @@ impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
                     let y_position = candlesticks_area_height - ((y - self.min) / y_range * candlesticks_area_height);
 
                     let text_size = 12.0;
-                    let decimal_places = if step.fract() == 0.0 { 0 } else { 1 };
+                    let decimal_places = i32::from(step.fract() != 0.0);
                     let label_content = match decimal_places {
-                        0 => format!("{:.0}", y),
-                        _ => format!("{:.1}", y),
+                        0 => format!("{y:.0}"),
+                        _ => format!("{y:.1}"),
                     };
                     let label = canvas::Text {
                         content: label_content,
