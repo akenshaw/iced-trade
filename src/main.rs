@@ -6,6 +6,8 @@ mod charts;
 use charts::custom_line::{self, CustomLine};
 use charts::heatmap::{self, Heatmap};
 use charts::footprint::{self, Footprint};
+use iced::advanced::graphics::core::window;
+use iced::Event;
 
 use std::vec;
 use chrono::{NaiveDateTime, DateTime, Utc};
@@ -152,12 +154,12 @@ pub enum PaneId {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct Pane {
+struct PaneSpec {
     id: PaneId,
     show_modal: bool,
 }
 
-impl Pane {
+impl PaneSpec {
     fn new(id: PaneId) -> Self {
         Self { 
             id,
@@ -175,6 +177,15 @@ enum StreamType {
 fn main() {
     State::run(Settings {
         antialiasing: true,
+        window: {
+            iced::window::Settings {
+                min_size: Some(Size {
+                    width: 800.0,
+                    height: 600.0,
+                }),
+                ..iced::window::Settings::default()
+            }
+        },
         ..Settings::default()
     })
     .unwrap();
@@ -247,7 +258,7 @@ struct State {
 
     // pane grid
     panes_open: HashMap<PaneId, (bool, Option<StreamType>)>,
-    panes: pane_grid::State<Pane>,
+    panes: pane_grid::State<PaneSpec>,
     focus: Option<pane_grid::Pane>,
     first_pane: pane_grid::Pane,
     pane_lock: bool,
@@ -268,13 +279,37 @@ impl Application for State {
     type Theme = Theme;
 
     fn new(_flags: Self::Flags) -> (Self, Command<Self::Message>) {
-        let (panes, first_pane) = pane_grid::State::new(Pane::new(PaneId::CustomChart));
+        use pane_grid::Configuration;
+
+        let custom_configuration: Configuration<PaneSpec> = Configuration::Split {
+            axis: pane_grid::Axis::Vertical,
+            ratio: 0.8,
+            a: Box::new(Configuration::Split {
+                axis: pane_grid::Axis::Horizontal,
+                ratio: 0.4,
+                a: Box::new(Configuration::Split {
+                    axis: pane_grid::Axis::Vertical,
+                    ratio: 0.5,
+                    a: Box::new(Configuration::Pane(PaneSpec { id: PaneId::CandlestickChart, show_modal: false })),
+                    b: Box::new(Configuration::Pane(PaneSpec { id: PaneId::CustomChart, show_modal: false })),
+                }),
+                b: Box::new(Configuration::Split {
+                    axis: pane_grid::Axis::Vertical,
+                    ratio: 0.5,
+                    a: Box::new(Configuration::Pane(PaneSpec { id: PaneId::FootprintChart, show_modal: false })),
+                    b: Box::new(Configuration::Pane(PaneSpec { id: PaneId::HeatmapChart, show_modal: false })),
+                }),
+            }),
+            b: Box::new(Configuration::Pane(PaneSpec { id: PaneId::TimeAndSales, show_modal: false })),
+        };
+        let panes = pane_grid::State::with_configuration(custom_configuration);
+        let first_pane = *panes.panes.iter().next().unwrap().0;
 
         let mut panes_open: HashMap<PaneId, (bool, Option<StreamType>)> = HashMap::new();
         panes_open.insert(PaneId::HeatmapChart, (true, Some(StreamType::DepthAndTrades(Ticker::BTCUSDT))));
-        panes_open.insert(PaneId::FootprintChart, (false, Some(StreamType::Klines(Ticker::BTCUSDT, Timeframe::M3))));
-        panes_open.insert(PaneId::TimeAndSales, (false, Some(StreamType::DepthAndTrades(Ticker::BTCUSDT))));
-        panes_open.insert(PaneId::CandlestickChart, (false, Some(StreamType::Klines(Ticker::BTCUSDT, Timeframe::M15))));
+        panes_open.insert(PaneId::FootprintChart, (true, Some(StreamType::Klines(Ticker::BTCUSDT, Timeframe::M3))));
+        panes_open.insert(PaneId::TimeAndSales, (true, Some(StreamType::DepthAndTrades(Ticker::BTCUSDT))));
+        panes_open.insert(PaneId::CandlestickChart, (true, Some(StreamType::Klines(Ticker::BTCUSDT, Timeframe::M15))));
         panes_open.insert(PaneId::CustomChart, (true, Some(StreamType::Klines(Ticker::BTCUSDT, Timeframe::M1))));
         panes_open.insert(PaneId::TradePanel, (false, None));
         (
@@ -324,14 +359,6 @@ impl Application for State {
                     eprintln!("API keys not set");
                     Command::none()
                 },
-                Command::perform(
-                    async move {
-                        (pane_grid::Axis::Horizontal, first_pane) 
-                    },
-                    move |(axis, pane)| {
-                        Message::Split(axis, pane, PaneId::HeatmapChart)
-                    }
-                ),
             ]),
         )
     }
@@ -603,10 +630,10 @@ impl Application for State {
 
             // Pane grid
             Message::Split(axis, pane, pane_id) => {
-                let focus_pane = if let Some((pane, _)) = self.panes.split(axis, pane, Pane::new(pane_id)) {
+                let focus_pane = if let Some((pane, _)) = self.panes.split(axis, pane, PaneSpec::new(pane_id)) {
                     Some(pane)
                 } else if let Some((&first_pane, _)) = self.panes.panes.iter().next() {
-                    self.panes.split(axis, first_pane, Pane::new(pane_id)).map(|(pane, _)| pane)
+                    self.panes.split(axis, first_pane, PaneSpec::new(pane_id)).map(|(pane, _)| pane)
                 } else {
                     None
                 };
@@ -708,8 +735,11 @@ impl Application for State {
                 Command::none()
             },
 
-            Message::Debug(msg) => {
-                println!("{msg}");
+            Message::Debug(_msg) => {
+                let layout = self.panes.layout();
+                dbg!(layout);
+                let state_config = &self.panes.panes;
+                dbg!(state_config);
                 Command::none()
             },
             Message::FontLoaded(_) => {
@@ -936,7 +966,8 @@ impl Application for State {
                 Row::new()
                     .spacing(10)
                     .push(ws_controls)
-                    .push(Space::with_width(Length::Fill))                
+                    .push(Space::with_width(Length::Fill))
+                    .push(button("Debug").on_press(Message::Debug("Debug".to_string())))                
                     .push(layout_controls)
             )
             .push(pane_grid);
