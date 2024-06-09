@@ -6,7 +6,6 @@ mod charts;
 use charts::custom_line::{self, CustomLine};
 use charts::heatmap::{self, Heatmap};
 use charts::footprint::{self, Footprint};
-use iced::advanced::graphics::core::{time, window};
 
 use std::vec;
 use chrono::{NaiveDateTime, DateTime, Utc};
@@ -22,21 +21,7 @@ use iced::widget::{
     container, row, scrollable, text, responsive
 };
 use futures::TryFutureExt;
-use plotters_iced::sample::lttb::DataPoint;
 
-use std::collections::HashMap;
-
-struct Wrapper<'a>(&'a DateTime<Utc>, &'a f32);
-impl DataPoint for Wrapper<'_> {
-    #[inline]
-    fn x(&self) -> f64 {
-        self.0.timestamp() as f64
-    }
-    #[inline]
-    fn y(&self) -> f64 {
-        *self.1 as f64
-    }
-}
 impl std::fmt::Display for Ticker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -168,12 +153,6 @@ impl PaneSpec {
         }
     }
 }
-#[derive(Debug, Clone, Copy)]
-enum StreamType {
-    Klines(Ticker, Timeframe),
-    DepthAndTrades(Ticker),
-    UserStream,
-}
 
 fn main() {
     State::run(Settings {
@@ -281,7 +260,7 @@ impl Application for State {
     fn new(_flags: Self::Flags) -> (Self, Command<Self::Message>) {
         use pane_grid::Configuration;
 
-        let custom_configuration: Configuration<PaneSpec> = Configuration::Split {
+        let pane_config: Configuration<PaneSpec> = Configuration::Split {
             axis: pane_grid::Axis::Vertical,
             ratio: 0.8,
             a: Box::new(Configuration::Split {
@@ -310,16 +289,16 @@ impl Application for State {
                     ratio: 0.5,
                     a: Box::new(Configuration::Pane(
                         PaneSpec { 
-                            id: PaneId::HeatmapChart, 
+                            id: PaneId::FootprintChart, 
                             show_modal: false, 
-                            stream: (Some(Ticker::BTCUSDT), None, None)
-                        })
+                            stream: (Some(Ticker::BTCUSDT), Some(Timeframe::M3), Some(1.0))
+                        })                      
                     ),
                     b: Box::new(Configuration::Pane(
                         PaneSpec { 
-                            id: PaneId::FootprintChart, 
+                            id: PaneId::HeatmapChart, 
                             show_modal: false, 
-                            stream: (Some(Ticker::BTCUSDT), None, Some(1.0))
+                            stream: (Some(Ticker::BTCUSDT), None, None)
                         })
                     ),
                 }),
@@ -332,7 +311,7 @@ impl Application for State {
                 })
             ),
         };
-        let panes: pane_grid::State<PaneSpec> = pane_grid::State::with_configuration(custom_configuration);
+        let panes: pane_grid::State<PaneSpec> = pane_grid::State::with_configuration(pane_config);
         let first_pane: pane_grid::Pane = *panes.panes.iter().next().unwrap().0;
 
         (
@@ -441,23 +420,21 @@ impl Application for State {
                 let mut commands = vec![];
                 let mut dropped_streams = vec![];
 
-                if let Some(pane) = self.panes.panes.get(&pane) {
+                if let Some(pane) = self.panes.panes.get_mut(&pane) {
                     let pane_id = pane.id;
+
+                    pane.stream.1 = Some(timeframe);
                     
-                    let selected_timeframe = pane.stream.1.unwrap_or(Timeframe::M1);
+                    let fetch_klines = Command::perform(
+                    market_data::fetch_klines(*selected_ticker, timeframe)
+                        .map_err(|err| format!("{err}")), 
+                    move |klines| {
+                        Message::FetchEvent(klines, pane_id, timeframe)
+                    });
 
-                    if pane.id == PaneId::CandlestickChart || pane.id == PaneId::CustomChart {
-                        let fetch_klines = Command::perform(
-                        market_data::fetch_klines(*selected_ticker, timeframe)
-                            .map_err(|err| format!("{err}")), 
-                        move |klines| {
-                            Message::FetchEvent(klines, pane_id, selected_timeframe)
-                        });
-
-                        dropped_streams.push(pane.id);
-                        
-                        commands.push(fetch_klines);                                  
-                    };
+                    dropped_streams.push(pane.id);
+                    
+                    commands.push(fetch_klines);                                  
                 };
         
                 // sleep to drop existent stream and create new one
