@@ -482,16 +482,11 @@ impl canvas::Program<Message> for CustomLine {
 
         let background = self.mesh_cache.draw(renderer, bounds.size(), |frame| {
             frame.with_save(|frame| {
-                let latest_in_millis = latest * 1000; 
-                let earliest_in_millis = earliest * 1000; 
-
                 let mut time = rounded_earliest;
                 let latest_time = NaiveDateTime::from_timestamp(latest, 0);
 
-                while time <= latest_time {
-                    let time_in_millis = time.timestamp_millis();
-                    
-                    let x_position = ((time_in_millis - earliest_in_millis) as f64 / (latest_in_millis - earliest_in_millis) as f64) * bounds.width as f64;
+                while time <= latest_time {                    
+                    let x_position = ((time.timestamp() - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
 
                     if x_position >= 0.0 && x_position <= bounds.width as f64 {
                         let line = Path::line(
@@ -570,13 +565,10 @@ impl canvas::Program<Message> for CustomLine {
                     frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(200, 200, 200, 0.6)).with_width(1.0));
 
                     let crosshair_ratio = cursor_position.x as f64 / bounds.width as f64;
-                    let crosshair_millis = earliest as f64 * 1000.0 + crosshair_ratio * (latest as f64 * 1000.0 - earliest as f64 * 1000.0);
-                    let crosshair_time = NaiveDateTime::from_timestamp((crosshair_millis / 1000.0) as i64, 0);
+                    let crosshair_secs = earliest as f64 + crosshair_ratio * (latest - earliest) as f64;
 
-                    let crosshair_timestamp = crosshair_time.timestamp();
-                    let rounded_timestamp = (crosshair_timestamp as f64 / (self.timeframe as f64 * 60.0)).round() as i64 * self.timeframe as i64 * 60;
-
-                    let snap_ratio = (rounded_timestamp as f64 - earliest as f64) / ((latest as f64) - (earliest as f64));
+                    let rounded_secs = (crosshair_secs / (self.timeframe as f64 * 60.0)).round() * self.timeframe as f64 * 60.0;
+                    let snap_ratio = (rounded_secs - earliest as f64) / ((latest as f64) - (earliest as f64));
                     let snap_x = snap_ratio * bounds.width as f64;
 
                     let line = Path::line(
@@ -586,7 +578,7 @@ impl canvas::Program<Message> for CustomLine {
                     frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(200, 200, 200, 0.6)).with_width(1.0));
 
                     if let Some((_, kline)) = self.klines_raw.iter()
-                        .find(|(time, _)| time.timestamp() == rounded_timestamp) {
+                        .find(|(time, _)| time.timestamp() == rounded_secs as i64) {
 
                         let tooltip_text = format!(
                             "O: {} H: {} L: {} C: {}\nBuyV: {:.0} SellV: {:.0}",
@@ -651,7 +643,7 @@ fn calculate_price_step(highest: f32, lowest: f32, labels_can_fit: i32) -> (f32,
 }
 fn calculate_time_step(earliest: i64, latest: i64, labels_can_fit: i32) -> (Duration, NaiveDateTime) {
     let duration = latest - earliest;
-    let duration_in_millis = duration * 1000; 
+    let duration_in_minutes = duration / 60; 
 
     let steps = [
         Duration::days(1),
@@ -669,15 +661,14 @@ fn calculate_time_step(earliest: i64, latest: i64, labels_can_fit: i32) -> (Dura
 
     let mut selected_step = steps[0];
     for &step in steps.iter() {
-        if duration_in_millis / step.num_milliseconds() >= labels_can_fit as i64 {
+        if duration_in_minutes / step.num_minutes() >= labels_can_fit as i64 {
             selected_step = step;
             break;
         }
     }
 
     let mut rounded_earliest = NaiveDateTime::from_timestamp(earliest, 0)
-        .with_second(0).unwrap()
-        .with_nanosecond(0).unwrap();
+        .with_second(0).unwrap();
 
     let minutes = rounded_earliest.minute();
     let step_minutes = selected_step.num_minutes() as u32;
@@ -722,9 +713,6 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
         if self.max == 0 {
             return vec![];
         }
-        let latest_in_millis = self.max * 1000; 
-        let earliest_in_millis = self.min * 1000; 
-
         let x_labels_can_fit = (bounds.width / 90.0) as i32;
         let (time_step, rounded_earliest) = calculate_time_step(self.min, self.max, x_labels_can_fit);
 
@@ -733,10 +721,8 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
                 let mut time = rounded_earliest;
                 let latest_time = NaiveDateTime::from_timestamp(self.max, 0);
 
-                while time <= latest_time {
-                    let time_in_millis = time.timestamp_millis();
-                    
-                    let x_position = ((time_in_millis - earliest_in_millis) as f64 / (latest_in_millis - earliest_in_millis) as f64) * bounds.width as f64;
+                while time <= latest_time {                    
+                    let x_position = ((time.timestamp() - self.min) as f64 / (self.max - self.min) as f64) * bounds.width as f64;
 
                     if x_position >= 0.0 && x_position <= bounds.width as f64 {
                         let text_size = 12.0;
@@ -759,22 +745,20 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
         });
         let crosshair = self.crosshair_cache.draw(renderer, bounds.size(), |frame| {
             if self.crosshair && self.crosshair_position.x > 0.0 {
-                let crosshair_ratio = self.crosshair_position.x as f64 / bounds.width as f64;
-                let crosshair_millis = earliest_in_millis as f64 + crosshair_ratio * (latest_in_millis - earliest_in_millis) as f64;
-                let crosshair_time = NaiveDateTime::from_timestamp((crosshair_millis / 1000.0) as i64, 0);
+                let crosshair_ratio: f64 = self.crosshair_position.x as f64 / bounds.width as f64;
+                let crosshair_secs: f64 = self.min as f64 + crosshair_ratio * (self.max - self.min) as f64;
+        
+                let rounded_secs: f64 = (crosshair_secs / (self.timeframe as f64 * 60.0)).round() * self.timeframe as f64 * 60.0;
+                let rounded_time: NaiveDateTime = NaiveDateTime::from_timestamp(rounded_secs as i64, 0);
+        
+                let snap_ratio: f64 = (rounded_secs - self.min as f64) / (self.max as f64 - self.min as f64);
+                let snap_x: f64 = snap_ratio * bounds.width as f64;
 
-                let crosshair_timestamp = crosshair_time.timestamp();
-                let rounded_timestamp = (crosshair_timestamp as f64 / (self.timeframe as f64 * 60.0)).round() as i64 * self.timeframe as i64 * 60;
-                let rounded_time = NaiveDateTime::from_timestamp(rounded_timestamp, 0);
-
-                let snap_ratio = (rounded_timestamp as f64 * 1000.0 - earliest_in_millis as f64) / (latest_in_millis as f64 - earliest_in_millis as f64);
-                let snap_x = snap_ratio * bounds.width as f64;
-
-                let text_size = 12.0;
-                let text_content = rounded_time.format("%H:%M").to_string();
-                let growth_amount = 6.0; 
-                let rectangle_position = Point::new(snap_x as f32 - (text_size*4.0/3.0) - growth_amount, bounds.height - 20.0);
-                let text_position = Point::new(snap_x as f32 - (text_size*4.0/3.0), bounds.height - 20.0);
+                let text_size: f32 = 12.0;
+                let text_content: String = rounded_time.format("%H:%M").to_string();
+                let growth_amount: f32 = 6.0; 
+                let rectangle_position: Point = Point::new(snap_x as f32 - (text_size*4.0/3.0) - growth_amount, bounds.height - 20.0);
+                let text_position: Point = Point::new(snap_x as f32 - (text_size*4.0/3.0), bounds.height - 20.0);
 
                 let text_background = canvas::Path::rectangle(rectangle_position, Size::new(text_content.len() as f32 * text_size/2.0 + 2.0 * growth_amount + 1.0, text_size + text_size/2.0));
                 frame.fill(&text_background, Color::from_rgba8(200, 200, 200, 1.0));
