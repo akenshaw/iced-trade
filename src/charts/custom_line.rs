@@ -27,7 +27,7 @@ pub struct CustomLine {
     x_crosshair_cache: Cache,
     translation: Vector,
     scaling: f32,
-    klines_raw: BTreeMap<DateTime<Utc>, (f32, f32, f32, f32, f32, f32)>,
+    klines_raw: BTreeMap<i64, (f32, f32, f32, f32, f32, f32)>,
     timeframe: i16,
     autoscale: bool,
     crosshair: bool,
@@ -47,13 +47,9 @@ impl CustomLine {
         let mut klines_raw = BTreeMap::new();
 
         for kline in klines {
-            let time = match Utc.timestamp_opt(kline.time as i64 / 1000, 0) {
-                LocalResult::Single(dt) => dt,
-                _ => continue, 
-            };
             let buy_volume = kline.taker_buy_base_asset_volume;
             let sell_volume = kline.volume - buy_volume;
-            klines_raw.insert(time, (kline.open, kline.high, kline.low, kline.close, buy_volume, sell_volume));
+            klines_raw.insert(kline.time as i64, (kline.open, kline.high, kline.low, kline.close, buy_volume, sell_volume));
         }
 
         let timeframe = match timeframe {
@@ -88,13 +84,9 @@ impl CustomLine {
     }
 
     pub fn insert_datapoint(&mut self, kline: &Kline) {
-        let time = match Utc.timestamp_opt(kline.time as i64 / 1000, 0) {
-            LocalResult::Single(dt) => dt,
-            _ => return, 
-        };
         let buy_volume = kline.taker_buy_base_asset_volume;
         let sell_volume = kline.volume - buy_volume;
-        self.klines_raw.insert(time, (kline.open, kline.high, kline.low, kline.close, buy_volume, sell_volume));
+        self.klines_raw.insert(kline.time as i64, (kline.open, kline.high, kline.low, kline.close, buy_volume, sell_volume));
 
         self.render_start();
     }
@@ -102,13 +94,12 @@ impl CustomLine {
     pub fn render_start(&mut self) {
         self.candles_cache.clear();
 
-        let latest: i64 = self.klines_raw.keys().last().map_or(0, |time| time.timestamp() - ((self.translation.x*10.0)*(self.timeframe as f32)) as i64);
-        let earliest: i64 = latest - ((6400.0*self.timeframe as f32) / (self.scaling / (self.bounds.width/800.0))) as i64;
+        let latest: i64 = self.klines_raw.keys().last().map_or(0, |time| time - ((self.translation.x*10000.0)*(self.timeframe as f32)) as i64);
+        let earliest: i64 = latest - ((6400000.0*self.timeframe as f32) / (self.scaling / (self.bounds.width/800.0))) as i64;
 
         let (visible_klines, highest, lowest, avg_body_height, _, _) = self.klines_raw.iter()
             .filter(|(time, _)| {
-                let timestamp = time.timestamp();
-                timestamp >= earliest && timestamp <= latest
+                **time >= earliest && **time <= latest
             })
             .fold((vec![], f32::MIN, f32::MAX, 0.0f32, 0.0f32, None), |(mut klines, highest, lowest, total_body_height, max_vol, latest_kline), (time, kline)| {
                 let body_height = (kline.0 - kline.3).abs();
@@ -438,13 +429,12 @@ impl canvas::Program<Message> for CustomLine {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<Geometry> {    
-        let latest: i64 = self.klines_raw.keys().last().map_or(0, |time| time.timestamp() - ((self.translation.x*10.0)*(self.timeframe as f32)) as i64);
-        let earliest: i64 = latest - ((6400.0*self.timeframe as f32) / (self.scaling / (bounds.width/800.0))) as i64;
-    
+        let latest: i64 = self.klines_raw.keys().last().map_or(0, |time| time - ((self.translation.x*10000.0)*(self.timeframe as f32)) as i64);
+        let earliest: i64 = latest - ((6400000.0*self.timeframe as f32) / (self.scaling / (bounds.width/800.0))) as i64;
+
         let (visible_klines, highest, lowest, avg_body_height, max_volume, _) = self.klines_raw.iter()
             .filter(|(time, _)| {
-                let timestamp = time.timestamp();
-                timestamp >= earliest && timestamp <= latest
+                **time >= earliest && **time <= latest
             })
             .fold((vec![], f32::MIN, f32::MAX, 0.0f32, 0.0f32, None), |(mut klines, highest, lowest, total_body_height, max_vol, latest_kline), (time, kline)| {
                 let body_height = (kline.0 - kline.3).abs();
@@ -478,15 +468,14 @@ impl canvas::Program<Message> for CustomLine {
         let (step, rounded_lowest) = calculate_price_step(highest, lowest, y_labels_can_fit);
 
         let x_labels_can_fit = (bounds.width / 90.0) as i32;
-        let (time_step, rounded_earliest) = calculate_time_step(earliest, latest, x_labels_can_fit);
+        let (time_step, rounded_earliest) = calculate_time_step(earliest, latest, x_labels_can_fit, self.timeframe);
 
         let background = self.mesh_cache.draw(renderer, bounds.size(), |frame| {
             frame.with_save(|frame| {
                 let mut time = rounded_earliest;
-                let latest_time = NaiveDateTime::from_timestamp(latest, 0);
 
-                while time <= latest_time {                    
-                    let x_position = ((time.timestamp() - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
+                while time <= latest {                    
+                    let x_position = ((time - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
 
                     if x_position >= 0.0 && x_position <= bounds.width as f64 {
                         let line = Path::line(
@@ -517,7 +506,7 @@ impl canvas::Program<Message> for CustomLine {
 
         let candlesticks = self.candles_cache.draw(renderer, bounds.size(), |frame| {
             for (time, (open, high, low, close, buy_volume, sell_volume)) in visible_klines {
-                let x_position: f64 = ((time.timestamp() - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
+                let x_position: f64 = ((time - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
                 
                 let y_open = candlesticks_area_height - ((open - lowest) / y_range * candlesticks_area_height);
                 let y_high = candlesticks_area_height - ((high - lowest) / y_range * candlesticks_area_height);
@@ -565,10 +554,10 @@ impl canvas::Program<Message> for CustomLine {
                     frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(200, 200, 200, 0.6)).with_width(1.0));
 
                     let crosshair_ratio = cursor_position.x as f64 / bounds.width as f64;
-                    let crosshair_secs = earliest as f64 + crosshair_ratio * (latest - earliest) as f64;
+                    let crosshair_millis = earliest as f64 + crosshair_ratio * (latest - earliest) as f64;
+                    let rounded_timestamp = (crosshair_millis / (self.timeframe as f64 * 60.0 * 1000.0)).round() as i64 * self.timeframe as i64 * 60 * 1000;
 
-                    let rounded_secs = (crosshair_secs / (self.timeframe as f64 * 60.0)).round() * self.timeframe as f64 * 60.0;
-                    let snap_ratio = (rounded_secs - earliest as f64) / ((latest as f64) - (earliest as f64));
+                    let snap_ratio = (rounded_timestamp as f64 - earliest as f64) / (latest as f64 - earliest as f64);
                     let snap_x = snap_ratio * bounds.width as f64;
 
                     let line = Path::line(
@@ -578,7 +567,7 @@ impl canvas::Program<Message> for CustomLine {
                     frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(200, 200, 200, 0.6)).with_width(1.0));
 
                     if let Some((_, kline)) = self.klines_raw.iter()
-                        .find(|(time, _)| time.timestamp() == rounded_secs as i64) {
+                        .find(|(time, _)| **time == rounded_timestamp as i64) {
 
                         let tooltip_text = format!(
                             "O: {} H: {} L: {} C: {}\nBuyV: {:.0} SellV: {:.0}",
@@ -641,41 +630,64 @@ fn calculate_price_step(highest: f32, lowest: f32, labels_can_fit: i32) -> (f32,
 
     (step, rounded_lowest)
 }
-fn calculate_time_step(earliest: i64, latest: i64, labels_can_fit: i32) -> (Duration, NaiveDateTime) {
+
+const M1_TIME_STEPS: [i64; 9] = [
+    1000 * 60 * 720, // 12 hour
+    1000 * 60 * 180, // 3 hour
+    1000 * 60 * 60, // 1 hour
+    1000 * 60 * 30, // 30 minutes
+    1000 * 60 * 15, // 15 minutes
+    1000 * 60 * 10, // 10 minutes
+    1000 * 60 * 5, // 5 minutes
+    1000 * 60 * 2, // 2 minutes
+    60 * 1000, // 1 minute
+];
+const M3_TIME_STEPS: [i64; 9] = [
+    1000 * 60 * 1440, // 24 hour
+    1000 * 60 * 720, // 12 hour
+    1000 * 60 * 180, // 6 hour
+    1000 * 60 * 120, // 6 hour
+    1000 * 60 * 60, // 1 hour
+    1000 * 60 * 30, // 30 minutes
+    1000 * 60 * 15, // 15 minutes
+    1000 * 60 * 9, // 9 minutes
+    1000 * 60 * 3, // 3 minutes
+];
+const M5_TIME_STEPS: [i64; 9] = [
+    1000 * 60 * 1440, // 24 hour
+    1000 * 60 * 720, // 12 hour
+    1000 * 60 * 480, // 8 hour
+    1000 * 60 * 240, // 4 hour
+    1000 * 60 * 120, // 2 hour
+    1000 * 60 * 60, // 1 hour
+    1000 * 60 * 30, // 30 minutes
+    1000 * 60 * 15, // 15 minutes
+    1000 * 60 * 5, // 5 minutes
+];
+fn calculate_time_step(earliest: i64, latest: i64, labels_can_fit: i32, timeframe: i16) -> (i64, i64) {
     let duration = latest - earliest;
-    let duration_in_minutes = duration / 60; 
 
-    let steps = [
-        Duration::days(1),
-        Duration::hours(12),
-        Duration::hours(8),
-        Duration::hours(4),
-        Duration::hours(2),
-        Duration::minutes(60),
-        Duration::minutes(30),
-        Duration::minutes(15),
-        Duration::minutes(10),
-        Duration::minutes(5),
-        Duration::minutes(1),
-    ];
+    let time_steps = match timeframe {
+        1 => &M1_TIME_STEPS,
+        3 => &M3_TIME_STEPS,
+        5 => &M5_TIME_STEPS,
+        15 => &M5_TIME_STEPS[..7],
+        30 => &M5_TIME_STEPS[..6],
+        _ => &M1_TIME_STEPS,
+    };
 
-    let mut selected_step = steps[0];
-    for &step in steps.iter() {
-        if duration_in_minutes / step.num_minutes() >= labels_can_fit as i64 {
+    let mut selected_step = time_steps[0];
+    for &step in time_steps.iter() {
+        if duration / step >= labels_can_fit as i64 {
             selected_step = step;
             break;
         }
+        if step <= duration {
+            selected_step = step;
+        }
     }
 
-    let mut rounded_earliest = NaiveDateTime::from_timestamp(earliest, 0)
-        .with_second(0).unwrap();
-
-    let minutes = rounded_earliest.minute();
-    let step_minutes = selected_step.num_minutes() as u32;
-    let remainder = minutes % step_minutes;
-    if remainder > 0 {
-        rounded_earliest += Duration::minutes((step_minutes - remainder) as i64)
-    }
+    let rounded_earliest = (earliest / selected_step) * selected_step;
 
     (selected_step, rounded_earliest)
 }
@@ -714,21 +726,21 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
             return vec![];
         }
         let x_labels_can_fit = (bounds.width / 90.0) as i32;
-        let (time_step, rounded_earliest) = calculate_time_step(self.min, self.max, x_labels_can_fit);
+        let (time_step, rounded_earliest) = calculate_time_step(self.min, self.max, x_labels_can_fit, self.timeframe);
 
         let labels = self.labels_cache.draw(renderer, bounds.size(), |frame| {
             frame.with_save(|frame| {
                 let mut time = rounded_earliest;
-                let latest_time = NaiveDateTime::from_timestamp(self.max, 0);
 
-                while time <= latest_time {                    
-                    let x_position = ((time.timestamp() - self.min) as f64 / (self.max - self.min) as f64) * bounds.width as f64;
+                while time <= self.max {                    
+                    let x_position = ((time - self.min) as f64 / (self.max - self.min) as f64) * bounds.width as f64;
 
                     if x_position >= 0.0 && x_position <= bounds.width as f64 {
                         let text_size = 12.0;
+                        let time_as_datetime = NaiveDateTime::from_timestamp(time / 1000, 0);
                         let label = canvas::Text {
-                            content: time.format("%H:%M").to_string(),
-                            position: Point::new(x_position as f32 - text_size, bounds.height - 20.0),
+                            content: time_as_datetime.format("%H:%M").to_string(),
+                            position: Point::new(x_position as f32 - (text_size*4.0/3.0), bounds.height - 20.0),
                             size: iced::Pixels(text_size),
                             color: Color::from_rgba8(200, 200, 200, 1.0),
                             ..canvas::Text::default()
@@ -745,14 +757,16 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
         });
         let crosshair = self.crosshair_cache.draw(renderer, bounds.size(), |frame| {
             if self.crosshair && self.crosshair_position.x > 0.0 {
-                let crosshair_ratio: f64 = self.crosshair_position.x as f64 / bounds.width as f64;
-                let crosshair_secs: f64 = self.min as f64 + crosshair_ratio * (self.max - self.min) as f64;
-        
-                let rounded_secs: f64 = (crosshair_secs / (self.timeframe as f64 * 60.0)).round() * self.timeframe as f64 * 60.0;
-                let rounded_time: NaiveDateTime = NaiveDateTime::from_timestamp(rounded_secs as i64, 0);
-        
-                let snap_ratio: f64 = (rounded_secs - self.min as f64) / (self.max as f64 - self.min as f64);
-                let snap_x: f64 = snap_ratio * bounds.width as f64;
+                let crosshair_ratio = self.crosshair_position.x as f64 / bounds.width as f64;
+                let crosshair_millis = self.min as f64 + crosshair_ratio * (self.max - self.min) as f64;
+                let crosshair_time = NaiveDateTime::from_timestamp((crosshair_millis / 1000.0) as i64, 0);
+
+                let crosshair_timestamp = crosshair_time.timestamp();
+                let rounded_timestamp = (crosshair_timestamp as f64 / (self.timeframe as f64 * 60.0)).round() as i64 * self.timeframe as i64 * 60;
+                let rounded_time = NaiveDateTime::from_timestamp(rounded_timestamp, 0);
+
+                let snap_ratio = (rounded_timestamp as f64 * 1000.0 - self.min as f64) / (self.max as f64 - self.min as f64);
+                let snap_x = snap_ratio * bounds.width as f64;
 
                 let text_size: f32 = 12.0;
                 let text_content: String = rounded_time.format("%H:%M").to_string();
