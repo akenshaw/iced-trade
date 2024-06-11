@@ -4,6 +4,7 @@ use iced::{
     alignment, mouse, widget::{button, canvas::{self, event::{self, Event}, stroke::Stroke, Cache, Canvas, Geometry, Path}}, window, Border, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector
 };
 use iced::widget::{Column, Row, Container, Text};
+use serde::de;
 use crate::data_providers::binance::market_data::{Trade, Depth};
 
 #[derive(Debug, Clone, Copy)]
@@ -113,14 +114,13 @@ impl Heatmap {
         let earliest: i64 = latest - (64000.0 / (self.scaling / (self.bounds.width/800.0))) as i64;
     
         let (mut lowest, mut highest) = (f32::MAX, 0.0f32);
-    
+            
         for (_, (depth, _, _)) in self.data_points.range(earliest..=latest) {
-            if let Some(max_price) = depth.asks.iter().map(|order| order.price).max_by(|a, b| a.partial_cmp(b).unwrap()) {
-                highest = highest.max(max_price);
-            }            
-            if let Some(min_price) = depth.bids.iter().map(|order| order.price).min_by(|a, b| a.partial_cmp(b).unwrap()) {
-                lowest = lowest.min(min_price);
-            }
+            let asks_top_20 = depth.asks.iter().take(20).collect::<Vec<_>>();
+            let bids_top_20 = depth.bids.iter().rev().take(20).collect::<Vec<_>>();
+
+            highest = highest.max(asks_top_20.last().map(|order| order.price).unwrap_or(0.0));  
+            lowest = lowest.min(bids_top_20.first().map(|order| order.price).unwrap_or(f32::MAX));
         }
     
         if earliest != self.x_min_time || latest != self.x_max_time {            
@@ -448,13 +448,19 @@ impl canvas::Program<Message> for Heatmap {
                         min_trade_qty = min_trade_qty.min(trade.qty);
                     }
             
-                    for bid in &depth.bids {
-                        max_depth_qty = max_depth_qty.max(bid.qty);
-                    } 
                     for ask in &depth.asks {
+                        if ask.price > highest {
+                            continue;
+                        }
                         max_depth_qty = max_depth_qty.max(ask.qty);
-                    }
-            
+                    } 
+                    for bid in &depth.bids {
+                        if bid.price < lowest {
+                            continue;
+                        }
+                        max_depth_qty = max_depth_qty.max(bid.qty);
+                    }   
+
                     max_volume = max_volume.max(volume.0).max(volume.1);
                 }
                 
@@ -483,6 +489,10 @@ impl canvas::Program<Message> for Heatmap {
                     }
 
                     for order in &depth.bids {
+                        if order.price < lowest {
+                            continue;
+                        }
+
                         let y_position = heatmap_area_height - ((order.price - lowest) / y_range * heatmap_area_height);
                         let color_alpha = (order.qty / max_depth_qty).min(1.0);
 
@@ -490,6 +500,10 @@ impl canvas::Program<Message> for Heatmap {
                         frame.fill(&circle, Color::from_rgba8(0, 144, 144, color_alpha));
                     }
                     for order in &depth.asks {
+                        if order.price > highest {
+                            continue;
+                        }
+
                         let y_position = heatmap_area_height - ((order.price - lowest) / y_range * heatmap_area_height);
                         let color_alpha = (order.qty / max_depth_qty).min(1.0);
 
@@ -520,8 +534,15 @@ impl canvas::Program<Message> for Heatmap {
             if let Some(latest_data_points) = self.data_points.iter().last() {
                 let latest_timestamp = latest_data_points.0 + 200;
 
-                let latest_bids: Vec<(f32, f32)> = latest_data_points.1.0.bids.iter().map(|order| (order.price, order.qty)).collect::<Vec<_>>();
-                let latest_asks: Vec<(f32, f32)> = latest_data_points.1.0.asks.iter().map(|order| (order.price, order.qty)).collect::<Vec<_>>();
+                let latest_bids: Vec<(f32, f32)> = latest_data_points.1.0.bids.iter()
+                    .filter(|order| order.price <= highest)
+                    .map(|order| (order.price, order.qty))
+                    .collect::<Vec<_>>();
+
+                let latest_asks: Vec<(f32, f32)> = latest_data_points.1.0.asks.iter()
+                    .filter(|order| order.price >= lowest)
+                    .map(|order| (order.price, order.qty))
+                    .collect::<Vec<_>>();
 
                 let max_qty = latest_bids.iter().map(|(_, qty)| qty).chain(latest_asks.iter().map(|(_, qty)| qty)).fold(f32::MIN, |arg0: f32, other: &f32| f32::max(arg0, *other));
 

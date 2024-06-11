@@ -8,6 +8,10 @@ use futures::stream::StreamExt;
 use async_tungstenite::tungstenite;
 use crate::{Ticker, Timeframe};
 
+use tokio::time::{interval, Duration};
+use futures::FutureExt;
+use std::sync::{Arc, RwLock, Mutex};
+
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 enum State {
@@ -30,6 +34,78 @@ pub enum Event {
 #[derive(Debug, Clone)]
 pub struct Connection(mpsc::Sender<String>);
 
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct Depth {
+    #[serde(rename = "T")]
+    pub time: i64,
+    #[serde(rename = "b")]
+    pub bids: Vec<Order>,
+    #[serde(rename = "a")]
+    pub asks: Vec<Order>,
+}
+#[derive(Debug, Clone, Copy)]
+pub struct Order {
+    pub price: f32,
+    pub qty: f32,
+}
+
+impl Depth {
+    pub fn new() -> Self {
+        Self {
+            time: 0,
+            bids: Vec::new(),
+            asks: Vec::new(),
+        }
+    }
+
+    pub fn fetched(&mut self, new_depth: Depth) {
+        self.time = new_depth.time;
+
+        self.bids = new_depth.bids;
+        self.asks = new_depth.asks;
+    }
+
+    pub fn update_levels(&mut self, new_depth: Depth) {
+        self.time = new_depth.time;
+
+        let first_ask = new_depth.asks.first().unwrap_or(&Order { price: 0.0, qty: 0.0 });
+        let last_bid = new_depth.bids.last().unwrap_or(&Order { price: 0.0, qty: 0.0 });
+
+        let highest = first_ask.price * 1.001;
+        let lowest = last_bid.price * 0.999;
+
+        for order in &new_depth.bids {
+            if order.price > lowest {
+                if order.qty == 0.0 {
+                    self.bids.retain(|x| x.price != order.price);
+                } else {
+                    if let Some(existing_order) = self.bids.iter_mut().find(|x| x.price == order.price) {
+                        existing_order.qty = order.qty;
+                    } else {
+                        self.bids.push(*order);
+                    }
+                }
+            }
+        }
+        for order in &new_depth.asks {
+            if order.price < highest {
+                if order.qty == 0.0 {
+                    self.asks.retain(|x| x.price != order.price);
+                } else {
+                    if let Some(existing_order) = self.asks.iter_mut().find(|x| x.price == order.price) {
+                        existing_order.qty = order.qty;
+                    } else {
+                        self.asks.push(*order);
+                    }
+                }
+            }
+        }
+
+        // sort by price
+        self.bids.sort_by(|a, b| b.price.partial_cmp(&a.price).unwrap());
+        self.asks.sort_by(|a, b| a.price.partial_cmp(&b.price).unwrap());
+    }
+}
 
 pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
     struct Connect;
@@ -49,7 +125,13 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
             };
 
             let stream_1 = format!("{symbol_str}@aggTrade");
-            let stream_2 = format!("{symbol_str}@depth20@100ms");
+            let stream_2 = format!("{symbol_str}@depth@100ms");
+
+            let mut interval = interval(Duration::from_secs(10));
+
+            let orderbook = Arc::new(Mutex::new(Depth::new()));
+
+            let orderbook_clone = Arc::clone(&orderbook);
             
             loop {
                 match &mut state {
@@ -80,14 +162,17 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
                                             trades_buffer.push(agg_trade.data);
                                         } else if stream.stream == stream_2 {
                                             let depth_update: DepthUpdate = serde_json::from_str(&message).unwrap();
+
+                                            let update_time = depth_update.data.time;
+
+                                            let mut orderbook_clone = orderbook_clone.lock().unwrap().clone();
+
+                                            orderbook_clone.update_levels(depth_update.data);
+
                                             let _ = output.send(
                                                 Event::DepthReceived(
-                                                    depth_update.data.time, 
-                                                    Depth {
-                                                        time: depth_update.data.time,
-                                                        bids: depth_update.data.bids,
-                                                        asks: depth_update.data.asks,
-                                                    }, 
+                                                    update_time, 
+                                                    orderbook_clone,
                                                     std::mem::take(&mut trades_buffer)
                                                 )
                                             ).await;
@@ -101,6 +186,28 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
                                     }
                                     Ok(_) => continue,
                                 }
+                            }
+                        
+                            _ = interval.tick().fuse() => {
+                                let orderbook_clone = Arc::clone(&orderbook);
+
+                                tokio::spawn(async move {
+                                    let fetched_depth = fetch_depth(selected_ticker).await;
+
+                                    let depth: Depth = match fetched_depth {
+                                        Ok(depth) => {
+                                            Depth {
+                                                time: depth.time,
+                                                bids: depth.bids,
+                                                asks: depth.asks,
+                                            }
+                                        },
+                                        Err(_) => return,
+                                    };
+
+                                    let mut orderbook = orderbook_clone.lock().unwrap();
+                                    orderbook.fetched(depth);
+                                });
                             }
                         }
                     }
@@ -234,20 +341,20 @@ pub struct Trade {
     #[serde(with = "string_to_f32", rename = "q")]
     pub qty: f32,
 }
+
 #[derive(Debug, Deserialize, Clone)]
-pub struct Depth {
+pub struct FetchedDepth {
+    #[serde(rename = "lastUpdateId")]
+    pub update_id: i64,
     #[serde(rename = "T")]
     pub time: i64,
-    #[serde(rename = "b")]
+    #[serde(rename = "bids")]
     pub bids: Vec<Order>,
-    #[serde(rename = "a")]
+    #[serde(rename = "asks")]
     pub asks: Vec<Order>,
 }
-#[derive(Debug, Clone)]
-pub struct Order {
-    pub price: f32,
-    pub qty: f32,
-}
+
+
 impl<'de> Deserialize<'de> for Order {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -305,6 +412,7 @@ impl From<FetchedKlines> for Kline {
         }
     }
 }
+
 pub async fn fetch_klines(ticker: Ticker, timeframe: Timeframe) -> Result<Vec<Kline>, reqwest::Error> {
     let symbol_str = match ticker {
         Ticker::BTCUSDT => "btcusdt",
@@ -328,4 +436,23 @@ pub async fn fetch_klines(ticker: Ticker, timeframe: Timeframe) -> Result<Vec<Kl
     let klines: Vec<Kline> = fetched_klines.unwrap().into_iter().map(Kline::from).collect();
 
     Ok(klines)
+}
+
+pub async fn fetch_depth(ticker: Ticker) -> Result<FetchedDepth, reqwest::Error> {
+    let symbol_str = match ticker {
+        Ticker::BTCUSDT => "btcusdt",
+        Ticker::ETHUSDT => "ethusdt",
+        Ticker::SOLUSDT => "solusdt",
+        Ticker::LTCUSDT => "ltcusdt",
+    };
+
+    let url = format!("https://fapi.binance.com/fapi/v1/depth?symbol={symbol_str}&limit=100");
+
+    let response = reqwest::get(&url).await?;
+    let text = response.text().await?;
+    let depth: FetchedDepth = serde_json::from_str(&text).unwrap();
+
+    dbg!(depth.asks.len());
+
+    Ok(depth)
 }
