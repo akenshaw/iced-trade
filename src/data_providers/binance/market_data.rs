@@ -1,16 +1,18 @@
 use iced::futures;  
 use iced::subscription::{self, Subscription};
-use serde::{Deserialize, Deserializer};
+use serde::{de, Deserialize, Deserializer};
 use futures::channel::mpsc;
 use futures::sink::SinkExt;
 use futures::stream::StreamExt;
 
 use async_tungstenite::tungstenite;
+use serde_json::Value;
 use crate::{Ticker, Timeframe};
 
 use tokio::time::{interval, Duration};
 use futures::FutureExt;
 use std::sync::{Arc, RwLock, Mutex};
+use std::collections::{BTreeMap, HashMap};
 
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
@@ -36,29 +38,27 @@ pub struct Connection(mpsc::Sender<String>);
 
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct Depth {
+    pub last_update_id: i64,
     #[serde(rename = "T")]
     pub time: i64,
     #[serde(rename = "b")]
-    pub bids: Vec<Order>,
+    pub bids: BTreeMap<i32, f32>,
     #[serde(rename = "a")]
-    pub asks: Vec<Order>,
-}
-#[derive(Debug, Clone, Copy)]
-pub struct Order {
-    pub price: f32,
-    pub qty: f32,
+    pub asks: BTreeMap<i32, f32>,
 }
 
 impl Depth {
     pub fn new() -> Self {
         Self {
+            last_update_id: 0,
             time: 0,
-            bids: Vec::new(),
-            asks: Vec::new(),
+            bids: BTreeMap::new(),
+            asks: BTreeMap::new(),
         }
     }
 
     pub fn fetched(&mut self, new_depth: Depth) {
+        self.last_update_id = new_depth.last_update_id;        
         self.time = new_depth.time;
 
         self.bids = new_depth.bids;
@@ -66,45 +66,37 @@ impl Depth {
     }
 
     pub fn update_levels(&mut self, new_depth: Depth) {
+        self.last_update_id = new_depth.last_update_id;
         self.time = new_depth.time;
 
-        let first_ask = new_depth.asks.first().unwrap_or(&Order { price: 0.0, qty: 0.0 });
-        let last_bid = new_depth.bids.last().unwrap_or(&Order { price: 0.0, qty: 0.0 });
-
-        let highest = first_ask.price * 1.001;
-        let lowest = last_bid.price * 0.999;
-
         for order in &new_depth.bids {
-            if order.price > lowest {
-                if order.qty == 0.0 {
-                    self.bids.retain(|x| x.price != order.price);
-                } else {
-                    if let Some(existing_order) = self.bids.iter_mut().find(|x| x.price == order.price) {
-                        existing_order.qty = order.qty;
-                    } else {
-                        self.bids.push(*order);
-                    }
-                }
+            if *order.1 == 0.0 {
+                self.bids.remove(order.0);
+            } else {
+                self.bids.insert(*order.0, *order.1);
             }
         }
         for order in &new_depth.asks {
-            if order.price < highest {
-                if order.qty == 0.0 {
-                    self.asks.retain(|x| x.price != order.price);
-                } else {
-                    if let Some(existing_order) = self.asks.iter_mut().find(|x| x.price == order.price) {
-                        existing_order.qty = order.qty;
-                    } else {
-                        self.asks.push(*order);
-                    }
-                }
+            if *order.1 == 0.0 {
+                self.asks.remove(order.0);
+            } else {
+                self.asks.insert(*order.0, *order.1);
             }
         }
-
-        // sort by price
-        self.bids.sort_by(|a, b| b.price.partial_cmp(&a.price).unwrap());
-        self.asks.sort_by(|a, b| a.price.partial_cmp(&b.price).unwrap());
     }
+
+    pub fn get_fetch_id(&self) -> i64 {
+        self.last_update_id
+    }
+}
+
+fn convert_to_btreemap(array: &Value) -> BTreeMap<i32, f32> {
+    array.as_array().unwrap().iter().map(|v| {
+        let v_array = v.as_array().unwrap();
+        let key = (v_array[0].as_str().unwrap().parse::<f32>().unwrap() * 100.0) as i32;
+        let value = v_array[1].as_str().unwrap().parse::<f32>().unwrap();
+        (key, value)
+    }).collect()
 }
 
 pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
@@ -127,12 +119,12 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
             let stream_1 = format!("{symbol_str}@aggTrade");
             let stream_2 = format!("{symbol_str}@depth@100ms");
 
-            let mut interval = interval(Duration::from_secs(10));
+            let mut orderbook: Depth = Depth::new();
 
-            let orderbook = Arc::new(Mutex::new(Depth::new()));
+            let mut already_fetching: bool = false;
 
-            let orderbook_clone = Arc::clone(&orderbook);
-            
+            let mut prev_id: i64 = 0;
+
             loop {
                 match &mut state {
                     State::Disconnected => {        
@@ -142,7 +134,33 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
                             websocket_server,
                         )
                         .await {
-                           state = State::Connected(websocket);
+                            let (tx, rx) = tokio::sync::oneshot::channel();
+                                                
+                            tokio::spawn(async move {
+                                let fetched_depth = fetch_depth(selected_ticker).await;
+
+                                let depth: Depth = match fetched_depth {
+                                    Ok(depth) => {
+                                        Depth {
+                                            last_update_id: depth.update_id,
+                                            time: depth.time,
+                                            bids: depth.bids.iter().map(|(price, qty)| (*price, *qty)).collect(),
+                                            asks: depth.asks.iter().map(|(price, qty)| (*price, *qty)).collect(),
+                                        }
+                                    },
+                                    Err(_) => return,
+                                };
+
+                                let _ = tx.send(depth);
+                            });
+                            match rx.await {
+                                Ok(depth) => {
+                                    orderbook.fetched(depth);
+                                    state = State::Connected(websocket);
+                                },
+                                Err(_) => orderbook.fetched(Depth::default()),
+                            }
+                            
                         } else {
                             tokio::time::sleep(tokio::time::Duration::from_secs(1))
                            .await;
@@ -157,25 +175,86 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
                                 match received {
                                     Ok(tungstenite::Message::Text(message)) => {
                                         let stream: Stream = serde_json::from_str(&message).unwrap_or(Stream { stream: String::new() });
+                                        
                                         if stream.stream == stream_1 {
                                             let agg_trade: AggTrade = serde_json::from_str(&message).unwrap();
                                             trades_buffer.push(agg_trade.data);
+                                            
                                         } else if stream.stream == stream_2 {
-                                            let depth_update: DepthUpdate = serde_json::from_str(&message).unwrap();
+                                            if already_fetching {
+                                                println!("Already fetching...\n");
 
-                                            let update_time = depth_update.data.time;
+                                                continue;
+                                            }
 
-                                            let mut orderbook_clone = orderbook_clone.lock().unwrap().clone();
+                                            let depth_update: Value = serde_json::from_str(&message).unwrap();
+                                            let depth_data = depth_update.get("data").unwrap();
 
-                                            orderbook_clone.update_levels(depth_update.data);
+                                            let first_update_id = depth_data.get("U").unwrap().as_i64().unwrap();
+                                            let final_update_id = depth_data.get("u").unwrap().as_i64().unwrap();
 
-                                            let _ = output.send(
-                                                Event::DepthReceived(
-                                                    update_time, 
-                                                    orderbook_clone,
-                                                    std::mem::take(&mut trades_buffer)
-                                                )
-                                            ).await;
+                                            let last_final_update_id = depth_data.get("pu").unwrap().as_i64().unwrap();
+
+                                            let last_update_id = orderbook.get_fetch_id();
+
+                                            if (final_update_id <= last_update_id) || last_update_id == 0 {
+                                                continue;
+                                            }
+
+                                            if prev_id == 0 && (first_update_id > last_update_id + 1) || (last_update_id + 1 > final_update_id) {
+                                                println!("Out of sync on first event...\nU: {first_update_id}, last_id: {last_update_id}, u: {final_update_id}, pu: {last_final_update_id}\n");
+
+                                                let (tx, rx) = tokio::sync::oneshot::channel();
+                                                already_fetching = true;
+
+                                                tokio::spawn(async move {
+                                                    let fetched_depth = fetch_depth(selected_ticker).await;
+
+                                                    let depth: Depth = match fetched_depth {
+                                                        Ok(depth) => {
+                                                            Depth {
+                                                                last_update_id: depth.update_id,
+                                                                time: depth.time,
+                                                                bids: depth.bids.iter().map(|(price, qty)| (*price, *qty)).collect(),
+                                                                asks: depth.asks.iter().map(|(price, qty)| (*price, *qty)).collect(),
+                                                            }
+                                                        },
+                                                        Err(_) => return,
+                                                    };
+
+                                                    let _ = tx.send(depth);
+                                                });
+                                                match rx.await {
+                                                    Ok(depth) => {
+                                                        orderbook.fetched(depth)
+                                                    },
+                                                    Err(_) => orderbook.fetched(Depth::default()),
+                                                }
+                                                already_fetching = false;
+                                            }
+                                    
+                                            if (prev_id == 0) || (prev_id == last_final_update_id) {
+                                                let time: i64 = depth_data.get("T").unwrap().as_i64().unwrap();
+                                                let bids: BTreeMap<i32, f32> = convert_to_btreemap(depth_data.get("b").unwrap());
+                                                let asks: BTreeMap<i32, f32> = convert_to_btreemap(depth_data.get("a").unwrap());
+
+                                                let depth = Depth { last_update_id: final_update_id, time, bids, asks };
+
+                                                orderbook.update_levels(depth);
+
+                                                let _ = output.send(
+                                                    Event::DepthReceived(
+                                                        time, 
+                                                        orderbook.clone(),
+                                                        std::mem::take(&mut trades_buffer)
+                                                    )
+                                                ).await;
+
+                                                prev_id = final_update_id;
+                                            } else {
+                                                println!("Out of sync...\n");
+                                            }
+
                                         } else {
                                             dbg!(stream.stream);
                                         }
@@ -186,28 +265,6 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
                                     }
                                     Ok(_) => continue,
                                 }
-                            }
-                        
-                            _ = interval.tick().fuse() => {
-                                let orderbook_clone = Arc::clone(&orderbook);
-
-                                tokio::spawn(async move {
-                                    let fetched_depth = fetch_depth(selected_ticker).await;
-
-                                    let depth: Depth = match fetched_depth {
-                                        Ok(depth) => {
-                                            Depth {
-                                                time: depth.time,
-                                                bids: depth.bids,
-                                                asks: depth.asks,
-                                            }
-                                        },
-                                        Err(_) => return,
-                                    };
-
-                                    let mut orderbook = orderbook_clone.lock().unwrap();
-                                    orderbook.fetched(depth);
-                                });
                             }
                         }
                     }
@@ -349,22 +406,9 @@ pub struct FetchedDepth {
     #[serde(rename = "T")]
     pub time: i64,
     #[serde(rename = "bids")]
-    pub bids: Vec<Order>,
+    pub bids: BTreeMap<i32, f32>,
     #[serde(rename = "asks")]
-    pub asks: Vec<Order>,
-}
-
-
-impl<'de> Deserialize<'de> for Order {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let arr: Vec<&str> = Vec::<&str>::deserialize(deserializer)?;
-        let price: f32 = arr[0].parse::<f32>().map_err(serde::de::Error::custom)?;
-        let qty: f32 = arr[1].parse::<f32>().map_err(serde::de::Error::custom)?;
-        Ok(Order { price, qty })
-    }
+    pub asks: BTreeMap<i32, f32>,
 }
 
 #[derive(Deserialize, Debug, Clone, Copy)]
@@ -450,9 +494,16 @@ pub async fn fetch_depth(ticker: Ticker) -> Result<FetchedDepth, reqwest::Error>
 
     let response = reqwest::get(&url).await?;
     let text = response.text().await?;
-    let depth: FetchedDepth = serde_json::from_str(&text).unwrap();
+    let depth: Value = serde_json::from_str(&text).unwrap();
 
-    dbg!(depth.asks.len());
+    let depth = FetchedDepth {
+        update_id: depth["lastUpdateId"].as_i64().unwrap(),
+        time: depth["T"].as_i64().unwrap(),
+        bids: convert_to_btreemap(&depth["bids"]),
+        asks: convert_to_btreemap(&depth["asks"]),
+    };
+
+    dbg!(&depth.update_id);
 
     Ok(depth)
 }
