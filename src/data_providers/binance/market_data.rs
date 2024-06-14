@@ -1,3 +1,4 @@
+use hmac::digest::typenum::Or;
 use iced::futures;  
 use iced::subscription::{self, Subscription};
 use serde::{de, Deserialize, Deserializer};
@@ -29,22 +30,56 @@ enum State {
 pub enum Event {
     Connected(Connection),
     Disconnected,
-    DepthReceived(i64, Depth, Vec<Trade>),
+    DepthReceived(i64, LocalDepthCache, Vec<Trade>),
     KlineReceived(Kline, Timeframe),
 }
 
 #[derive(Debug, Clone)]
 pub struct Connection(mpsc::Sender<String>);
 
+impl<'de> Deserialize<'de> for Order {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let arr: Vec<&str> = Vec::<&str>::deserialize(deserializer)?;
+        let price: f32 = arr[0].parse::<f32>().map_err(serde::de::Error::custom)?;
+        let qty: f32 = arr[1].parse::<f32>().map_err(serde::de::Error::custom)?;
+        Ok(Order { price, qty })
+    }
+}
+#[derive(Debug, Deserialize, Clone)]
+pub struct FetchedDepth {
+    #[serde(rename = "lastUpdateId")]
+    pub update_id: i64,
+    #[serde(rename = "T")]
+    pub time: i64,
+    #[serde(rename = "bids")]
+    pub bids: Vec<Order>,
+    #[serde(rename = "asks")]
+    pub asks: Vec<Order>,
+}
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Order {
+    pub price: f32,
+    pub qty: f32,
+}
+#[derive(Debug, Clone, Default)]
+pub struct LocalDepthCache {
+    pub time: i64,
+    pub bids: Box<[Order]>,
+    pub asks: Box<[Order]>,
+}
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct Depth {
+    #[serde(default)]
     pub last_update_id: i64,
     #[serde(rename = "T")]
     pub time: i64,
     #[serde(rename = "b")]
-    pub bids: BTreeMap<i32, f32>,
+    pub bids: Vec<Order>,
     #[serde(rename = "a")]
-    pub asks: BTreeMap<i32, f32>,
+    pub asks: Vec<Order>,
 }
 
 impl Depth {
@@ -52,8 +87,8 @@ impl Depth {
         Self {
             last_update_id: 0,
             time: 0,
-            bids: BTreeMap::new(),
-            asks: BTreeMap::new(),
+            bids: Vec::new(),
+            asks: Vec::new(),
         }
     }
 
@@ -65,38 +100,56 @@ impl Depth {
         self.asks = new_depth.asks;
     }
 
-    pub fn update_levels(&mut self, new_depth: Depth) {
+    pub fn update_levels(&mut self, new_depth: Depth) -> (Box<[Order]>, Box<[Order]>) {
         self.last_update_id = new_depth.last_update_id;
         self.time = new_depth.time;
 
+        let first_ask: &Order = new_depth.asks.first().unwrap_or(&Order { price: 0.0, qty: 0.0 });
+        let last_bid: &Order = new_depth.bids.last().unwrap_or(&Order { price: 0.0, qty: 0.0 });
+
+        let highest: f32 = first_ask.price * 1.002;
+        let lowest: f32 = last_bid.price * 0.998;
+
+        let mut local_bids = Vec::new();
+        let mut local_asks = Vec::new();
+    
         for order in &new_depth.bids {
-            if *order.1 == 0.0 {
-                self.bids.remove(order.0);
+            if order.qty == 0.0 {
+                self.bids.retain(|x| x.price != order.price);
             } else {
-                self.bids.insert(*order.0, *order.1);
+                if let Some(existing_order) = self.bids.iter_mut().find(|x| x.price == order.price) {
+                    existing_order.qty = order.qty;
+                } else {
+                    self.bids.push(*order);
+                }
+
+                if order.price >= lowest {
+                    local_bids.push(*order);
+                }
             }
         }
         for order in &new_depth.asks {
-            if *order.1 == 0.0 {
-                self.asks.remove(order.0);
+            if order.qty == 0.0 {
+                self.asks.retain(|x| x.price != order.price);
             } else {
-                self.asks.insert(*order.0, *order.1);
+                if let Some(existing_order) = self.asks.iter_mut().find(|x| x.price == order.price) {
+                    existing_order.qty = order.qty;
+                } else {
+                    self.asks.push(*order);
+                }
+
+                if order.price <= highest {
+                    local_asks.push(*order);
+                }
             }
         }
+
+        (local_bids.into_boxed_slice(), local_asks.into_boxed_slice())
     }
 
     pub fn get_fetch_id(&self) -> i64 {
         self.last_update_id
     }
-}
-
-fn convert_to_btreemap(array: &Value) -> BTreeMap<i32, f32> {
-    array.as_array().unwrap().iter().map(|v| {
-        let v_array = v.as_array().unwrap();
-        let key = (v_array[0].as_str().unwrap().parse::<f32>().unwrap() * 100.0) as i32;
-        let value = v_array[1].as_str().unwrap().parse::<f32>().unwrap();
-        (key, value)
-    }).collect()
 }
 
 pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
@@ -144,8 +197,8 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
                                         Depth {
                                             last_update_id: depth.update_id,
                                             time: depth.time,
-                                            bids: depth.bids.iter().map(|(price, qty)| (*price, *qty)).collect(),
-                                            asks: depth.asks.iter().map(|(price, qty)| (*price, *qty)).collect(),
+                                            bids: depth.bids,
+                                            asks: depth.asks,
                                         }
                                     },
                                     Err(_) => return,
@@ -215,8 +268,8 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
                                                             Depth {
                                                                 last_update_id: depth.update_id,
                                                                 time: depth.time,
-                                                                bids: depth.bids.iter().map(|(price, qty)| (*price, *qty)).collect(),
-                                                                asks: depth.asks.iter().map(|(price, qty)| (*price, *qty)).collect(),
+                                                                bids: depth.bids,
+                                                                asks: depth.asks,
                                                             }
                                                         },
                                                         Err(_) => return,
@@ -234,18 +287,26 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
                                             }
                                     
                                             if (prev_id == 0) || (prev_id == last_final_update_id) {
-                                                let time: i64 = depth_data.get("T").unwrap().as_i64().unwrap();
-                                                let bids: BTreeMap<i32, f32> = convert_to_btreemap(depth_data.get("b").unwrap());
-                                                let asks: BTreeMap<i32, f32> = convert_to_btreemap(depth_data.get("a").unwrap());
+                                                let depth_update: DepthUpdate = serde_json::from_str(&message).unwrap();
+
+                                                let time = depth_update.data.time;
+                                                let bids = depth_update.data.bids;
+                                                let asks = depth_update.data.asks;
 
                                                 let depth = Depth { last_update_id: final_update_id, time, bids, asks };
 
-                                                orderbook.update_levels(depth);
+                                                let (local_bids, local_asks) = orderbook.update_levels(depth);
+
+                                                let local_depth_cache = LocalDepthCache {
+                                                    time: time,
+                                                    bids: local_bids,
+                                                    asks: local_asks,
+                                                };
 
                                                 let _ = output.send(
                                                     Event::DepthReceived(
                                                         time, 
-                                                        orderbook.clone(),
+                                                        local_depth_cache,
                                                         std::mem::take(&mut trades_buffer)
                                                     )
                                                 ).await;
@@ -399,18 +460,6 @@ pub struct Trade {
     pub qty: f32,
 }
 
-#[derive(Debug, Deserialize, Clone)]
-pub struct FetchedDepth {
-    #[serde(rename = "lastUpdateId")]
-    pub update_id: i64,
-    #[serde(rename = "T")]
-    pub time: i64,
-    #[serde(rename = "bids")]
-    pub bids: BTreeMap<i32, f32>,
-    #[serde(rename = "asks")]
-    pub asks: BTreeMap<i32, f32>,
-}
-
 #[derive(Deserialize, Debug, Clone, Copy)]
 pub struct Kline {
     #[serde(rename = "t")]
@@ -494,16 +543,7 @@ pub async fn fetch_depth(ticker: Ticker) -> Result<FetchedDepth, reqwest::Error>
 
     let response = reqwest::get(&url).await?;
     let text = response.text().await?;
-    let depth: Value = serde_json::from_str(&text).unwrap();
-
-    let depth = FetchedDepth {
-        update_id: depth["lastUpdateId"].as_i64().unwrap(),
-        time: depth["T"].as_i64().unwrap(),
-        bids: convert_to_btreemap(&depth["bids"]),
-        asks: convert_to_btreemap(&depth["asks"]),
-    };
-
-    dbg!(&depth.update_id);
+    let depth: FetchedDepth = serde_json::from_str(&text).unwrap();
 
     Ok(depth)
 }
