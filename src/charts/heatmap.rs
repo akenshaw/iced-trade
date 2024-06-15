@@ -117,14 +117,23 @@ impl Heatmap {
         let earliest: i64 = latest - (64000.0 / (self.scaling / (self.bounds.width/800.0))) as i64;
             
         if let Some((depth, _, _)) = self.data_points.get(timestamp_latest) {
-            let (mut lowest, mut highest) = (f32::MAX, 0.0f32);
+            let mut best_ask_price = f32::MAX;
+            let mut best_bid_price = 0.0f32;
 
-            if let Some(bid) = depth.bids.first() {
-                lowest = bid.price - (bid.price * self.y_scaling);
-            }
-            if let Some(ask) = depth.asks.first() {
-                highest = ask.price + (ask.price * self.y_scaling);
-            }
+            depth.bids.iter().for_each(|order| {
+                if order.price > best_bid_price {
+                    best_bid_price = order.price;
+                }
+            });
+            depth.asks.iter().for_each(|order| {
+                if order.price < best_ask_price {
+                    best_ask_price = order.price;
+                }
+            });
+
+            let lowest = best_bid_price - (best_bid_price * self.y_scaling);
+            
+            let highest = best_ask_price + (best_ask_price * self.y_scaling);
 
             if lowest != self.y_min_price || highest != self.y_max_price {   
                 self.y_min_price = lowest;
