@@ -129,16 +129,27 @@ impl Depth {
         self.last_update_id = new_depth.last_update_id;
         self.time = new_depth.time;
 
-        let best_ask_price = self.asks.first().unwrap().price;
-        let best_bid_price = self.bids.first().unwrap().price;
+        let mut best_ask_price = f32::MAX;
+        let mut best_bid_price = 0.0f32;
+
+        self.bids.iter().for_each(|order| {
+            if order.price > best_bid_price {
+                best_bid_price = order.price;
+            }
+        });
+        self.asks.iter().for_each(|order| {
+            if order.price < best_ask_price {
+                best_ask_price = order.price;
+            }
+        });
 
         let highest: f32 = best_ask_price * 1.01;
         let lowest: f32 = best_bid_price * 0.99;
 
-        self.update_depth_cache(&new_depth.bids, &new_depth.bids);
+        self.update_depth_cache(&new_depth.bids, &new_depth.asks);
 
-        let mut local_bids = Vec::new();
-        let mut local_asks = Vec::new();
+        let mut local_bids: Vec<Order> = Vec::new();
+        let mut local_asks: Vec<Order> = Vec::new();
 
         for order in &self.bids {
             if order.price >= lowest {
