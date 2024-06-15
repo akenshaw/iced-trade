@@ -15,6 +15,7 @@ pub enum Message {
     AutoscaleToggle,
     CrosshairToggle,
     CrosshairMoved(Point),
+    YScaling(f32),
 }
 
 #[derive(Debug)]
@@ -27,6 +28,7 @@ pub struct Heatmap {
     x_crosshair_cache: Cache,
     translation: Vector,
     scaling: f32,
+    y_scaling: f32,
     
     data_points: BTreeMap<i64, (LocalDepthCache, Vec<Trade>, (f32, f32))>,
     size_filter: f32,
@@ -60,6 +62,7 @@ impl Heatmap {
 
             translation: Vector::default(),
             scaling: 1.0,
+            y_scaling: 0.0001,
             autoscale: true,
             crosshair: false,
             crosshair_position: Point::new(0.0, 0.0),
@@ -112,30 +115,33 @@ impl Heatmap {
 
         let latest: i64 = *timestamp_latest - (self.translation.x*80.0) as i64;
         let earliest: i64 = latest - (64000.0 / (self.scaling / (self.bounds.width/800.0))) as i64;
-    
-        let (mut lowest, mut highest) = (f32::MAX, 0.0f32);
             
-        for (_, (depth, _, _)) in self.data_points.range(earliest..=latest) {
-            let asks_top_20 = depth.asks.iter().rev().take(20).collect::<Vec<_>>();
-            let bids_top_20 = depth.bids.iter().rev().take(20).collect::<Vec<_>>();
+        if let Some((depth, _, _)) = self.data_points.get(timestamp_latest) {
+            let (mut lowest, mut highest) = (f32::MAX, 0.0f32);
 
-            highest = highest.max(asks_top_20.last().map(|order| (order.price)).unwrap_or(0.0));  
-            lowest = lowest.min(bids_top_20.first().map(|order| (order.price)).unwrap_or(f32::MAX));
+            if let Some(bid) = depth.bids.first() {
+                lowest = bid.price - (bid.price * self.y_scaling);
+            }
+            if let Some(ask) = depth.asks.first() {
+                highest = ask.price + (ask.price * self.y_scaling);
+            }
+
+            if lowest != self.y_min_price || highest != self.y_max_price {   
+                self.y_min_price = lowest;
+                self.y_max_price = highest;
+
+                self.y_labels_cache.clear();
+                self.y_croshair_cache.clear();
+            }  
         }
 
-        if earliest != self.x_min_time || latest != self.x_max_time {            
+        if earliest != self.x_min_time || latest != self.x_max_time {         
+            self.x_min_time = earliest;
+            self.x_max_time = latest;
+
             self.x_labels_cache.clear();
             self.x_crosshair_cache.clear();
         }
-        if lowest != self.y_min_price || highest != self.y_max_price {            
-            self.y_labels_cache.clear();
-            self.y_croshair_cache.clear();
-        }
-    
-        self.x_min_time = earliest;
-        self.x_max_time = latest;
-        self.y_min_price = lowest;
-        self.y_max_price = highest;
         
         self.crosshair_cache.clear();        
     }
@@ -183,6 +189,10 @@ impl Heatmap {
                     self.x_crosshair_cache.clear();
                 }
             }
+            Message::YScaling(scaling) => {
+                self.y_scaling = *scaling;
+                self.render_start();
+            }
         }
     }
 
@@ -210,7 +220,8 @@ impl Heatmap {
                 min: self.y_min_price,
                 max: self.y_max_price,
                 crosshair_position: self.crosshair_position, 
-                crosshair: self.crosshair
+                crosshair: self.crosshair,
+                y_scaling: self.y_scaling,
             })
             .width(Length::Fixed(60.0))
             .height(Length::FillPortion(10));
@@ -305,7 +316,7 @@ impl canvas::Program<Message> for Heatmap {
         if bounds != self.bounds {
             return (event::Status::Ignored, Some(Message::ChartBounds(bounds)));
         } 
-        
+    
         if let Event::Mouse(mouse::Event::ButtonReleased(_)) = event {
             *interaction = Interaction::None;
         }
@@ -860,18 +871,85 @@ pub struct AxisLabelYCanvas<'a> {
     max: f32,
     crosshair_position: Point,
     crosshair: bool,
+    y_scaling: f32,
 }
 impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
     type State = Interaction;
 
     fn update(
         &self,
-        _interaction: &mut Interaction,
-        _event: Event,
-        _bounds: Rectangle,
-        _cursor: mouse::Cursor,
-    ) -> (event::Status, Option<Message>) {
-        (event::Status::Ignored, None)
+        interaction: &mut Interaction,
+        event: Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> (event::Status, Option<Message>) {        
+        if let Event::Mouse(mouse::Event::ButtonReleased(_)) = event {
+            *interaction = Interaction::None;
+        }
+
+        if !cursor.is_over(bounds) {
+            return (event::Status::Ignored, None);
+        };
+
+        match event {
+            Event::Mouse(mouse_event) => match mouse_event {
+                mouse::Event::ButtonPressed(button) => {
+                    let message = match button {
+                        mouse::Button::Right => {
+                            *interaction = Interaction::Drawing;
+                            None
+                        }
+                        mouse::Button::Left => {
+                            None
+                        }
+                        _ => None,
+                    };
+
+                    (event::Status::Captured, message)
+                }
+                mouse::Event::CursorMoved { .. } => {
+                    let message = match *interaction {
+                        Interaction::Drawing => None,
+                        Interaction::Erasing => None,
+                        Interaction::Panning { translation, start } => {
+                            None
+                        }
+                        Interaction::None => 
+                            None
+                    };
+
+                    let event_status = match interaction {
+                        Interaction::None => event::Status::Ignored,
+                        _ => event::Status::Captured,
+                    };
+
+                    (event_status, message)
+                }
+                mouse::Event::WheelScrolled { delta } => match delta {
+                    mouse::ScrollDelta::Lines { y, .. }
+                    | mouse::ScrollDelta::Pixels { y, .. } => {
+                        if y > 0.0 && self.y_scaling > 0.00001
+                            || y < 0.0 && self.y_scaling < 0.001
+                        {
+                            let scaling = (self.y_scaling * (1.0 - y / 30.0))
+                                .clamp(
+                                    0.00001, 
+                                    0.001,  
+                                );
+
+                            (
+                                event::Status::Captured,
+                                Some(Message::YScaling(scaling)),
+                            )
+                        } else {
+                            (event::Status::Captured, None)
+                        }
+                    }
+                },
+                _ => (event::Status::Ignored, None),
+            },
+            _ => (event::Status::Ignored, None),
+        }
     }
     
     fn draw(
