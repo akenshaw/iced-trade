@@ -100,20 +100,8 @@ impl Depth {
         self.asks = new_depth.asks;
     }
 
-    pub fn update_levels(&mut self, new_depth: Depth) -> (Box<[Order]>, Box<[Order]>) {
-        self.last_update_id = new_depth.last_update_id;
-        self.time = new_depth.time;
-
-        let first_ask: &Order = new_depth.asks.first().unwrap_or(&Order { price: 0.0, qty: 0.0 });
-        let last_bid: &Order = new_depth.bids.last().unwrap_or(&Order { price: 0.0, qty: 0.0 });
-
-        let highest: f32 = first_ask.price * 1.002;
-        let lowest: f32 = last_bid.price * 0.998;
-
-        let mut local_bids = Vec::new();
-        let mut local_asks = Vec::new();
-    
-        for order in &new_depth.bids {
+    pub fn update_depth_cache(&mut self, new_bids: &[Order], new_asks: &[Order]) {
+        for order in new_bids {
             if order.qty == 0.0 {
                 self.bids.retain(|x| x.price != order.price);
             } else {
@@ -122,13 +110,9 @@ impl Depth {
                 } else {
                     self.bids.push(*order);
                 }
-
-                if order.price >= lowest {
-                    local_bids.push(*order);
-                }
             }
         }
-        for order in &new_depth.asks {
+        for order in new_asks {
             if order.qty == 0.0 {
                 self.asks.retain(|x| x.price != order.price);
             } else {
@@ -137,10 +121,33 @@ impl Depth {
                 } else {
                     self.asks.push(*order);
                 }
+            }
+        }
+    }
 
-                if order.price <= highest {
-                    local_asks.push(*order);
-                }
+    pub fn update_levels(&mut self, new_depth: Depth) -> (Box<[Order]>, Box<[Order]>) {
+        self.last_update_id = new_depth.last_update_id;
+        self.time = new_depth.time;
+
+        let best_ask_price = self.asks.first().unwrap().price;
+        let best_bid_price = self.bids.first().unwrap().price;
+
+        let highest: f32 = best_ask_price * 1.01;
+        let lowest: f32 = best_bid_price * 0.99;
+
+        self.update_depth_cache(&new_depth.bids, &new_depth.bids);
+
+        let mut local_bids = Vec::new();
+        let mut local_asks = Vec::new();
+
+        for order in &self.bids {
+            if order.price >= lowest {
+                local_bids.push(*order);
+            }
+        }
+        for order in &self.asks {
+            if order.price <= highest {
+                local_asks.push(*order);
             }
         }
 
@@ -539,7 +546,7 @@ pub async fn fetch_depth(ticker: Ticker) -> Result<FetchedDepth, reqwest::Error>
         Ticker::LTCUSDT => "ltcusdt",
     };
 
-    let url = format!("https://fapi.binance.com/fapi/v1/depth?symbol={symbol_str}&limit=100");
+    let url = format!("https://fapi.binance.com/fapi/v1/depth?symbol={symbol_str}&limit=500");
 
     let response = reqwest::get(&url).await?;
     let text = response.text().await?;
