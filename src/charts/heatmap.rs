@@ -30,7 +30,7 @@ pub struct Heatmap {
     scaling: f32,
     y_scaling: f32,
     
-    data_points: BTreeMap<i64, (LocalDepthCache, Vec<Trade>, (f32, f32))>,
+    data_points: BTreeMap<i64, (LocalDepthCache, Box<[Trade]>)>,
     size_filter: f32,
 
     autoscale: bool,
@@ -78,22 +78,11 @@ impl Heatmap {
         self.size_filter = size_filter;
     }
 
-    pub fn insert_datapoint(&mut self, mut trades_buffer: Vec<Trade>, depth_update: i64, depth: LocalDepthCache) {
+    pub fn insert_datapoint(&mut self, trades_buffer: Vec<Trade>, depth_update: i64, depth: LocalDepthCache) {
         let aggregate_time = 100; // 100 ms
         let rounded_depth_update = (depth_update / aggregate_time) * aggregate_time;
         
-        self.data_points.entry(rounded_depth_update).or_insert((depth, vec![], (0.0, 0.0)));
-        
-        for trade in trades_buffer.drain(..) {
-            if let Some((_, trades, volume)) = self.data_points.get_mut(&rounded_depth_update) {
-                if trade.is_sell {
-                    volume.1 += trade.qty;
-                } else {
-                    volume.0 += trade.qty;
-                }
-                trades.push(trade);
-            }
-        }
+        self.data_points.entry(rounded_depth_update).or_insert((depth, trades_buffer.into_boxed_slice()));
 
         self.render_start();
     }
@@ -101,7 +90,7 @@ impl Heatmap {
     pub fn get_raw_trades(&mut self) -> Vec<Trade> {
         let mut trades_source = vec![];
 
-        for (_, (_, trades, _)) in &self.data_points {
+        for (_, (_, trades)) in &self.data_points {
             trades_source.extend(trades.iter().cloned());
         }
 
@@ -116,7 +105,7 @@ impl Heatmap {
         let latest: i64 = *timestamp_latest - (self.translation.x*80.0) as i64;
         let earliest: i64 = latest - (64000.0 / (self.scaling / (self.bounds.width/800.0))) as i64;
             
-        if let Some((depth, _, _)) = self.data_points.get(timestamp_latest) {
+        if let Some((depth, _)) = self.data_points.get(timestamp_latest) {
             let mut best_ask_price = f32::MAX;
             let mut best_bid_price = 0.0f32;
 
@@ -462,11 +451,22 @@ impl canvas::Program<Message> for Heatmap {
             let mut max_depth_qty: f32 = 0.0;
 
             if self.data_points.len() > 1 {
-                for (_, (depth, trades, volume)) in self.data_points.range(earliest..=latest) {
-                    for trade in trades {
+                for (_, (depth, trades)) in self.data_points.range(earliest..=latest) {
+                    let mut buy_volume: f32 = 0.0;
+                    let mut sell_volume: f32 = 0.0;
+
+                    for trade in trades.iter() {
                         max_trade_qty = max_trade_qty.max(trade.qty);
                         min_trade_qty = min_trade_qty.min(trade.qty);
+
+                        if trade.is_sell {
+                            sell_volume += trade.qty;
+                        } else {
+                            buy_volume += trade.qty;
+                        }
                     }
+
+                    max_volume = max_volume.max(buy_volume).max(sell_volume);
             
                     for ask in depth.asks.iter() {
                         if ask.price > highest {
@@ -480,14 +480,21 @@ impl canvas::Program<Message> for Heatmap {
                         };
                         max_depth_qty = max_depth_qty.max(bid.qty);
                     }   
-
-                    max_volume = max_volume.max(volume.0).max(volume.1);
                 }
                 
-                for (time, (depth, trades, volume)) in self.data_points.range(earliest..=latest) {
+                for (time, (depth, trades)) in self.data_points.range(earliest..=latest) {
                     let x_position = ((time - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
 
-                    for trade in trades {
+                    let mut buy_volume: f32 = 0.0;
+                    let mut sell_volume: f32 = 0.0;
+
+                    for trade in trades.iter() {
+                        if trade.is_sell {
+                            sell_volume += trade.qty;
+                        } else {
+                            buy_volume += trade.qty;
+                        }
+
                         if trade.qty * trade.price > self.size_filter {
                             let x_position = ((time - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
                             let y_position = heatmap_area_height - ((trade.price - lowest) / y_range * heatmap_area_height);
@@ -532,8 +539,8 @@ impl canvas::Program<Message> for Heatmap {
                     }
 
                     if max_volume > 0.0 {
-                        let buy_bar_height = (volume.0 / max_volume) * volume_area_height;
-                        let sell_bar_height = (volume.1 / max_volume) * volume_area_height;
+                        let buy_bar_height = (buy_volume / max_volume) * volume_area_height;
+                        let sell_bar_height = (sell_volume / max_volume) * volume_area_height;
 
                         let sell_bar = Path::rectangle(
                             Point::new(x_position as f32, bounds.height - sell_bar_height), 
@@ -548,7 +555,7 @@ impl canvas::Program<Message> for Heatmap {
                         frame.fill(&buy_bar, Color::from_rgb8(81, 205, 160));
                     }
                 } 
-            }
+            };
         
             // current orderbook as bars
             if let Some(latest_data_points) = self.data_points.iter().last() {
