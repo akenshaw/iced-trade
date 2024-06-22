@@ -1,11 +1,10 @@
 use std::collections::BTreeMap;
 use chrono::NaiveDateTime;
 use iced::{
-    alignment, mouse, widget::{button, canvas::{self, event::{self, Event}, stroke::Stroke, Cache, Canvas, Geometry, Path}, shader::wgpu::core::command::LoadOp}, window, Border, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector
+    alignment, mouse, widget::{button, canvas::{self, event::{self, Event}, stroke::Stroke, Cache, Canvas, Geometry, Path}}, window, Border, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector
 };
 use iced::widget::{Column, Row, Container, Text};
-use serde::de;
-use crate::data_providers::binance::market_data::{Depth, LocalDepthCache, Trade};
+use crate::data_providers::binance::market_data::{LocalDepthCache, Trade};
 
 #[derive(Debug, Clone, Copy)]
 pub enum Message {
@@ -46,6 +45,9 @@ impl Heatmap {
     const MIN_SCALING: f32 = 0.6;
     const MAX_SCALING: f32 = 3.6;
 
+    const FIVE_MIN: i64 = 5 * 60 * 1000;
+    const THREE_MIN: i64 = 3 * 60 * 1000;
+
     pub fn new() -> Heatmap {
         let _size = window::Settings::default().size;
     
@@ -83,6 +85,16 @@ impl Heatmap {
         let rounded_depth_update = (depth_update / aggregate_time) * aggregate_time;
         
         self.data_points.entry(rounded_depth_update).or_insert((depth, trades_buffer.into_boxed_slice()));
+
+        if let Some((&oldest_key, _)) = self.data_points.iter().next() {
+            if rounded_depth_update - oldest_key > Self::FIVE_MIN {
+                let cutoff_time = rounded_depth_update - Self::THREE_MIN;
+                let keys_to_remove: Vec<i64> = self.data_points.range(..cutoff_time).map(|(&key, _)| key).collect();
+                for key in keys_to_remove {
+                    self.data_points.remove(&key);
+                };
+            };
+        };
 
         self.render_start();
     }
