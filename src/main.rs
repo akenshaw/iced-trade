@@ -10,13 +10,12 @@ use charts::footprint::{self, Footprint};
 use std::vec;
 use chrono::{NaiveDateTime, DateTime, Utc};
 use iced::{
-    alignment, executor, font, widget::{
+    alignment, font, widget::{
         button, center, checkbox, mouse_area, opaque, pick_list, stack, text_input, tooltip, Column, Container, Row, Slider, Space, Text
-    }, Alignment, Color, Command, Element, Font, Length, Renderer, Settings, Size, Subscription, Theme
+    }, Alignment, Color, Task, Element, Font, Length, Renderer, Settings, Size, Subscription, Theme
 };
-use iced::advanced::Application;
 
-use iced::widget::pane_grid::{self, PaneGrid};
+use iced::widget::pane_grid::{self, PaneGrid, Configuration};
 use iced::widget::{
     container, row, scrollable, text, responsive
 };
@@ -154,21 +153,23 @@ impl PaneSpec {
     }
 }
 
-fn main() {
-    State::run(Settings {
-        antialiasing: true,
-        window: {
-            iced::window::Settings {
-                min_size: Some(Size {
-                    width: 800.0,
-                    height: 600.0,
-                }),
-                ..iced::window::Settings::default()
-            }
-        },
-        ..Settings::default()
-    })
-    .unwrap();
+fn main() -> iced::Result {
+    iced::application(
+        "Iced Trade",
+        State::update,
+        State::view,
+    )
+    .subscription(State::subscription)
+    .theme(|_| Theme::KanagawaDragon)
+    .antialiasing(true)
+    .centered()
+    .font(ICON_BYTES)
+    .run()
+}
+impl Default for State {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -199,9 +200,6 @@ pub enum Message {
     Restore,
     Close(pane_grid::Pane),
     ToggleLayoutLock,
-
-    // Font
-    FontLoaded(Result<(), font::Error>),
 
     // Modal
     OpenModal(pane_grid::Pane),
@@ -250,16 +248,8 @@ struct State {
     tick_size: Option<f32>,
 }
 
-impl Application for State {
-    type Renderer = Renderer;
-    type Message = self::Message;
-    type Executor = executor::Default;
-    type Flags = ();
-    type Theme = Theme;
-
-    fn new(_flags: Self::Flags) -> (Self, Command<Self::Message>) {
-        use pane_grid::Configuration;
-
+impl State {
+    fn new() -> Self {
         let pane_config: Configuration<PaneSpec> = Configuration::Split {
             axis: pane_grid::Axis::Vertical,
             ratio: 0.8,
@@ -313,86 +303,60 @@ impl Application for State {
         };
         let panes: pane_grid::State<PaneSpec> = pane_grid::State::with_configuration(pane_config);
         let first_pane: pane_grid::Pane = *panes.panes.iter().next().unwrap().0;
+        
+        Self { 
+            show_layout_modal: false,
 
-        (
-            Self { 
-                show_layout_modal: false,
+            size_filter_timesales: 0.0,
+            size_filter_heatmap: 0.0,
+            sync_heatmap: false,
+            kline_stream: true,
 
-                size_filter_timesales: 0.0,
-                size_filter_heatmap: 0.0,
-                sync_heatmap: false,
-                kline_stream: true,
+            candlestick_chart: None,
+            time_and_sales: None,
+            custom_line: None,
+            heatmap_chart: None,
+            footprint_chart: None,
 
-                candlestick_chart: None,
-                time_and_sales: None,
-                custom_line: None,
-                heatmap_chart: None,
-                footprint_chart: None,
-
-                listen_key: None,
-                selected_ticker: None,
-                selected_exchange: Some("Binance Futures"),
-                ws_state: WsState::Disconnected,
-                user_ws_state: UserWsState::Disconnected,
-                ws_running: false,
-                panes,
-                focus: None,
-                first_pane,
-                pane_lock: false,
-                tick_size: Some(1.0), 
-            },
-            Command::batch(vec![
-                font::load(ICON_BYTES).map(Message::FontLoaded),
-
-                if !SECRET_KEY.is_empty() && !SECRET_KEY.is_empty() {
-                    Command::perform(user_data::get_listen_key(API_KEY, SECRET_KEY), |res| {
-                        match res {
-                            Ok(listen_key) => {
-                                Message::UserKeySucceed(listen_key)
-                            },
-                            Err(err) => {
-                                dbg!(err);
-                                Message::UserKeyError
-                            }
-                        }
-                    })
-                } else {
-                    eprintln!("API keys not set");
-                    Command::none()
-                },
-            ]),
-        )
+            listen_key: None,
+            selected_ticker: None,
+            selected_exchange: Some("Binance Futures"),
+            ws_state: WsState::Disconnected,
+            user_ws_state: UserWsState::Disconnected,
+            ws_running: false,
+            panes,
+            focus: None,
+            first_pane,
+            pane_lock: false,
+            tick_size: Some(1.0), 
+        }
     }
 
-    fn title(&self) -> String {
-        "Iced Trade".to_owned()
-    }
-
-    fn update(&mut self, message: Self::Message) -> Command<Self::Message> {
+    fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::CustomLine(message) => {
                 if let Some(custom_line) = &mut self.custom_line {
                     custom_line.update(&message);
                 }
-                Command::none()
+                Task::none()
             },
             Message::Candlestick(message) => {
                 if let Some(candlesticks) = &mut self.candlestick_chart {
                     candlesticks.update(&message);
                 }
-                Command::none()
+                Task::none()
             },
             Message::Heatmap(message) => {
                 if let Some(heatmap) = &mut self.heatmap_chart {
                     heatmap.update(&message);
                 }
-                Command::none()
+                Task::none()
             },
             Message::Footprint(message) => {
                 if let Some(footprint) = &mut self.footprint_chart {
                     footprint.update(&message);
                 }
-                Command::none()
+                Task::none()
             },
 
             Message::TickerSelected(ticker) => {
@@ -403,21 +367,21 @@ impl Application for State {
                     pane_state.stream.0 = Some(ticker);
                 }
 
-                Command::none()
+                Task::none()
             },
             Message::TimeframeSelected(timeframe, pane) => {
                 if !self.ws_running {
-                    return Command::none();
+                    return Task::none();
                 }
 
                 let Some(selected_ticker) = &self.selected_ticker else {
                     eprintln!("No ticker selected");
-                    return Command::none();
+                    return Task::none();
                 };
 
                 self.kline_stream = false;
                 
-                let mut commands = vec![];
+                let mut Tasks = vec![];
                 let mut dropped_streams = vec![];
 
                 if let Some(pane) = self.panes.panes.get_mut(&pane) {
@@ -425,7 +389,7 @@ impl Application for State {
 
                     pane.stream.1 = Some(timeframe);
                     
-                    let fetch_klines = Command::perform(
+                    let fetch_klines = Task::perform(
                     market_data::fetch_klines(*selected_ticker, timeframe)
                         .map_err(|err| format!("{err}")), 
                     move |klines| {
@@ -434,29 +398,29 @@ impl Application for State {
 
                     dropped_streams.push(pane.id);
                     
-                    commands.push(fetch_klines);                                  
+                    Tasks.push(fetch_klines);                                  
                 };
         
                 // sleep to drop existent stream and create new one
-                let remove_active_stream = Command::perform(
+                let remove_active_stream = Task::perform(
                     async {
                         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                     },
                     move |()| Message::CutTheKlineStream
                 );
-                commands.push(remove_active_stream);
+                Tasks.push(remove_active_stream);
 
-                Command::batch(commands)
+                Task::batch(Tasks)
             },
             Message::ExchangeSelected(exchange) => {
                 self.selected_exchange = Some(exchange);
-                Command::none()
+                Task::none()
             },
             Message::WsToggle() => {
                 self.ws_running = !self.ws_running;
 
                 if self.ws_running {  
-                    let mut commands = vec![];
+                    let mut Tasks = vec![];
 
                     let first_pane = self.first_pane;
         
@@ -475,16 +439,16 @@ impl Application for State {
 
                         let pane_id = pane_state.id;
 
-                        let fetch_klines = Command::perform(
+                        let fetch_klines = Task::perform(
                             market_data::fetch_klines(self.selected_ticker.unwrap_or(Ticker::BTCUSDT), selected_timeframe)
                                 .map_err(|err| format!("{err}")), 
                             move |klines: Result<Vec<market_data::Kline>, String>| {
                                 Message::FetchEvent(klines, pane_id, selected_timeframe)
                             }
                         );
-                        commands.push(fetch_klines);
+                        Tasks.push(fetch_klines);
                     }
-                    Command::batch(commands)
+                    Task::batch(Tasks)
 
                 } else {
                     self.ws_state = WsState::Disconnected;
@@ -495,7 +459,7 @@ impl Application for State {
                     self.custom_line = None;
                     self.footprint_chart = None;
 
-                    Command::none()
+                    Task::none()
                 }
             },       
             Message::FetchEvent(klines, target_pane, timeframe) => {
@@ -542,7 +506,7 @@ impl Application for State {
                         self.candlestick_chart = Some(CustomLine::new(vec![], Timeframe::M1)); 
                     },
                 }
-                Command::none()
+                Task::none()
             },
             Message::MarketWsEvent(event) => {
                 match event {
@@ -593,15 +557,15 @@ impl Application for State {
                         }
                     }
                 };
-                Command::none()
+                Task::none()
             },
             Message::UserKeySucceed(listen_key) => {
                 self.listen_key = Some(listen_key);
-                Command::none()
+                Task::none()
             },
             Message::UserKeyError => {
                 eprintln!("Check API keys");
-                Command::none()
+                Task::none()
             },
 
             // Pane grid
@@ -618,44 +582,44 @@ impl Application for State {
                     self.focus = focus_pane;
                 } 
 
-                Command::none()
+                Task::none()
             },
             Message::Clicked(pane) => {
                 self.focus = Some(pane);
-                Command::none()
+                Task::none()
             },
             Message::Resized(pane_grid::ResizeEvent { split, ratio }) => {
                 self.panes.resize(split, ratio);
-                Command::none()
+                Task::none()
             },
             Message::Dragged(pane_grid::DragEvent::Dropped {
                 pane,
                 target,
             }) => {
                 self.panes.drop(pane, target);
-                Command::none()
+                Task::none()
             },
             Message::Dragged(_) => {
-                Command::none()
+                Task::none()
             },
             Message::Maximize(pane) => {
                 self.panes.maximize(pane);
-                Command::none()
+                Task::none()
             },
             Message::Restore => {
                 self.panes.restore();
-                Command::none()
+                Task::none()
             },
             Message::Close(pane) => {                
                 if let Some((_, sibling)) = self.panes.close(pane) {
                     self.focus = Some(sibling);
                 }
-                Command::none()
+                Task::none()
             },
             Message::ToggleLayoutLock => {
                 self.focus = None;
                 self.pane_lock = !self.pane_lock;
-                Command::none()
+                Task::none()
             },
 
             Message::Debug(_msg) => {
@@ -663,24 +627,20 @@ impl Application for State {
                 dbg!(layout);
                 let state_config = &self.panes.panes;
                 dbg!(state_config);
-                Command::none()
-            },
-            Message::FontLoaded(_) => {
-                dbg!("Font loaded");
-                Command::none()
+                Task::none()
             },
 
             Message::OpenModal(pane) => {
                 if let Some(pane) = self.panes.get_mut(pane) {
                     pane.show_modal = true;
                 };
-                Command::none()
+                Task::none()
             },
             Message::CloseModal => {
                 for pane in self.panes.panes.values_mut() {
                     pane.show_modal = false;
                 }
-                Command::none()
+                Task::none()
             },
 
             Message::SliderChanged(pane_id, value) => {
@@ -701,7 +661,7 @@ impl Application for State {
                     time_and_sales.set_size_filter(self.size_filter_timesales);
                 };
 
-                Command::none()
+                Task::none()
             },
             Message::SyncWithHeatmap(sync) => {
                 self.sync_heatmap = sync;
@@ -713,11 +673,11 @@ impl Application for State {
                     }
                 }
             
-                Command::none()
+                Task::none()
             },
             Message::CutTheKlineStream => {
                 self.kline_stream = true;
-                Command::none()
+                Task::none()
             },
 
             Message::ShowLayoutModal => {
@@ -726,7 +686,7 @@ impl Application for State {
             },
             Message::HideLayoutModal => {
                 self.show_layout_modal = false;
-                Command::none()
+                Task::none()
             },
 
             Message::TicksizeSelected(ticksize) => {
@@ -740,12 +700,12 @@ impl Application for State {
                     }
                 }
 
-                Command::none()
+                Task::none()
             },
         }
     }
 
-    fn view(&self) -> Element<'_, Self::Message> {
+    fn view(&self) -> Element<'_, Message> {
         let focus = self.focus;
         let total_panes = self.panes.len();
 
@@ -963,10 +923,6 @@ impl Application for State {
         
         Subscription::batch(subscriptions)
     }    
-
-    fn theme(&self) -> Self::Theme {
-        Theme::KanagawaDragon
-    }
 }
 
 fn modal<'a, Message>(
