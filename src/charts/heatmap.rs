@@ -45,8 +45,8 @@ impl Heatmap {
     const MIN_SCALING: f32 = 0.6;
     const MAX_SCALING: f32 = 3.6;
 
-    const FIVE_MIN: i64 = 5 * 60 * 1000;
     const THREE_MIN: i64 = 3 * 60 * 1000;
+    const ONE_MIN: i64 = 1 * 60 * 1000;
 
     pub fn new() -> Heatmap {
         let _size = window::Settings::default().size;
@@ -86,16 +86,6 @@ impl Heatmap {
         
         self.data_points.entry(rounded_depth_update).or_insert((depth, trades_buffer.into_boxed_slice()));
 
-        if let Some((&oldest_key, _)) = self.data_points.iter().next() {
-            if rounded_depth_update - oldest_key > Self::FIVE_MIN {
-                let cutoff_time = rounded_depth_update - Self::THREE_MIN;
-                let keys_to_remove: Vec<i64> = self.data_points.range(..cutoff_time).map(|(&key, _)| key).collect();
-                for key in keys_to_remove {
-                    self.data_points.remove(&key);
-                };
-            };
-        };
-
         self.render_start();
     }
 
@@ -117,24 +107,26 @@ impl Heatmap {
         let latest: i64 = *timestamp_latest - (self.translation.x*80.0) as i64;
         let earliest: i64 = latest - (64000.0 / (self.scaling / (self.bounds.width/800.0))) as i64;
             
-        if let Some((depth, _)) = self.data_points.get(timestamp_latest) {
-            let mut best_ask_price = f32::MAX;
-            let mut best_bid_price = 0.0f32;
+        if self.data_points.len() > 1 {
+            let mut max_ask_price = f32::MIN;
+            let mut min_bid_price = f32::MAX;
 
-            depth.bids.iter().for_each(|order| {
-                if order.price > best_bid_price {
-                    best_bid_price = order.price;
-                }
-            });
-            depth.asks.iter().for_each(|order| {
-                if order.price < best_ask_price {
-                    best_ask_price = order.price;
-                }
-            });
+            for (_, (depth, _)) in self.data_points.range(earliest..=latest) {
+                if depth.asks.len() > 20 && depth.bids.len() > 20 {
+                    let ask_price = depth.asks[20].price;
+                    let bid_price = depth.bids[20].price;
 
-            let lowest = best_bid_price - (best_bid_price * self.y_scaling);
-            
-            let highest = best_ask_price + (best_ask_price * self.y_scaling);
+                    if ask_price > max_ask_price {
+                        max_ask_price = ask_price;
+                    };
+                    if bid_price < min_bid_price {
+                        min_bid_price = bid_price;
+                    };
+                };
+            };
+
+            let lowest = min_bid_price - (min_bid_price * self.y_scaling);
+            let highest = max_ask_price + (max_ask_price * self.y_scaling);
 
             if lowest != self.y_min_price || highest != self.y_max_price {   
                 self.y_min_price = lowest;
@@ -142,8 +134,8 @@ impl Heatmap {
 
                 self.y_labels_cache.clear();
                 self.y_croshair_cache.clear();
-            }  
-        }
+            };
+        };
 
         if earliest != self.x_min_time || latest != self.x_max_time {         
             self.x_min_time = earliest;
@@ -151,7 +143,7 @@ impl Heatmap {
 
             self.x_labels_cache.clear();
             self.x_crosshair_cache.clear();
-        }
+        };
         
         self.crosshair_cache.clear();        
     }
@@ -492,7 +484,7 @@ impl canvas::Program<Message> for Heatmap {
                         };
                         max_depth_qty = max_depth_qty.max(bid.qty);
                     }   
-                }
+                };
                 
                 for (time, (depth, trades)) in self.data_points.range(earliest..=latest) {
                     let x_position = ((time - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
@@ -535,8 +527,13 @@ impl canvas::Program<Message> for Heatmap {
                         let y_position = heatmap_area_height - ((bid.price - lowest) / y_range * heatmap_area_height);
                         let color_alpha = (bid.qty / max_depth_qty).min(1.0);
 
-                        let circle = Path::circle(Point::new(x_position as f32, y_position), 1.0);
-                        frame.fill(&circle, Color::from_rgba8(0, 144, 144, color_alpha));
+                        let path = Path::line(
+                            Point::new(x_position as f32, y_position), 
+                            Point::new(x_position as f32 + 1.0, y_position)
+                        );
+                        let stroke = Stroke::default().with_color(Color::from_rgba8(0, 144, 144, color_alpha)).with_width(1.0);
+
+                        frame.stroke(&path, stroke);
                     }
                     for ask in depth.asks.iter() {
                         if ask.price > highest {
@@ -546,9 +543,14 @@ impl canvas::Program<Message> for Heatmap {
                         let y_position = heatmap_area_height - ((ask.price - lowest) / y_range * heatmap_area_height);
                         let color_alpha = (ask.qty / max_depth_qty).min(1.0);
 
-                        let circle = Path::circle(Point::new(x_position as f32, y_position), 1.0);
-                        frame.fill(&circle, Color::from_rgba8(192, 0, 192, color_alpha));
-                    }
+                        let path = Path::line(
+                            Point::new(x_position as f32, y_position), 
+                            Point::new(x_position as f32 + 1.0, y_position)
+                        );
+                        let stroke = Stroke::default().with_color(Color::from_rgba8(192, 0, 192, color_alpha)).with_width(1.0);
+
+                        frame.stroke(&path, stroke);
+                    };
 
                     if max_volume > 0.0 {
                         let buy_bar_height = (buy_volume / max_volume) * volume_area_height;
@@ -566,7 +568,7 @@ impl canvas::Program<Message> for Heatmap {
                         );
                         frame.fill(&buy_bar, Color::from_rgb8(81, 205, 160));
                     }
-                } 
+                };
             };
         
             // current orderbook as bars
