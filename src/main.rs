@@ -162,7 +162,8 @@ fn main() -> iced::Result {
     .subscription(State::subscription)
     .theme(|_| Theme::KanagawaDragon)
     .antialiasing(true)
-    .centered()
+    .window_size(iced::Size::new(1600.0, 900.0))
+    .centered()   
     .font(ICON_BYTES)
     .run()
 }
@@ -750,6 +751,7 @@ impl State {
                 };
 
                 let title_bar = pane_grid::TitleBar::new(title)
+                    .always_show_controls()
                     .controls(view_controls(
                         id,
                         pane.id,
