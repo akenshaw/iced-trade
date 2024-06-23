@@ -143,8 +143,8 @@ impl Depth {
             }
         });
 
-        let highest: f32 = best_ask_price * 1.01;
-        let lowest: f32 = best_bid_price * 0.99;
+        let highest: f32 = best_ask_price * 1.001;
+        let lowest: f32 = best_bid_price * 0.999;
 
         self.update_depth_cache(&new_depth.bids, &new_depth.asks);
 
@@ -161,6 +161,10 @@ impl Depth {
                 local_asks.push(*order);
             }
         }
+
+        // first sort by price
+        local_bids.sort_by(|a, b| b.price.partial_cmp(&a.price).unwrap());
+        local_asks.sort_by(|a, b| a.price.partial_cmp(&b.price).unwrap());
 
         (local_bids.into_boxed_slice(), local_asks.into_boxed_slice())
     }
