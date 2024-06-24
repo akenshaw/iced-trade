@@ -4,7 +4,7 @@ use iced::{
     alignment, mouse, widget::{button, canvas::{self, event::{self, Event}, stroke::Stroke, Cache, Canvas, Geometry, Path}}, window, Border, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector
 };
 use iced::widget::{Column, Row, Container, Text};
-use crate::data_providers::binance::market_data::{Trade, Depth};
+use crate::data_providers::binance::market_data::{LocalDepthCache, Trade};
 
 #[derive(Debug, Clone, Copy)]
 pub enum Message {
@@ -14,6 +14,7 @@ pub enum Message {
     AutoscaleToggle,
     CrosshairToggle,
     CrosshairMoved(Point),
+    YScaling(f32),
 }
 
 #[derive(Debug)]
@@ -26,8 +27,9 @@ pub struct Heatmap {
     x_crosshair_cache: Cache,
     translation: Vector,
     scaling: f32,
+    y_scaling: f32,
     
-    data_points: BTreeMap<i64, (Depth, Vec<Trade>, (f32, f32))>,
+    data_points: BTreeMap<i64, (LocalDepthCache, Box<[Trade]>)>,
     size_filter: f32,
 
     autoscale: bool,
@@ -40,8 +42,11 @@ pub struct Heatmap {
     bounds: Rectangle,
 }
 impl Heatmap {
-    const MIN_SCALING: f32 = 0.4;
+    const MIN_SCALING: f32 = 0.6;
     const MAX_SCALING: f32 = 3.6;
+
+    const THREE_MIN: i64 = 3 * 60 * 1000;
+    const ONE_MIN: i64 = 1 * 60 * 1000;
 
     pub fn new() -> Heatmap {
         let _size = window::Settings::default().size;
@@ -59,6 +64,7 @@ impl Heatmap {
 
             translation: Vector::default(),
             scaling: 1.0,
+            y_scaling: 0.0001,
             autoscale: true,
             crosshair: false,
             crosshair_position: Point::new(0.0, 0.0),
@@ -74,22 +80,11 @@ impl Heatmap {
         self.size_filter = size_filter;
     }
 
-    pub fn insert_datapoint(&mut self, mut trades_buffer: Vec<Trade>, depth_update: i64, depth: Depth) {
+    pub fn insert_datapoint(&mut self, trades_buffer: Vec<Trade>, depth_update: i64, depth: LocalDepthCache) {
         let aggregate_time = 100; // 100 ms
         let rounded_depth_update = (depth_update / aggregate_time) * aggregate_time;
-
-        self.data_points.entry(rounded_depth_update).or_insert((depth, vec![], (0.0, 0.0)));
         
-        for trade in trades_buffer.drain(..) {
-            if let Some((_, trades, volume)) = self.data_points.get_mut(&rounded_depth_update) {
-                if trade.is_sell {
-                    volume.1 += trade.qty;
-                } else {
-                    volume.0 += trade.qty;
-                }
-                trades.push(trade);
-            }
-        }
+        self.data_points.entry(rounded_depth_update).or_insert((depth, trades_buffer.into_boxed_slice()));
 
         self.render_start();
     }
@@ -97,7 +92,7 @@ impl Heatmap {
     pub fn get_raw_trades(&mut self) -> Vec<Trade> {
         let mut trades_source = vec![];
 
-        for (_, (_, trades, _)) in &self.data_points {
+        for (_, (_, trades)) in &self.data_points {
             trades_source.extend(trades.iter().cloned());
         }
 
@@ -111,31 +106,44 @@ impl Heatmap {
 
         let latest: i64 = *timestamp_latest - (self.translation.x*80.0) as i64;
         let earliest: i64 = latest - (64000.0 / (self.scaling / (self.bounds.width/800.0))) as i64;
-    
-        let (mut lowest, mut highest) = (f32::MAX, 0.0f32);
-    
-        for (_, (depth, _, _)) in self.data_points.range(earliest..=latest) {
-            if let Some(max_price) = depth.asks.iter().map(|order| order.price).max_by(|a, b| a.partial_cmp(b).unwrap()) {
-                highest = highest.max(max_price);
-            }            
-            if let Some(min_price) = depth.bids.iter().map(|order| order.price).min_by(|a, b| a.partial_cmp(b).unwrap()) {
-                lowest = lowest.min(min_price);
-            }
-        }
-    
-        if earliest != self.x_min_time || latest != self.x_max_time {            
+            
+        if self.data_points.len() > 1 {
+            let mut max_ask_price = f32::MIN;
+            let mut min_bid_price = f32::MAX;
+
+            for (_, (depth, _)) in self.data_points.range(earliest..=latest) {
+                if depth.asks.len() > 20 && depth.bids.len() > 20 {
+                    let ask_price = depth.asks[20].price;
+                    let bid_price = depth.bids[20].price;
+
+                    if ask_price > max_ask_price {
+                        max_ask_price = ask_price;
+                    };
+                    if bid_price < min_bid_price {
+                        min_bid_price = bid_price;
+                    };
+                };
+            };
+
+            let lowest = min_bid_price - (min_bid_price * self.y_scaling);
+            let highest = max_ask_price + (max_ask_price * self.y_scaling);
+
+            if lowest != self.y_min_price || highest != self.y_max_price {   
+                self.y_min_price = lowest;
+                self.y_max_price = highest;
+
+                self.y_labels_cache.clear();
+                self.y_croshair_cache.clear();
+            };
+        };
+
+        if earliest != self.x_min_time || latest != self.x_max_time {         
+            self.x_min_time = earliest;
+            self.x_max_time = latest;
+
             self.x_labels_cache.clear();
             self.x_crosshair_cache.clear();
-        }
-        if lowest != self.y_min_price || highest != self.y_max_price {            
-            self.y_labels_cache.clear();
-            self.y_croshair_cache.clear();
-        }
-    
-        self.x_min_time = earliest;
-        self.x_max_time = latest;
-        self.y_min_price = lowest;
-        self.y_max_price = highest;
+        };
         
         self.crosshair_cache.clear();        
     }
@@ -183,6 +191,10 @@ impl Heatmap {
                     self.x_crosshair_cache.clear();
                 }
             }
+            Message::YScaling(scaling) => {
+                self.y_scaling = *scaling;
+                self.render_start();
+            }
         }
     }
 
@@ -210,7 +222,8 @@ impl Heatmap {
                 min: self.y_min_price,
                 max: self.y_max_price,
                 crosshair_position: self.crosshair_position, 
-                crosshair: self.crosshair
+                crosshair: self.crosshair,
+                y_scaling: self.y_scaling,
             })
             .width(Length::Fixed(60.0))
             .height(Length::FillPortion(10));
@@ -305,7 +318,7 @@ impl canvas::Program<Message> for Heatmap {
         if bounds != self.bounds {
             return (event::Status::Ignored, Some(Message::ChartBounds(bounds)));
         } 
-        
+    
         if let Event::Mouse(mouse::Event::ButtonReleased(_)) = event {
             *interaction = Interaction::None;
         }
@@ -442,26 +455,50 @@ impl canvas::Program<Message> for Heatmap {
             let mut max_depth_qty: f32 = 0.0;
 
             if self.data_points.len() > 1 {
-                for (_, (depth, trades, volume)) in self.data_points.range(earliest..=latest) {
-                    for trade in trades {
+                for (_, (depth, trades)) in self.data_points.range(earliest..=latest) {
+                    let mut buy_volume: f32 = 0.0;
+                    let mut sell_volume: f32 = 0.0;
+
+                    for trade in trades.iter() {
                         max_trade_qty = max_trade_qty.max(trade.qty);
                         min_trade_qty = min_trade_qty.min(trade.qty);
+
+                        if trade.is_sell {
+                            sell_volume += trade.qty;
+                        } else {
+                            buy_volume += trade.qty;
+                        }
                     }
+
+                    max_volume = max_volume.max(buy_volume).max(sell_volume);
             
-                    for bid in &depth.bids {
-                        max_depth_qty = max_depth_qty.max(bid.qty);
-                    } 
-                    for ask in &depth.asks {
+                    for ask in depth.asks.iter() {
+                        if ask.price > highest {
+                            continue;
+                        };
                         max_depth_qty = max_depth_qty.max(ask.qty);
                     }
-            
-                    max_volume = max_volume.max(volume.0).max(volume.1);
-                }
+                    for bid in depth.bids.iter() {
+                        if bid.price < lowest {
+                            continue;
+                        };
+                        max_depth_qty = max_depth_qty.max(bid.qty);
+                    }   
+                };
                 
-                for (time, (depth, trades, volume)) in self.data_points.range(earliest..=latest) {
+                for (time, (depth, trades)) in self.data_points.range(earliest..=latest) {
                     let x_position = ((time - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
 
-                    for trade in trades {
+                    let mut buy_volume: f32 = 0.0;
+                    let mut sell_volume: f32 = 0.0;
+
+                    for trade in trades.iter() {
+                        if trade.is_sell {
+                            sell_volume += trade.qty;
+                        } else {
+                            buy_volume += trade.qty;
+                        }
+
                         if trade.qty * trade.price > self.size_filter {
                             let x_position = ((time - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
                             let y_position = heatmap_area_height - ((trade.price - lowest) / y_range * heatmap_area_height);
@@ -482,24 +519,42 @@ impl canvas::Program<Message> for Heatmap {
                         }
                     }
 
-                    for order in &depth.bids {
-                        let y_position = heatmap_area_height - ((order.price - lowest) / y_range * heatmap_area_height);
-                        let color_alpha = (order.qty / max_depth_qty).min(1.0);
+                    for bid in depth.bids.iter() {
+                        if bid.price < lowest {
+                            continue;
+                        }
 
-                        let circle = Path::circle(Point::new(x_position as f32, y_position), 1.0);
-                        frame.fill(&circle, Color::from_rgba8(0, 144, 144, color_alpha));
-                    }
-                    for order in &depth.asks {
-                        let y_position = heatmap_area_height - ((order.price - lowest) / y_range * heatmap_area_height);
-                        let color_alpha = (order.qty / max_depth_qty).min(1.0);
+                        let y_position = heatmap_area_height - ((bid.price - lowest) / y_range * heatmap_area_height);
+                        let color_alpha = (bid.qty / max_depth_qty).min(1.0);
 
-                        let circle = Path::circle(Point::new(x_position as f32, y_position), 1.0);
-                        frame.fill(&circle, Color::from_rgba8(192, 0, 192, color_alpha));
+                        let path = Path::line(
+                            Point::new(x_position as f32, y_position), 
+                            Point::new(x_position as f32 + 1.0, y_position)
+                        );
+                        let stroke = Stroke::default().with_color(Color::from_rgba8(0, 144, 144, color_alpha)).with_width(1.0);
+
+                        frame.stroke(&path, stroke);
                     }
+                    for ask in depth.asks.iter() {
+                        if ask.price > highest {
+                            continue;
+                        }
+
+                        let y_position = heatmap_area_height - ((ask.price - lowest) / y_range * heatmap_area_height);
+                        let color_alpha = (ask.qty / max_depth_qty).min(1.0);
+
+                        let path = Path::line(
+                            Point::new(x_position as f32, y_position), 
+                            Point::new(x_position as f32 + 1.0, y_position)
+                        );
+                        let stroke = Stroke::default().with_color(Color::from_rgba8(192, 0, 192, color_alpha)).with_width(1.0);
+
+                        frame.stroke(&path, stroke);
+                    };
 
                     if max_volume > 0.0 {
-                        let buy_bar_height = (volume.0 / max_volume) * volume_area_height;
-                        let sell_bar_height = (volume.1 / max_volume) * volume_area_height;
+                        let buy_bar_height = (buy_volume / max_volume) * volume_area_height;
+                        let sell_bar_height = (sell_volume / max_volume) * volume_area_height;
 
                         let sell_bar = Path::rectangle(
                             Point::new(x_position as f32, bounds.height - sell_bar_height), 
@@ -513,15 +568,22 @@ impl canvas::Program<Message> for Heatmap {
                         );
                         frame.fill(&buy_bar, Color::from_rgb8(81, 205, 160));
                     }
-                } 
-            }
+                };
+            };
         
             // current orderbook as bars
             if let Some(latest_data_points) = self.data_points.iter().last() {
                 let latest_timestamp = latest_data_points.0 + 200;
 
-                let latest_bids: Vec<(f32, f32)> = latest_data_points.1.0.bids.iter().map(|order| (order.price, order.qty)).collect::<Vec<_>>();
-                let latest_asks: Vec<(f32, f32)> = latest_data_points.1.0.asks.iter().map(|order| (order.price, order.qty)).collect::<Vec<_>>();
+                let latest_bids: Vec<(f32, f32)> = latest_data_points.1.0.bids.iter()
+                    .filter(|order| (order.price) >= lowest)
+                    .map(|order| (order.price, order.qty))
+                    .collect::<Vec<_>>();
+
+                let latest_asks: Vec<(f32, f32)> = latest_data_points.1.0.asks.iter()
+                    .filter(|order| (order.price) <= highest)
+                    .map(|order| (order.price, order.qty))
+                    .collect::<Vec<_>>();
 
                 let max_qty = latest_bids.iter().map(|(_, qty)| qty).chain(latest_asks.iter().map(|(_, qty)| qty)).fold(f32::MIN, |arg0: f32, other: &f32| f32::max(arg0, *other));
 
@@ -839,18 +901,85 @@ pub struct AxisLabelYCanvas<'a> {
     max: f32,
     crosshair_position: Point,
     crosshair: bool,
+    y_scaling: f32,
 }
 impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
     type State = Interaction;
 
     fn update(
         &self,
-        _interaction: &mut Interaction,
-        _event: Event,
-        _bounds: Rectangle,
-        _cursor: mouse::Cursor,
-    ) -> (event::Status, Option<Message>) {
-        (event::Status::Ignored, None)
+        interaction: &mut Interaction,
+        event: Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> (event::Status, Option<Message>) {        
+        if let Event::Mouse(mouse::Event::ButtonReleased(_)) = event {
+            *interaction = Interaction::None;
+        }
+
+        if !cursor.is_over(bounds) {
+            return (event::Status::Ignored, None);
+        };
+
+        match event {
+            Event::Mouse(mouse_event) => match mouse_event {
+                mouse::Event::ButtonPressed(button) => {
+                    let message = match button {
+                        mouse::Button::Right => {
+                            *interaction = Interaction::Drawing;
+                            None
+                        }
+                        mouse::Button::Left => {
+                            None
+                        }
+                        _ => None,
+                    };
+
+                    (event::Status::Captured, message)
+                }
+                mouse::Event::CursorMoved { .. } => {
+                    let message = match *interaction {
+                        Interaction::Drawing => None,
+                        Interaction::Erasing => None,
+                        Interaction::Panning { translation, start } => {
+                            None
+                        }
+                        Interaction::None => 
+                            None
+                    };
+
+                    let event_status = match interaction {
+                        Interaction::None => event::Status::Ignored,
+                        _ => event::Status::Captured,
+                    };
+
+                    (event_status, message)
+                }
+                mouse::Event::WheelScrolled { delta } => match delta {
+                    mouse::ScrollDelta::Lines { y, .. }
+                    | mouse::ScrollDelta::Pixels { y, .. } => {
+                        if y > 0.0 && self.y_scaling > 0.00001
+                            || y < 0.0 && self.y_scaling < 0.001
+                        {
+                            let scaling = (self.y_scaling * (1.0 - y / 30.0))
+                                .clamp(
+                                    0.00001, 
+                                    0.001,  
+                                );
+
+                            (
+                                event::Status::Captured,
+                                Some(Message::YScaling(scaling)),
+                            )
+                        } else {
+                            (event::Status::Captured, None)
+                        }
+                    }
+                },
+                _ => (event::Status::Ignored, None),
+            },
+            _ => (event::Status::Ignored, None),
+        }
     }
     
     fn draw(
