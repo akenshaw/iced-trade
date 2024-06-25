@@ -569,3 +569,26 @@ pub async fn fetch_depth(ticker: Ticker) -> Result<FetchedDepth, reqwest::Error>
 
     Ok(depth)
 }
+
+pub async fn fetch_ticksize(ticker: Ticker) -> Result<f32, reqwest::Error> {
+    let symbol_str = match ticker {
+        Ticker::BTCUSDT => "BTCUSDT",
+        Ticker::ETHUSDT => "ETHUSDT",
+        Ticker::SOLUSDT => "SOLUSDT",
+        Ticker::LTCUSDT => "LTCUSDT",
+    };
+
+    let url = format!("https://fapi.binance.com/fapi/v1/exchangeInfo");
+
+    let response = reqwest::get(&url).await?;
+    let text = response.text().await?;
+    let exchange_info: Value = serde_json::from_str(&text).unwrap();
+
+    let symbols = exchange_info["symbols"].as_array().unwrap();
+
+    let symbol = symbols.iter().find(|x| x["symbol"].as_str().unwrap() == symbol_str).unwrap();
+
+    let tick_size = symbol["filters"].as_array().unwrap().iter().find(|x| x["filterType"].as_str().unwrap() == "PRICE_FILTER").unwrap()["tickSize"].as_str().unwrap().parse::<f32>().unwrap();
+
+    Ok(tick_size)
+}
