@@ -189,7 +189,7 @@ pub enum Message {
     TimeframeSelected(Timeframe, pane_grid::Pane),
     ExchangeSelected(&'static str),
     MarketWsEvent(market_data::Event),
-    WsToggle(),
+    WsToggle,
     FetchEvent(Result<Vec<market_data::Kline>, std::string::String>, PaneId, Timeframe),
     
     // Pane grid
@@ -215,7 +215,8 @@ pub enum Message {
     ShowLayoutModal,
     HideLayoutModal,
 
-    TicksizeSelected(f32),
+    TicksizeSelected(u16),
+    SetMinTickSize(f32),
 }
 
 struct State {
@@ -246,7 +247,9 @@ struct State {
     sync_heatmap: bool,
 
     kline_stream: bool,
-    tick_size: Option<f32>,
+
+    tick_multiply: u16,
+    min_tick_size: Option<f32>,
 }
 
 impl State {
@@ -329,7 +332,8 @@ impl State {
             focus: None,
             first_pane,
             pane_lock: false,
-            tick_size: Some(1.0), 
+            tick_multiply: 1,
+            min_tick_size: None, 
         }
     }
 
@@ -360,12 +364,38 @@ impl State {
                 Task::none()
             },
 
+            Message::SetMinTickSize(min_tick_size) => {
+                self.min_tick_size = Some(min_tick_size);
+
+                if let Some(heatmap_chart) = &mut self.heatmap_chart {
+                    let copied_trades = heatmap_chart.get_raw_trades();
+
+                    if let Some(footprint_chart) = &mut self.footprint_chart {
+                        footprint_chart.change_tick_size(copied_trades, self.tick_multiply as f32 * self.min_tick_size.unwrap_or(1.0));
+                    }
+                }
+
+                Task::none()
+            },
             Message::TickerSelected(ticker) => {
                 self.selected_ticker = Some(ticker);
 
                 let panes_state = self.panes.iter_mut();
                 for (pane_id, pane_state) in panes_state {
                     pane_state.stream.0 = Some(ticker);
+                }
+
+                Task::none()
+            },
+            Message::TicksizeSelected(tick_multiply) => {
+                if let Some(heatmap_chart) = &mut self.heatmap_chart {
+                    let copied_trades = heatmap_chart.get_raw_trades();
+
+                    if let Some(footprint_chart) = &mut self.footprint_chart {
+                        footprint_chart.change_tick_size(copied_trades, tick_multiply as f32 * self.min_tick_size.unwrap_or(1.0));
+
+                        self.tick_multiply = tick_multiply;
+                    }
                 }
 
                 Task::none()
@@ -417,39 +447,48 @@ impl State {
                 self.selected_exchange = Some(exchange);
                 Task::none()
             },
-            Message::WsToggle() => {
+            Message::WsToggle => {
                 self.ws_running = !self.ws_running;
 
                 if self.ws_running {  
-                    let mut Tasks = vec![];
-
-                    let first_pane = self.first_pane;
+                    let mut tasks: Vec<Task<Message>> = vec![];
         
-                    for (pane, pane_state) in self.panes.iter() {
+                    for (_, pane_state) in self.panes.iter() {
                         if pane_state.id == PaneId::HeatmapChart {
                             self.heatmap_chart = Some(Heatmap::new());
                         }
                         if pane_state.id == PaneId::TimeAndSales {
                             self.time_and_sales = Some(TimeAndSales::new());
                         }
+                        if pane_state.id == PaneId::FootprintChart {
+                            let fetch_ticksize: Task<Message> = Task::perform(
+                                market_data::fetch_ticksize(self.selected_ticker.unwrap_or(Ticker::BTCUSDT))
+                                    .map_err(|err| format!("{err}")), 
+                                move |ticksize: Result<f32, String>| {
+                                    Message::SetMinTickSize(ticksize.unwrap_or(1.0))
+                                }
+                            );
+                            tasks.push(fetch_ticksize);
+                        }
 
-                        let selected_timeframe = match pane_state.stream.1 {
+                        let selected_timeframe: Timeframe = match pane_state.stream.1 {
                             Some(timeframe) => timeframe,
                             None => Timeframe::M1,
                         };
 
-                        let pane_id = pane_state.id;
+                        let pane_id: PaneId = pane_state.id;
 
-                        let fetch_klines = Task::perform(
+                        let fetch_klines: Task<Message> = Task::perform(
                             market_data::fetch_klines(self.selected_ticker.unwrap_or(Ticker::BTCUSDT), selected_timeframe)
                                 .map_err(|err| format!("{err}")), 
                             move |klines: Result<Vec<market_data::Kline>, String>| {
                                 Message::FetchEvent(klines, pane_id, selected_timeframe)
                             }
                         );
-                        Tasks.push(fetch_klines);
-                    }
-                    Task::batch(Tasks)
+                        tasks.push(fetch_klines);
+                    };
+                    
+                    Task::batch(tasks)
 
                 } else {
                     self.ws_state = WsState::Disconnected;
@@ -486,7 +525,8 @@ impl State {
                                     }
 
                                     // get the latest 20 klines
-                                    let copied_klines = klines_raw.iter().rev().take(20).rev().copied().collect::<Vec<(i64, f32, f32, f32, f32, f32, f32)>>();
+                                    let copied_klines: Vec<(i64, f32, f32, f32, f32, f32, f32)> = 
+                                        klines_raw.iter().rev().take(20).rev().copied().collect::<Vec<(i64, f32, f32, f32, f32, f32, f32)>>();
 
                                     let timeframe_u16: u16 = match timeframe {
                                         Timeframe::M1 => 1,
@@ -496,7 +536,9 @@ impl State {
                                         Timeframe::M30 => 30,
                                     };
 
-                                    self.footprint_chart = Some(Footprint::new(timeframe_u16, self.tick_size.unwrap_or(1.0), copied_klines, copied_trades));
+                                    let tick_size = self.tick_multiply as f32 * self.min_tick_size.unwrap_or_default();
+
+                                    self.footprint_chart = Some(Footprint::new(timeframe_u16, tick_size, copied_klines, copied_trades));
                                 }
                             },
                             _ => {}
@@ -689,20 +731,6 @@ impl State {
                 self.show_layout_modal = false;
                 Task::none()
             },
-
-            Message::TicksizeSelected(ticksize) => {
-                if let Some(heatmap_chart) = &mut self.heatmap_chart {
-                    let copied_trades = heatmap_chart.get_raw_trades();
-
-                    if let Some(footprint_chart) = &mut self.footprint_chart {
-                        footprint_chart.change_tick_size(copied_trades, ticksize);
-
-                        self.tick_size = Some(ticksize);
-                    }
-                }
-
-                Task::none()
-            },
         }
     }
 
@@ -758,7 +786,7 @@ impl State {
                         total_panes,
                         is_maximized,
                         pane.stream.1.as_ref(),
-                        self.tick_size.as_ref(),
+                        self.tick_multiply,
                     ))
                     .padding(4)
                     .style(style::title_bar_focused);
@@ -804,7 +832,7 @@ impl State {
 
         let ws_button = if self.selected_ticker.is_some() {
             button(if self.ws_running { "Disconnect" } else { "Connect" })
-                .on_press(Message::WsToggle())
+                .on_press(Message::WsToggle)
         } else {
             button(if self.ws_running { "Disconnect" } else { "Connect" })
         };
@@ -1143,7 +1171,7 @@ fn view_controls<'a>(
     total_panes: usize,
     is_maximized: bool,
     selected_timeframe: Option<&'a Timeframe>,
-    selected_ticksize: Option<&'a f32>,
+    selected_ticksize: u16,
 ) -> Element<'a, Message> {
     let mut row = row![].spacing(5);
 
@@ -1163,10 +1191,10 @@ fn view_controls<'a>(
     }
     if pane_id == PaneId::FootprintChart {
         let ticksize_picker = pick_list(
-            [0.1, 0.5, 1.0, 5.0, 10.0, 25.0, 50.0],
-            selected_ticksize,
+            [1, 2, 5, 10, 25, 50, 100, 200],
+            Some(selected_ticksize),
             Message::TicksizeSelected,
-        ).placeholder("Choose a ticksize...").text_size(11).width(iced::Pixels(80.0));
+        ).placeholder("Ticksize multiplier...").text_size(11).width(iced::Pixels(80.0));
         row = row.push(ticksize_picker);
     }
 
