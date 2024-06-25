@@ -46,8 +46,6 @@ impl Footprint {
     const MAX_SCALING: f32 = 3.6;
 
     pub fn new(timeframe: u16, tick_size: f32, klines_raw: Vec<(i64, f32, f32, f32, f32, f32, f32)>, trades_raw: Vec<Trade>) -> Footprint {
-        let _size = window::Settings::default().size;
-
         let mut data_points = BTreeMap::new();
         let aggregate_time = 1000 * 60 * timeframe as i64;
 
@@ -111,7 +109,7 @@ impl Footprint {
         self.data_points.entry(rounded_depth_update).or_insert((HashMap::new(), (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)));
         
         for trade in trades_buffer.drain(..) {
-            let price_level = (trade.price / self.tick_size).round() as i64 * (self.tick_size * 100.0) as i64;
+            let price_level: i64 = (trade.price * (1.0 / self.tick_size)).round() as i64;
             if let Some((trades, _)) = self.data_points.get_mut(&rounded_depth_update) {     
                 if let Some((buy_qty, sell_qty)) = trades.get_mut(&price_level) {
                     if trade.is_sell {
@@ -140,7 +138,7 @@ impl Footprint {
 
         for trade in trades_raw {
             let rounded_time = (trade.time / aggregate_time) * aggregate_time;
-            let price_level = (trade.price / new_tick_size).round() as i64 * (new_tick_size * 100.0) as i64;
+            let price_level: i64 = (trade.price * (1.0 / new_tick_size)).round() as i64;
 
             let entry = new_data_points
                 .entry(rounded_time)
@@ -532,7 +530,7 @@ impl canvas::Program<Message> for Footprint {
                 }
 
                 for trade in trades {
-                    let price = *trade.0 as f32 / 100.0;
+                    let price = (*trade.0 as f32) / (1.0 / self.tick_size);
                     let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
 
                     if trade.1.0 > 0.0 {
