@@ -529,22 +529,42 @@ impl canvas::Program<Message> for Footprint {
                     continue;
                 }
 
+                let y_open = heatmap_area_height - ((kline.0 - lowest) / y_range * heatmap_area_height);
+                let y_high = heatmap_area_height - ((kline.1 - lowest) / y_range * heatmap_area_height);
+                let y_low = heatmap_area_height - ((kline.2 - lowest) / y_range * heatmap_area_height);
+                let y_close = heatmap_area_height - ((kline.3 - lowest) / y_range * heatmap_area_height);
+                
+                let body_color = if kline.3 >= kline.0 { Color::from_rgba8(81, 205, 160, 0.8) } else { Color::from_rgba8(192, 80, 77, 0.8) };
+                let wick_color = if kline.3 >= kline.0 { Color::from_rgba8(81, 205, 160, 0.4) } else { Color::from_rgba8(192, 80, 77, 0.4) };
+
+                let wick = Path::line(
+                    Point::new(x_position, y_high), 
+                    Point::new(x_position, y_low)
+                );
+                frame.stroke(&wick, Stroke::default().with_color(wick_color).with_width(1.0));
+
+                let body = Path::rectangle(
+                    Point::new(x_position - self.scaling, y_open.min(y_close)), 
+                    Size::new(2.0 * self.scaling, (y_open - y_close).abs())
+                );                    
+                frame.fill(&body, body_color);
+
                 for trade in trades {
                     let price = (*trade.0 as f32) / (1.0 / self.tick_size);
                     let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
 
                     if trade.1.0 > 0.0 {
-                        let bar_width = (trade.1.0 / max_trade_qty) * bounds.width / 30.0 * self.scaling;
+                        let bar_width = (trade.1.0 / max_trade_qty) * bounds.width / 28.0 * self.scaling;
                         let bar = Path::rectangle(
-                            Point::new(x_position + (5.0*self.scaling), y_position), 
+                            Point::new(x_position + (3.0 * self.scaling), y_position), 
                             Size::new(bar_width, 1.0) 
                         );
                         frame.fill(&bar, Color::from_rgba8(81, 205, 160, 1.0));
                     } 
                     if trade.1.1 > 0.0 {
-                        let bar_width = -(trade.1.1 / max_trade_qty) * bounds.width / 30.0 * self.scaling;
+                        let bar_width = -(trade.1.1 / max_trade_qty) * bounds.width / 28.0 * self.scaling;
                         let bar = Path::rectangle(
-                            Point::new(x_position - (5.0*self.scaling), y_position), 
+                            Point::new(x_position - (3.0 * self.scaling), y_position), 
                             Size::new(bar_width, 1.0) 
                         );
                         frame.fill(&bar, Color::from_rgba8(192, 80, 77, 1.0));
@@ -569,25 +589,6 @@ impl canvas::Program<Message> for Footprint {
                     );
                     frame.fill(&buy_bar, Color::from_rgb8(81, 205, 160));
                 }
-                
-                let y_open = heatmap_area_height - ((kline.0 - lowest) / y_range * heatmap_area_height);
-                let y_high = heatmap_area_height - ((kline.1 - lowest) / y_range * heatmap_area_height);
-                let y_low = heatmap_area_height - ((kline.2 - lowest) / y_range * heatmap_area_height);
-                let y_close = heatmap_area_height - ((kline.3 - lowest) / y_range * heatmap_area_height);
-                
-                let color = if kline.3 >= kline.0 { Color::from_rgba8(81, 205, 160, 0.6) } else { Color::from_rgba8(192, 80, 77, 0.6) };
-
-                let wick = Path::line(
-                    Point::new(x_position, y_high), 
-                    Point::new(x_position, y_low)
-                );
-                frame.stroke(&wick, Stroke::default().with_color(color).with_width(1.0));
-
-                let body = Path::rectangle(
-                    Point::new(x_position - (2.0 * self.scaling), y_open.min(y_close)), 
-                    Size::new(4.0 * self.scaling, (y_open - y_close).abs())
-                );                    
-                frame.fill(&body, color);
             } 
             
             let text_size = 9.0;
