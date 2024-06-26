@@ -486,6 +486,13 @@ impl canvas::Program<Message> for Heatmap {
                     }   
                 };
                 
+                let mut prev_bid_price: Option<f32> = None;
+                let mut prev_bid_qty: Option<f32> = None;
+                let mut prev_ask_price: Option<f32> = None;
+                let mut prev_ask_qty: Option<f32> = None;
+
+                let mut prev_x_position: Option<f64> = None;
+
                 for (time, (depth, trades)) in self.data_points.range(earliest..=latest) {
                     let x_position = ((time - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
 
@@ -520,37 +527,40 @@ impl canvas::Program<Message> for Heatmap {
                     }
 
                     for bid in depth.bids.iter() {
-                        if bid.price < lowest {
-                            continue;
+                        if bid.price >= lowest {
+                            let y_position = heatmap_area_height - ((bid.price - lowest) / y_range * heatmap_area_height);
+                            let color_alpha = (bid.qty / max_depth_qty).min(1.0);
+
+                            if let (Some(prev_price), Some(prev_qty), Some(prev_x)) = (prev_bid_price, prev_bid_qty, prev_x_position) {
+                                if prev_price != bid.price || prev_qty != bid.qty {
+                                    let path = Path::line(Point::new(prev_x as f32, y_position), Point::new(x_position as f32, y_position));
+                                    let stroke = Stroke::default().with_color(Color::from_rgba8(0, 144, 144, color_alpha)).with_width(1.0);
+                                    frame.stroke(&path, stroke);
+                                }
+                            }
+                            prev_bid_price = Some(bid.price);
+                            prev_bid_qty = Some(bid.qty);
                         }
-
-                        let y_position = heatmap_area_height - ((bid.price - lowest) / y_range * heatmap_area_height);
-                        let color_alpha = (bid.qty / max_depth_qty).min(1.0);
-
-                        let path = Path::line(
-                            Point::new(x_position as f32, y_position), 
-                            Point::new(x_position as f32 + 1.0, y_position)
-                        );
-                        let stroke = Stroke::default().with_color(Color::from_rgba8(0, 144, 144, color_alpha)).with_width(1.0);
-
-                        frame.stroke(&path, stroke);
                     }
+
                     for ask in depth.asks.iter() {
-                        if ask.price > highest {
-                            continue;
+                        if ask.price <= highest {
+                            let y_position = heatmap_area_height - ((ask.price - lowest) / y_range * heatmap_area_height);
+                            let color_alpha = (ask.qty / max_depth_qty).min(1.0);
+
+                            if let (Some(prev_price), Some(prev_qty), Some(prev_x)) = (prev_ask_price, prev_ask_qty, prev_x_position) {
+                                if prev_price != ask.price || prev_qty != ask.qty {
+                                    let path = Path::line(Point::new(prev_x as f32, y_position), Point::new(x_position as f32, y_position));
+                                    let stroke = Stroke::default().with_color(Color::from_rgba8(192, 0, 192, color_alpha)).with_width(1.0);
+                                    frame.stroke(&path, stroke);
+                                }
+                            }
+                            prev_ask_price = Some(ask.price);
+                            prev_ask_qty = Some(ask.qty);
                         }
+                    }
 
-                        let y_position = heatmap_area_height - ((ask.price - lowest) / y_range * heatmap_area_height);
-                        let color_alpha = (ask.qty / max_depth_qty).min(1.0);
-
-                        let path = Path::line(
-                            Point::new(x_position as f32, y_position), 
-                            Point::new(x_position as f32 + 1.0, y_position)
-                        );
-                        let stroke = Stroke::default().with_color(Color::from_rgba8(192, 0, 192, color_alpha)).with_width(1.0);
-
-                        frame.stroke(&path, stroke);
-                    };
+                    prev_x_position = Some(x_position);
 
                     if max_volume > 0.0 {
                         let buy_bar_height = (buy_volume / max_volume) * volume_area_height;
