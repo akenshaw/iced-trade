@@ -1,3 +1,5 @@
+use std::os::macos::raw::stat;
+
 use iced::futures;  
 use iced::subscription::{self, Subscription};
 use serde::{de, Deserialize, Deserializer};
@@ -30,26 +32,11 @@ pub enum Event {
 #[derive(Debug, Clone)]
 pub struct Connection;
 
-impl<'de> Deserialize<'de> for Order {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let arr: Vec<&str> = Vec::<&str>::deserialize(deserializer)?;
-        let price: f32 = arr[0].parse::<f32>().map_err(serde::de::Error::custom)?;
-        let qty: f32 = arr[1].parse::<f32>().map_err(serde::de::Error::custom)?;
-        Ok(Order { price, qty })
-    }
-}
 #[derive(Debug, Deserialize, Clone)]
 pub struct FetchedDepth {
-    #[serde(rename = "lastUpdateId")]
-    pub update_id: i64,
-    #[serde(rename = "T")]
-    pub time: i64,
-    #[serde(rename = "bids")]
+    #[serde(rename = "b")]
     pub bids: Vec<Order>,
-    #[serde(rename = "asks")]
+    #[serde(rename = "a")]
     pub asks: Vec<Order>,
 }
 #[derive(Debug, Clone, Copy, Default)]
@@ -75,6 +62,24 @@ pub struct Depth {
     pub asks: Vec<Order>,
 }
 
+use std::str::FromStr;
+impl<'de> Deserialize<'de> for Order {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value: Vec<String> = Deserialize::deserialize(deserializer)?;
+        if value.len() != 2 {
+            return Err(serde::de::Error::custom("Expected an array of two strings"));
+        }
+
+        let price = f32::from_str(&value[0]).map_err(serde::de::Error::custom)?;
+        let qty = f32::from_str(&value[1]).map_err(serde::de::Error::custom)?;
+
+        Ok(Order { price, qty })
+    }
+}
+
 impl Depth {
     pub fn new() -> Self {
         Self {
@@ -91,6 +96,8 @@ impl Depth {
 
         self.bids = new_depth.bids;
         self.asks = new_depth.asks;
+
+        println!("Fetched depth: {:?}", self);
     }
 
     pub fn update_depth_cache(&mut self, new_bids: &[Order], new_asks: &[Order]) {
@@ -174,18 +181,19 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
         std::any::TypeId::of::<Connect>(),
         100,
         move |mut output| async move {
-            let mut state = State::Disconnected;     
-            let mut trades_buffer = Vec::new(); 
+            let mut state: State = State::Disconnected;  
+
+            let mut trades_buffer: Vec<Trade> = Vec::new();    
 
             let symbol_str = match selected_ticker {
-                Ticker::BTCUSDT => "btcusdt",
-                Ticker::ETHUSDT => "ethusdt",
-                Ticker::SOLUSDT => "solusdt",
-                Ticker::LTCUSDT => "ltcusdt",
+                Ticker::BTCUSDT => "BTCUSDT",
+                Ticker::ETHUSDT => "ETHUSDT",
+                Ticker::SOLUSDT => "SOLUSDT",
+                Ticker::LTCUSDT => "LTCUSDT",
             };
 
-            let stream_1 = format!("{symbol_str}@aggTrade");
-            let stream_2 = format!("{symbol_str}@depth@100ms");
+            let stream_1 = format!("publicTrade.{symbol_str}");
+            let stream_2 = format!("orderbook.200.{symbol_str}");
 
             let mut orderbook: Depth = Depth::new();
 
@@ -196,43 +204,33 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
             loop {
                 match &mut state {
                     State::Disconnected => {        
-                        let websocket_server = format!("wss://fstream.binance.com/stream?streams={stream_1}/{stream_2}");
+                        let websocket_server = format!("wss://stream.bybit.com/v5/public/linear");
 
-                        if let Ok((websocket, _)) = async_tungstenite::tokio::connect_async(
+                        println!("Connecting to websocket server...\n");
+
+                        if let Ok((mut websocket, _)) = async_tungstenite::tokio::connect_async(
                             websocket_server,
                         )
                         .await {
-                            let (tx, rx) = tokio::sync::oneshot::channel();
-                                                
-                            tokio::spawn(async move {
-                                let fetched_depth = fetch_depth(selected_ticker).await;
+                            let subscribe_message = serde_json::json!({
+                                "op": "subscribe",
+                                "args": [format!("publicTrade.{symbol_str}"), format!("orderbook.200.{symbol_str}")]
+                            }).to_string();
+    
+                            if let Err(e) = websocket.send(tungstenite::Message::Text(subscribe_message)).await {
+                                eprintln!("Failed subscribing: {}", e);
 
-                                let depth: Depth = match fetched_depth {
-                                    Ok(depth) => {
-                                        Depth {
-                                            last_update_id: depth.update_id,
-                                            time: depth.time,
-                                            bids: depth.bids,
-                                            asks: depth.asks,
-                                        }
-                                    },
-                                    Err(_) => return,
-                                };
+                                let _ = output.send(Event::Disconnected).await;
 
-                                let _ = tx.send(depth);
-                            });
-                            match rx.await {
-                                Ok(depth) => {
-                                    orderbook.fetched(depth);
-                                    state = State::Connected(websocket);
-                                },
-                                Err(_) => orderbook.fetched(Depth::default()),
-                            }
+                                continue;
+                            } 
+
+                            state = State::Connected(websocket);
                             
                         } else {
-                            tokio::time::sleep(tokio::time::Duration::from_secs(1))
-                           .await;
-                           let _ = output.send(Event::Disconnected).await;
+                            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+                            let _ = output.send(Event::Disconnected).await;
                         }
                     }
                     State::Connected(websocket) => {
@@ -242,97 +240,54 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
                             received = fused_websocket.select_next_some() => {
                                 match received {
                                     Ok(tungstenite::Message::Text(message)) => {
-                                        let stream: Stream = serde_json::from_str(&message).unwrap_or(Stream { stream: String::new() });
-                                        
-                                        if stream.stream == stream_1 {
-                                            let agg_trade: AggTrade = serde_json::from_str(&message).unwrap();
-                                            trades_buffer.push(agg_trade.data);
-                                            
-                                        } else if stream.stream == stream_2 {
-                                            if already_fetching {
-                                                println!("Already fetching...\n");
+                                        match serde_json::from_str::<Stream>(&message) {
+                                            Ok(stream) => {
+                                                if stream.topic == stream_1 {
+                                                    stream.data.as_array().unwrap().iter().for_each(|trade| {
+                                                        if let Ok(trade) = serde_json::from_value::<Trade>(trade.clone()) {
+                                                            trades_buffer.push(trade);
+                                                        } else {
+                                                            println!("Failed to deserialize trade: {:?}", trade);
+                                                        }
+                                                    });
 
-                                                continue;
-                                            }
+                                                } else if stream.topic == stream_2 {
 
-                                            let depth_update: Value = serde_json::from_str(&message).unwrap();
-                                            let depth_data = depth_update.get("data").unwrap();
+                                                    if stream.stream_type == "snapshot" {
+                                                        let bids = stream.data["b"].as_array().unwrap();
+                                                        let asks = stream.data["a"].as_array().unwrap();
 
-                                            let first_update_id = depth_data.get("U").unwrap().as_i64().unwrap();
-                                            let final_update_id = depth_data.get("u").unwrap().as_i64().unwrap();
+                                                        let fetched_depth = Depth {
+                                                            last_update_id: stream.time,
+                                                            time: stream.time,
+                                                            bids: bids.iter().map(|x| serde_json::from_value::<Order>(x.clone()).unwrap()).collect(),
+                                                            asks: asks.iter().map(|x| serde_json::from_value::<Order>(x.clone()).unwrap()).collect(),
+                                                        };
 
-                                            let last_final_update_id = depth_data.get("pu").unwrap().as_i64().unwrap();
+                                                        orderbook.fetched(fetched_depth);
 
-                                            let last_update_id = orderbook.get_fetch_id();
+                                                    } else if stream.stream_type == "delta" {
+                                                        let bids = stream.data["b"].as_array().unwrap();
+                                                        let asks = stream.data["a"].as_array().unwrap();
 
-                                            if (final_update_id <= last_update_id) || last_update_id == 0 {
-                                                continue;
-                                            }
+                                                        let new_depth = Depth {
+                                                            last_update_id: stream.time,
+                                                            time: stream.time,
+                                                            bids: bids.iter().map(|x| serde_json::from_value::<Order>(x.clone()).unwrap()).collect(),
+                                                            asks: asks.iter().map(|x| serde_json::from_value::<Order>(x.clone()).unwrap()).collect(),
+                                                        };
 
-                                            if prev_id == 0 && (first_update_id > last_update_id + 1) || (last_update_id + 1 > final_update_id) {
-                                                println!("Out of sync on first event...\nU: {first_update_id}, last_id: {last_update_id}, u: {final_update_id}, pu: {last_final_update_id}\n");
+                                                        let (local_bids, local_asks) = orderbook.update_levels(new_depth);
 
-                                                let (tx, rx) = tokio::sync::oneshot::channel();
-                                                already_fetching = true;
-
-                                                tokio::spawn(async move {
-                                                    let fetched_depth = fetch_depth(selected_ticker).await;
-
-                                                    let depth: Depth = match fetched_depth {
-                                                        Ok(depth) => {
-                                                            Depth {
-                                                                last_update_id: depth.update_id,
-                                                                time: depth.time,
-                                                                bids: depth.bids,
-                                                                asks: depth.asks,
-                                                            }
-                                                        },
-                                                        Err(_) => return,
-                                                    };
-
-                                                    let _ = tx.send(depth);
-                                                });
-                                                match rx.await {
-                                                    Ok(depth) => {
-                                                        orderbook.fetched(depth)
-                                                    },
-                                                    Err(_) => orderbook.fetched(Depth::default()),
+                                                        let _ = output.send(Event::DepthReceived(stream.time, LocalDepthCache {
+                                                            time: stream.time,
+                                                            bids: local_bids,
+                                                            asks: local_asks,
+                                                        }, std::mem::take(&mut trades_buffer))).await;
+                                                    }
                                                 }
-                                                already_fetching = false;
-                                            }
-                                    
-                                            if (prev_id == 0) || (prev_id == last_final_update_id) {
-                                                let depth_update: DepthUpdate = serde_json::from_str(&message).unwrap();
-
-                                                let time = depth_update.data.time;
-                                                let bids = depth_update.data.bids;
-                                                let asks = depth_update.data.asks;
-
-                                                let depth = Depth { last_update_id: final_update_id, time, bids, asks };
-
-                                                let (local_bids, local_asks) = orderbook.update_levels(depth);
-
-                                                let local_depth_cache = LocalDepthCache {
-                                                    time: time,
-                                                    bids: local_bids,
-                                                    asks: local_asks,
-                                                };
-
-                                                let _ = output.send(
-                                                    Event::DepthReceived(
-                                                        time, 
-                                                        local_depth_cache,
-                                                        std::mem::take(&mut trades_buffer)
-                                                    )
-                                                ).await;
-
-                                                prev_id = final_update_id;
-                                            } else {
-                                                println!("Out of sync...\n");
-                                            }
-
-                                        } else {
-                                            dbg!(stream.stream);
+                                            },
+                                            Err(e) => println!("Failed to deserialize message: {}. Error: {}", message, e),
                                         }
                                     }
                                     Err(_) => {
@@ -348,6 +303,50 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
             }
         },
     )
+}
+
+#[derive(Deserialize)]
+struct Stream {
+    topic: String,
+    #[serde(rename = "type")]
+    stream_type: String,
+    #[serde(rename = "ts")]
+    time: i64,
+    data: Value,
+}
+ 
+#[derive(Deserialize, Debug, Clone)]
+pub struct Trade {
+    #[serde(rename = "T")]
+    pub time: i64,
+    #[serde(rename = "S", deserialize_with = "deserialize_is_sell")]
+    pub is_sell: bool,
+    #[serde(with = "string_to_f32", rename = "p")]
+    pub price: f32,
+    #[serde(with = "string_to_f32", rename = "v")]
+    pub qty: f32,
+}
+fn deserialize_is_sell<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s: String = Deserialize::deserialize(deserializer)?;
+    match s.as_str() {
+        "Sell" => Ok(true),
+        "Buy" => Ok(false),
+        _ => Err(serde::de::Error::custom("Unexpected value for is_sell")),
+    }
+}
+mod string_to_f32 {
+    use serde::{self, Deserialize, Deserializer};
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<f32, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s: String = Deserialize::deserialize(deserializer)?;
+        s.parse::<f32>().map_err(serde::de::Error::custom)
+    }
 }
 
 pub fn connect_kline_stream(vec: Vec<(Ticker, Timeframe)>) -> Subscription<Event> {
@@ -436,43 +435,6 @@ pub fn connect_kline_stream(vec: Vec<(Ticker, Timeframe)>) -> Subscription<Event
             }
         },
     )
-}
-
-mod string_to_f32 {
-    use serde::{self, Deserialize, Deserializer};
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<f32, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s: &str = <&str>::deserialize(deserializer)?;
-        s.parse::<f32>().map_err(serde::de::Error::custom)
-    }
-}
-
-#[derive(Deserialize)]
-struct Stream {
-    stream: String,
-}
-#[derive(Deserialize, Debug)]
-struct AggTrade {
-    data: Trade,
-}
-#[derive(Deserialize, Debug)]
-struct DepthUpdate {
-    data: Depth,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-pub struct Trade {
-    #[serde(rename = "T")]
-    pub time: i64,
-    #[serde(rename = "m")]
-    pub is_sell: bool,
-    #[serde(with = "string_to_f32", rename = "p")]
-    pub price: f32,
-    #[serde(with = "string_to_f32", rename = "q")]
-    pub qty: f32,
 }
 
 #[derive(Deserialize, Debug, Clone, Copy)]
