@@ -516,21 +516,56 @@ impl State {
                             tasks.push(fetch_ticksize);
                         }
 
-                        let selected_timeframe: Timeframe = match pane_state.stream.1 {
-                            Some(timeframe) => timeframe,
-                            None => Timeframe::M1,
-                        };
+                        if let Some(selected_timeframe) = pane_state.stream.1 {
 
-                        let pane_id: PaneId = pane_state.id;
+                            let pane_id: PaneId = pane_state.id;
 
-                        let fetch_klines: Task<Message> = Task::perform(
-                            market_data::fetch_klines(self.selected_ticker.unwrap_or(Ticker::BTCUSDT), selected_timeframe)
-                                .map_err(|err| format!("{err}")), 
-                            move |klines: Result<Vec<market_data::Kline>, String>| {
-                                Message::FetchEvent(klines, pane_id, selected_timeframe)
+                            match self.selected_exchange {
+                                Some(Exchange::BinanceFutures) => {
+                                    let fetch_klines: Task<Message> = Task::perform(
+                                        market_data::fetch_klines(self.selected_ticker.unwrap_or(Ticker::BTCUSDT), selected_timeframe)
+                                            .map_err(|err| format!("{err}")), 
+                                        move |klines: Result<Vec<market_data::Kline>, String>| {
+                                            Message::FetchEvent(klines, pane_id, selected_timeframe)
+                                        }
+                                    );
+                                    tasks.push(fetch_klines);
+                                },
+                                Some(Exchange::BybitLinear) => {
+                                    let fetch_klines: Task<Message> = Task::perform(
+                                        bybit::market_data::fetch_klines(self.selected_ticker.unwrap_or(Ticker::BTCUSDT), selected_timeframe)
+                                            .map_err(|err| format!("{err}")), 
+                                        move |klines: Result<Vec<bybit::market_data::Kline>, String>| {
+
+                                            match klines {
+                                                Ok(klines) => {
+                                                    let binance_klines: Vec<market_data::Kline> = klines.iter().map(|kline| {
+                                                        market_data::Kline {
+                                                            time: kline.time,
+                                                            open: kline.open,
+                                                            high: kline.high,
+                                                            low: kline.low,
+                                                            close: kline.close,
+                                                            volume: kline.volume,
+                                                            taker_buy_base_asset_volume: 1.0,
+                                                        }
+                                                    }).collect();
+
+                                                    Message::FetchEvent(Ok(binance_klines), pane_id, selected_timeframe)
+                                                },
+                                                Err(err) => {
+                                                    Message::Debug(err)
+                                                }
+                                            }
+                                        }
+                                    );
+                                    tasks.push(fetch_klines);
+                                },
+                                None => {
+                                    eprintln!("No exchange selected");
+                                }
                             }
-                        );
-                        tasks.push(fetch_klines);
+                        }
                     };
                     
                     Task::batch(tasks)
@@ -570,10 +605,6 @@ impl State {
                                         klines_raw.push((kline.time as i64, kline.open, kline.high, kline.low, kline.close, buy_volume, sell_volume));
                                     }
 
-                                    // get the latest 20 klines
-                                    let copied_klines: Vec<(i64, f32, f32, f32, f32, f32, f32)> = 
-                                        klines_raw.iter().rev().take(20).rev().copied().collect::<Vec<(i64, f32, f32, f32, f32, f32, f32)>>();
-
                                     let timeframe_u16: u16 = match timeframe {
                                         Timeframe::M1 => 1,
                                         Timeframe::M3 => 3,
@@ -584,7 +615,7 @@ impl State {
 
                                     let tick_size = self.tick_multiply as f32 * self.min_tick_size.unwrap_or_default();
 
-                                    self.footprint_chart = Some(Footprint::new(timeframe_u16, tick_size, copied_klines, copied_trades));
+                                    self.footprint_chart = Some(Footprint::new(timeframe_u16, tick_size, klines_raw, copied_trades));
                                 }
                             },
                             _ => {}
@@ -659,16 +690,26 @@ impl State {
 
                             println!("Bybit disconnected");
                         }
-                        bybit::market_data::Event::DepthReceived(depth_update, depth, mut trades_buffer) => {
+                        bybit::market_data::Event::DepthReceived(depth_update, depth, trades_buffer) => {
 
                             // convert bybit trade to binance trade
                             let mut binance_trades: Vec<binance::market_data::Trade> = vec![];
+                            
                             for trade in trades_buffer.iter() {
-                                let binance_trade = convert_bybit_trade_to_binance_trade(trade.clone());
+                                let binance_trade = binance::market_data::Trade {
+                                    price: trade.price,
+                                    qty: trade.qty,
+                                    time: trade.time,
+                                    is_sell: trade.is_sell,
+                                };
                                 binance_trades.push(binance_trade);
                             }
 
-                            let local_depth = convert_bybit_depth_to_binance_depth(depth.clone());
+                            let local_depth = binance::market_data::LocalDepthCache {
+                                time: depth.time,
+                                bids: depth.bids.iter().map(|order| binance::market_data::Order { price: order.price, qty: order.qty }).collect(),
+                                asks: depth.asks.iter().map(|order| binance::market_data::Order { price: order.price, qty: order.qty }).collect(),
+                            };
 
                             let trades_clone = binance_trades.clone();
 
@@ -684,7 +725,40 @@ impl State {
                             }
                         }
                         bybit::market_data::Event::KlineReceived(kline, timeframe) => {
-                            println!("Kline received");
+                            for (_, pane_state) in self.panes.iter() {
+                                if let Some(selected_timeframe) = pane_state.stream.1 {
+                                    if selected_timeframe == timeframe {
+                                        let binance_kline = binance::market_data::Kline {
+                                            time: kline.time,
+                                            open: kline.open,
+                                            high: kline.high,
+                                            low: kline.low,
+                                            close: kline.close,
+                                            volume: kline.volume,
+                                            taker_buy_base_asset_volume: 1.0,
+                                        };
+
+                                        match pane_state.id {
+                                            PaneId::CandlestickChart => {
+                                                if let Some(candlestick_chart) = &mut self.candlestick_chart {
+                                                    candlestick_chart.insert_datapoint(&binance_kline);
+                                                }
+                                            },
+                                            PaneId::CustomChart => {
+                                                if let Some(custom_line) = &mut self.custom_line {
+                                                    custom_line.insert_datapoint(&binance_kline);
+                                                }
+                                            },
+                                            PaneId::FootprintChart => {
+                                                if let Some(footprint_chart) = &mut self.footprint_chart {
+                                                    footprint_chart.update_latest_kline(&binance_kline);
+                                                }
+                                            },
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 };
@@ -1022,7 +1096,7 @@ impl State {
             if let Some(ticker) = &self.selected_ticker {
                 match self.selected_exchange {
                     Some(Exchange::BinanceFutures) => {
-                        let binance_market_stream = binance::market_data::connect_market_stream(*ticker)
+                        let binance_market_stream: Subscription<Message> = binance::market_data::connect_market_stream(*ticker)
                             .map(|arg0: binance::market_data::Event| Message::MarketWsEvent(MarketEvents::Binance(arg0)));
 
                         subscriptions.push(binance_market_stream);
@@ -1030,14 +1104,13 @@ impl State {
                         let mut streams: Vec<(Ticker, Timeframe)> = vec![];
 
                         for (_, pane_state) in self.panes.iter() {
-                            let ticker = pane_state.stream.0.unwrap_or(Ticker::BTCUSDT);
-                            let timeframe = pane_state.stream.1.unwrap_or(Timeframe::M1);
-
-                            streams.push((ticker, timeframe));
+                            if let (Some(ticker), Some(timeframe)) = (pane_state.stream.0, pane_state.stream.1) {
+                                streams.push((ticker, timeframe));
+                            }
                         }
 
                         if !streams.is_empty() && self.kline_stream {
-                            let binance_kline_streams = binance::market_data::connect_kline_stream(streams)
+                            let binance_kline_streams: Subscription<Message> = binance::market_data::connect_kline_stream(streams)
                                 .map(|arg0: binance::market_data::Event| Message::MarketWsEvent(MarketEvents::Binance(arg0)));
 
                             subscriptions.push(binance_kline_streams);
@@ -1045,10 +1118,25 @@ impl State {
                     },
 
                     Some(Exchange::BybitLinear) => {
-                        let bybit_market_stream = bybit::market_data::connect_market_stream(*ticker)
+                        let bybit_market_stream: Subscription<Message> = bybit::market_data::connect_market_stream(*ticker)
                             .map(|arg0: bybit::market_data::Event| Message::MarketWsEvent(MarketEvents::Bybit(arg0)));
 
                         subscriptions.push(bybit_market_stream);
+
+                        let mut streams: Vec<(Ticker, Timeframe)> = vec![];
+
+                        for (_, pane_state) in self.panes.iter() {
+                            if let (Some(ticker), Some(timeframe)) = (pane_state.stream.0, pane_state.stream.1) {
+                                streams.push((ticker, timeframe));
+                            }
+                        }
+
+                        if !streams.is_empty() && self.kline_stream {
+                            let bybit_kline_streams: Subscription<Message> = bybit::market_data::connect_kline_stream(streams)
+                                .map(|arg0: bybit::market_data::Event| Message::MarketWsEvent(MarketEvents::Bybit(arg0)));
+
+                            subscriptions.push(bybit_kline_streams);
+                        }
                     },
 
                     None => {
@@ -1087,22 +1175,6 @@ where
         .on_press(on_blur)
     ]
     .into()
-}
-
-fn convert_bybit_trade_to_binance_trade(bybit_trade: bybit::market_data::Trade) -> binance::market_data::Trade {
-    binance::market_data::Trade {
-        price: bybit_trade.price,
-        qty: bybit_trade.qty,
-        time: bybit_trade.time,
-        is_sell: bybit_trade.is_sell,
-    }
-}
-fn convert_bybit_depth_to_binance_depth(bybit_depth: bybit::market_data::LocalDepthCache) -> binance::market_data::LocalDepthCache {
-    binance::market_data::LocalDepthCache {
-        time: bybit_depth.time,
-        bids: bybit_depth.bids.iter().map(|order| binance::market_data::Order { price: order.price, qty: order.qty }).collect(),
-        asks: bybit_depth.asks.iter().map(|order| binance::market_data::Order { price: order.price, qty: order.qty }).collect(),
-    }
 }
 
 fn view_content<'a, 'b: 'a>(
