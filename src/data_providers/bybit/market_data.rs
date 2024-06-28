@@ -96,8 +96,6 @@ impl Depth {
 
         self.bids = new_depth.bids;
         self.asks = new_depth.asks;
-
-        println!("Fetched depth: {:?}", self);
     }
 
     pub fn update_depth_cache(&mut self, new_bids: &[Order], new_asks: &[Order]) {
@@ -360,31 +358,45 @@ pub fn connect_kline_stream(vec: Vec<(Ticker, Timeframe)>) -> Subscription<Event
 
             let stream_str = vec.iter().map(|(ticker, timeframe)| {
                 let symbol_str = match ticker {
-                    Ticker::BTCUSDT => "btcusdt",
-                    Ticker::ETHUSDT => "ethusdt",
-                    Ticker::SOLUSDT => "solusdt",
-                    Ticker::LTCUSDT => "ltcusdt",
+                    Ticker::BTCUSDT => "BTCUSDT",
+                    Ticker::ETHUSDT => "ETHUSDT",
+                    Ticker::SOLUSDT => "SOLUSDT",
+                    Ticker::LTCUSDT => "LTCUSDT",
                 };
                 let timeframe_str = match timeframe {
-                    Timeframe::M1 => "1m",
-                    Timeframe::M3 => "3m",
-                    Timeframe::M5 => "5m",
-                    Timeframe::M15 => "15m",
-                    Timeframe::M30 => "30m",
+                    Timeframe::M1 => "1",
+                    Timeframe::M3 => "3",
+                    Timeframe::M5 => "5",
+                    Timeframe::M15 => "15",
+                    Timeframe::M30 => "30",
                 };
-                format!("{symbol_str}@kline_{timeframe_str}")
-            }).collect::<Vec<String>>().join("/");
+                format!("kline.{timeframe_str}.{symbol_str}")
+            }).collect::<Vec<String>>();
  
             loop {
                 match &mut state {
                     State::Disconnected => {
-                        let websocket_server = format!("wss://fstream.binance.com/stream?streams={stream_str}");
+                        let websocket_server = format!("wss://stream.bybit.com/v5/public/linear");
                         
-                        if let Ok((websocket, _)) = async_tungstenite::tokio::connect_async(
+                        if let Ok((mut websocket, _)) = async_tungstenite::tokio::connect_async(
                             websocket_server,
                         )
                         .await {
-                           state = State::Connected(websocket);
+                            let subscribe_message = serde_json::json!({
+                                "op": "subscribe",
+                                "args": stream_str 
+                            }).to_string();
+    
+                            if let Err(e) = websocket.send(tungstenite::Message::Text(subscribe_message)).await {
+                                eprintln!("Failed subscribing: {}", e);
+
+                                let _ = output.send(Event::Disconnected).await;
+
+                                continue;
+                            } 
+
+                            state = State::Connected(websocket);
+                            
                         } else {
                             tokio::time::sleep(tokio::time::Duration::from_secs(1))
                            .await;
@@ -393,31 +405,33 @@ pub fn connect_kline_stream(vec: Vec<(Ticker, Timeframe)>) -> Subscription<Event
                     }
                     State::Connected(websocket) => {
                         let mut fused_websocket = websocket.by_ref().fuse();
-
+                    
                         futures::select! {
                             received = fused_websocket.select_next_some() => {
                                 match received {
                                     Ok(tungstenite::Message::Text(message)) => {
                                         match serde_json::from_str::<serde_json::Value>(&message) {
                                             Ok(data) => {
-                                                match (data.get("data"), data["data"]["k"]["i"].as_str(), data["data"]["k"].as_object()) {
-                                                    (Some(inner_data), Some(interval), Some(kline_obj)) if inner_data["e"].as_str() == Some("kline") => {
+                                                if let Some(data_array) = data["data"].as_array() {
+                                                    for kline_obj in data_array {
                                                         let kline = Kline {
-                                                            time: kline_obj["t"].as_u64().unwrap_or_default(),
-                                                            open: kline_obj["o"].as_str().unwrap_or_default().parse::<f32>().unwrap_or_default(),
-                                                            high: kline_obj["h"].as_str().unwrap_or_default().parse::<f32>().unwrap_or_default(),
-                                                            low: kline_obj["l"].as_str().unwrap_or_default().parse::<f32>().unwrap_or_default(),
-                                                            close: kline_obj["c"].as_str().unwrap_or_default().parse::<f32>().unwrap_or_default(),
-                                                            volume: kline_obj["v"].as_str().unwrap_or_default().parse::<f32>().unwrap_or_default(),
-                                                            taker_buy_base_asset_volume: kline_obj["V"].as_str().unwrap_or_default().parse::<f32>().unwrap_or_default(),
+                                                            time: kline_obj["start"].as_u64().unwrap_or_default(),
+                                                            open: kline_obj["open"].as_str().unwrap_or_default().parse::<f32>().unwrap_or_default(),
+                                                            high: kline_obj["high"].as_str().unwrap_or_default().parse::<f32>().unwrap_or_default(),
+                                                            low: kline_obj["low"].as_str().unwrap_or_default().parse::<f32>().unwrap_or_default(),
+                                                            close: kline_obj["close"].as_str().unwrap_or_default().parse::<f32>().unwrap_or_default(),
+                                                            volume: kline_obj["volume"].as_str().unwrap_or_default().parse::<f32>().unwrap_or_default(),
                                                         };
-                                                
-                                                        if let Some(timeframe) = vec.iter().find(|(_, tf)| tf.to_string() == interval) {
-                                                            let _ = output.send(Event::KlineReceived(kline, timeframe.1)).await;
+
+                                                        let interval = kline_obj["interval"].as_str().unwrap_or_default();
+                     
+                                                        if let Some(timeframe) = string_to_timeframe(interval) {
+                                                            let _ = output.send(Event::KlineReceived(kline, timeframe)).await;
+                                                        } else {
+                                                            println!("Failed to find timeframe: {}, {:?}", interval, vec);
                                                         }
-                                                    },
-                                                    _ => continue,
-                                                }                                                
+                                                    }
+                                                }
                                             },
                                             Err(_) => continue,
                                         }
@@ -437,92 +451,70 @@ pub fn connect_kline_stream(vec: Vec<(Ticker, Timeframe)>) -> Subscription<Event
     )
 }
 
+fn string_to_timeframe(interval: &str) -> Option<Timeframe> {
+    Timeframe::ALL.iter().find(|&tf| tf.to_string() == format!("{}m", interval)).copied()
+}
+
 #[derive(Deserialize, Debug, Clone, Copy)]
 pub struct Kline {
-    #[serde(rename = "t")]
     pub time: u64,
-    #[serde(with = "string_to_f32", rename = "o")]
     pub open: f32,
-    #[serde(with = "string_to_f32", rename = "h")]
     pub high: f32,
-    #[serde(with = "string_to_f32", rename = "l")]
     pub low: f32,
-    #[serde(with = "string_to_f32", rename = "c")]
     pub close: f32,
-    #[serde(with = "string_to_f32", rename = "v")]
     pub volume: f32,
-    #[serde(with = "string_to_f32", rename = "V")]
-    pub taker_buy_base_asset_volume: f32,
 }
-#[derive(Deserialize, Debug, Clone)]
-struct FetchedKlines (
-    u64,
-    #[serde(with = "string_to_f32")] f32,
-    #[serde(with = "string_to_f32")] f32,
-    #[serde(with = "string_to_f32")] f32,
-    #[serde(with = "string_to_f32")] f32,
-    #[serde(with = "string_to_f32")] f32,
-    u64,
-    String,
-    u32,
-    #[serde(with = "string_to_f32")] f32,
-    String,
-    String,
-);
-impl From<FetchedKlines> for Kline {
-    fn from(fetched: FetchedKlines) -> Self {
-        Self {
-            time: fetched.0,
-            open: fetched.1,
-            high: fetched.2,
-            low: fetched.3,
-            close: fetched.4,
-            volume: fetched.5,
-            taker_buy_base_asset_volume: fetched.9,
-        }
-    }
+
+#[derive(Deserialize, Debug)]
+struct ApiResponse {
+    #[serde(rename = "retCode")]
+    ret_code: u32,
+    #[serde(rename = "retMsg")]
+    ret_msg: String,
+    result: ApiResult,
+}
+
+#[derive(Deserialize, Debug)]
+struct ApiResult {
+    symbol: String,
+    category: String,
+    list: Vec<Vec<Value>>,
 }
 
 pub async fn fetch_klines(ticker: Ticker, timeframe: Timeframe) -> Result<Vec<Kline>, reqwest::Error> {
     let symbol_str = match ticker {
-        Ticker::BTCUSDT => "btcusdt",
-        Ticker::ETHUSDT => "ethusdt",
-        Ticker::SOLUSDT => "solusdt",
-        Ticker::LTCUSDT => "ltcusdt",
+        Ticker::BTCUSDT => "BTCUSDT",
+        Ticker::ETHUSDT => "ETHUSDT",
+        Ticker::SOLUSDT => "SOLUSDT",
+        Ticker::LTCUSDT => "LTCUSDT",
     };
     let timeframe_str = match timeframe {
-        Timeframe::M1 => "1m",
-        Timeframe::M3 => "3m",
-        Timeframe::M5 => "5m",
-        Timeframe::M15 => "15m",
-        Timeframe::M30 => "30m",
+        Timeframe::M1 => "1",
+        Timeframe::M3 => "3",
+        Timeframe::M5 => "5",
+        Timeframe::M15 => "15",
+        Timeframe::M30 => "30",
     };
 
-    let url = format!("https://fapi.binance.com/fapi/v1/klines?symbol={symbol_str}&interval={timeframe_str}&limit=720");
+    let url = format!("https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol_str}&interval={timeframe_str}&limit=250");
 
-    let response = reqwest::get(&url).await?;
-    let text = response.text().await?;
-    let fetched_klines: Result<Vec<FetchedKlines>, _> = serde_json::from_str(&text);
-    let klines: Vec<Kline> = fetched_klines.unwrap().into_iter().map(Kline::from).collect();
+    let response: reqwest::Response = reqwest::get(&url).await?;
+    let text: String = response.text().await?;
+
+    let api_response: ApiResponse = serde_json::from_str(&text).unwrap();
+    
+    let klines: Vec<Kline> = api_response.result.list.iter().map(|kline| {
+        Kline {
+            time: kline[0].as_str().unwrap().parse::<u64>().unwrap(),
+            open: kline[1].as_str().unwrap().parse::<f32>().unwrap(),
+            high: kline[2].as_str().unwrap().parse::<f32>().unwrap(),
+            low: kline[3].as_str().unwrap().parse::<f32>().unwrap(),
+            close: kline[4].as_str().unwrap().parse::<f32>().unwrap(),
+            volume: kline[5].as_str().unwrap().parse::<f32>().unwrap(),
+        }
+    }).collect();
 
     Ok(klines)
-}
-
-pub async fn fetch_depth(ticker: Ticker) -> Result<FetchedDepth, reqwest::Error> {
-    let symbol_str = match ticker {
-        Ticker::BTCUSDT => "btcusdt",
-        Ticker::ETHUSDT => "ethusdt",
-        Ticker::SOLUSDT => "solusdt",
-        Ticker::LTCUSDT => "ltcusdt",
-    };
-
-    let url = format!("https://fapi.binance.com/fapi/v1/depth?symbol={symbol_str}&limit=500");
-
-    let response = reqwest::get(&url).await?;
-    let text = response.text().await?;
-    let depth: FetchedDepth = serde_json::from_str(&text).unwrap();
-
-    Ok(depth)
 }
 
 pub async fn fetch_ticksize(ticker: Ticker) -> Result<f32, reqwest::Error> {
