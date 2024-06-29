@@ -494,7 +494,7 @@ impl State {
                                                     low: kline.low,
                                                     close: kline.close,
                                                     volume: kline.volume,
-                                                    taker_buy_base_asset_volume: 1.0,
+                                                    taker_buy_base_asset_volume: -1.0,
                                                 }
                                             }).collect();
 
@@ -587,7 +587,7 @@ impl State {
                                                             low: kline.low,
                                                             close: kline.close,
                                                             volume: kline.volume,
-                                                            taker_buy_base_asset_volume: 1.0,
+                                                            taker_buy_base_asset_volume: -1.0,
                                                         }
                                                     }).collect();
 
@@ -775,7 +775,7 @@ impl State {
                                             low: kline.low,
                                             close: kline.close,
                                             volume: kline.volume,
-                                            taker_buy_base_asset_volume: 1.0,
+                                            taker_buy_base_asset_volume: -1.0,
                                         };
 
                                         match pane_state.id {

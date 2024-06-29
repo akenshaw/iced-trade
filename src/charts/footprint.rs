@@ -168,7 +168,12 @@ impl Footprint {
             kline_value.2 = kline.low;
             kline_value.3 = kline.close;
             kline_value.4 = kline.taker_buy_base_asset_volume;
-            kline_value.5 = kline.volume - kline.taker_buy_base_asset_volume;
+
+            if kline_value.4 != -1.0 {
+                kline_value.5 = kline.volume - kline.taker_buy_base_asset_volume;
+            } else {
+                kline_value.5 = kline.volume;
+            }
         }
     }
     
@@ -572,22 +577,31 @@ impl canvas::Program<Message> for Footprint {
                 }
 
                 if max_volume > 0.0 {
-                    let buy_bar_height = (kline.4 / max_volume) * volume_area_height;
-                    let sell_bar_height = (kline.5 / max_volume) * volume_area_height;
+                    if kline.4 != -1.0 {
+                        let buy_bar_height = (kline.4 / max_volume) * volume_area_height;
+                        let sell_bar_height = (kline.5 / max_volume) * volume_area_height;
 
-                    let sell_bar_width = 8.0 * self.scaling;
-                    let sell_bar_x_position = x_position - (5.0*self.scaling) - sell_bar_width;
-                    let sell_bar = Path::rectangle(
-                        Point::new(sell_bar_x_position, bounds.height - sell_bar_height), 
-                        Size::new(sell_bar_width, sell_bar_height)
-                    );
-                    frame.fill(&sell_bar, Color::from_rgb8(192, 80, 77)); 
+                        let sell_bar_width = 8.0 * self.scaling;
+                        let sell_bar_x_position = x_position - (5.0*self.scaling) - sell_bar_width;
+                        let sell_bar = Path::rectangle(
+                            Point::new(sell_bar_x_position, bounds.height - sell_bar_height), 
+                            Size::new(sell_bar_width, sell_bar_height)
+                        );
+                        frame.fill(&sell_bar, Color::from_rgb8(192, 80, 77)); 
 
-                    let buy_bar = Path::rectangle(
-                        Point::new(x_position + (5.0*self.scaling), bounds.height - buy_bar_height), 
-                        Size::new(8.0 * self.scaling, buy_bar_height)
-                    );
-                    frame.fill(&buy_bar, Color::from_rgb8(81, 205, 160));
+                        let buy_bar = Path::rectangle(
+                            Point::new(x_position + (5.0*self.scaling), bounds.height - buy_bar_height), 
+                            Size::new(8.0 * self.scaling, buy_bar_height)
+                        );
+                        frame.fill(&buy_bar, Color::from_rgb8(81, 205, 160));
+                    } else {
+                        let bar_height = (kline.5 / max_volume) * volume_area_height;
+                        let bar = Path::rectangle(
+                            Point::new(x_position - (3.0*self.scaling), bounds.height - bar_height), 
+                            Size::new(6.0 * self.scaling, bar_height)
+                        );
+                        frame.fill(&bar, Color::from_rgba8(200, 200, 200, 0.4));
+                    }
                 }
             } 
             
@@ -630,10 +644,19 @@ impl canvas::Program<Message> for Footprint {
 
                     if let Some((_, kline)) = self.data_points.iter()
                         .find(|(time, _)| **time == rounded_timestamp) {
-                            let tooltip_text = format!(
-                                "O: {} H: {} L: {} C: {}\nBuyV: {:.0} SellV: {:.0}",
-                                kline.1.0, kline.1.1, kline.1.2, kline.1.3, kline.1.4, kline.1.5
-                            );
+
+                            let tooltip_text: String;
+                            if kline.1.4 != -1.0 {
+                                tooltip_text = format!(
+                                    "O: {} H: {} L: {} C: {}\nBuyV: {:.0} SellV: {:.0}",
+                                    kline.1.0, kline.1.1, kline.1.2, kline.1.3, kline.1.4, kline.1.5
+                                );
+                            } else {
+                                tooltip_text = format!(
+                                    "O: {} H: {} L: {} C: {}\nVolume: {:.0}",
+                                    kline.1.0, kline.1.1, kline.1.2, kline.1.3, kline.1.5
+                                );
+                            }
 
                             let text = canvas::Text {
                                 content: tooltip_text,
