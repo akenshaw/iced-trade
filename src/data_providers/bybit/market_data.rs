@@ -517,7 +517,9 @@ pub async fn fetch_klines(ticker: Ticker, timeframe: Timeframe) -> Result<Vec<Kl
     Ok(klines)
 }
 
-pub async fn fetch_ticksize(ticker: Ticker) -> Result<f32, reqwest::Error> {
+use anyhow::{Result, Context};
+
+pub async fn fetch_ticksize(ticker: Ticker) -> Result<f32> {
     let symbol_str = match ticker {
         Ticker::BTCUSDT => "BTCUSDT",
         Ticker::ETHUSDT => "ETHUSDT",
@@ -525,17 +527,27 @@ pub async fn fetch_ticksize(ticker: Ticker) -> Result<f32, reqwest::Error> {
         Ticker::LTCUSDT => "LTCUSDT",
     };
 
-    let url = format!("https://fapi.binance.com/fapi/v1/exchangeInfo");
+    let url = format!("https://api.bybit.com/v5/market/instruments-info?category=linear&symbol={}", symbol_str);
 
-    let response = reqwest::get(&url).await?;
-    let text = response.text().await?;
-    let exchange_info: Value = serde_json::from_str(&text).unwrap();
+    let response: reqwest::Response = reqwest::get(&url).await.context("Failed to send request")?;
+    let text: String = response.text().await.context("Failed to read response text")?;
+    let exchange_info: Value = serde_json::from_str(&text).context("Failed to parse JSON")?;
 
-    let symbols = exchange_info["symbols"].as_array().unwrap();
+    let result_list: &Vec<Value> = exchange_info["result"]["list"].as_array().context("Result list is not an array")?;
 
-    let symbol = symbols.iter().find(|x| x["symbol"].as_str().unwrap() == symbol_str).unwrap();
+    for item in result_list {
+        if item["symbol"] == symbol_str {
+            if let Some(price_filter) = item["priceFilter"].as_object() {
+                if let Some(tick_size_str) = price_filter.get("tickSize") {
+                    if let Ok(tick_size) = tick_size_str.as_str().unwrap().parse::<f32>() {
 
-    let tick_size = symbol["filters"].as_array().unwrap().iter().find(|x| x["filterType"].as_str().unwrap() == "PRICE_FILTER").unwrap()["tickSize"].as_str().unwrap().parse::<f32>().unwrap();
+                        println!("Tick size for {} is {}", symbol_str, tick_size);
+                        return Ok(tick_size);
+                    }
+                }
+            }
+        }
+    }
 
-    Ok(tick_size)
+    anyhow::bail!("Tick size not found for symbol {}", symbol_str)
 }
