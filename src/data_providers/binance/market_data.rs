@@ -1,19 +1,12 @@
-use hmac::digest::typenum::Or;
 use iced::futures;  
 use iced::subscription::{self, Subscription};
 use serde::{de, Deserialize, Deserializer};
-use futures::channel::mpsc;
 use futures::sink::SinkExt;
 use futures::stream::StreamExt;
 
 use async_tungstenite::tungstenite;
 use serde_json::Value;
 use crate::{Ticker, Timeframe};
-
-use tokio::time::{interval, Duration};
-use futures::FutureExt;
-use std::sync::{Arc, RwLock, Mutex};
-use std::collections::{BTreeMap, HashMap};
 
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
@@ -35,7 +28,7 @@ pub enum Event {
 }
 
 #[derive(Debug, Clone)]
-pub struct Connection(mpsc::Sender<String>);
+pub struct Connection;
 
 impl<'de> Deserialize<'de> for Order {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>

@@ -30,6 +30,7 @@ hex = "0.4.3"
 iced_table = "0.12.0"
 iced_futures = "0.12.0"
 iced_aw = { version = "0.8.0", features = ["quad", "menu"] }
+anyhow = "1.0.86"
 [dependencies.async-tungstenite]
 version = "0.25"
 features = ["tokio-rustls-webpki-roots"]

@@ -85,7 +85,13 @@ impl CustomLine {
 
     pub fn insert_datapoint(&mut self, kline: &Kline) {
         let buy_volume = kline.taker_buy_base_asset_volume;
-        let sell_volume = kline.volume - buy_volume;
+        let sell_volume: f32;
+        
+        if buy_volume != -1.0 {
+            sell_volume = kline.volume - buy_volume;
+        } else {
+            sell_volume = kline.volume;
+        }
         self.klines_raw.insert(kline.time as i64, (kline.open, kline.high, kline.low, kline.close, buy_volume, sell_volume));
 
         self.render_start();
@@ -527,20 +533,30 @@ impl canvas::Program<Message> for CustomLine {
                 );
                 frame.stroke(&wick, Stroke::default().with_color(color).with_width(1.0));
 
-                let buy_bar_height = (buy_volume / max_volume) * volume_area_height;
-                let sell_bar_height = (sell_volume / max_volume) * volume_area_height;
-                
-                let buy_bar = Path::rectangle(
-                    Point::new(x_position as f32, bounds.height - buy_bar_height), 
-                    Size::new(2.0 * self.scaling, buy_bar_height)
-                );
-                frame.fill(&buy_bar, Color::from_rgb8(81, 205, 160)); 
-                
-                let sell_bar = Path::rectangle(
-                    Point::new(x_position as f32 - (2.0 * self.scaling), bounds.height - sell_bar_height), 
-                    Size::new(2.0 * self.scaling, sell_bar_height)
-                );
-                frame.fill(&sell_bar, Color::from_rgb8(192, 80, 77)); 
+                if buy_volume != -1.0 {
+                    let buy_bar_height = (buy_volume / max_volume) * volume_area_height;
+                    let sell_bar_height = (sell_volume / max_volume) * volume_area_height;
+                    
+                    let buy_bar = Path::rectangle(
+                        Point::new(x_position as f32, bounds.height - buy_bar_height), 
+                        Size::new(2.0 * self.scaling, buy_bar_height)
+                    );
+                    frame.fill(&buy_bar, Color::from_rgb8(81, 205, 160)); 
+                    
+                    let sell_bar = Path::rectangle(
+                        Point::new(x_position as f32 - (2.0 * self.scaling), bounds.height - sell_bar_height), 
+                        Size::new(2.0 * self.scaling, sell_bar_height)
+                    );
+                    frame.fill(&sell_bar, Color::from_rgb8(192, 80, 77)); 
+                } else {
+                    let bar_height = ((sell_volume) / max_volume) * volume_area_height;
+                    
+                    let bar = Path::rectangle(
+                        Point::new(x_position as f32 - (2.0 * self.scaling), bounds.height - bar_height), 
+                        Size::new(4.0 * self.scaling, bar_height)
+                    );
+                    frame.fill(&bar, Color::from_rgba8(200, 200, 200, 0.4)); 
+                }
             }
         });
 
@@ -569,10 +585,18 @@ impl canvas::Program<Message> for CustomLine {
                     if let Some((_, kline)) = self.klines_raw.iter()
                         .find(|(time, _)| **time == rounded_timestamp as i64) {
 
-                        let tooltip_text = format!(
-                            "O: {} H: {} L: {} C: {}\nBuyV: {:.0} SellV: {:.0}",
-                            kline.0, kline.1, kline.2, kline.3, kline.4, kline.5
-                        );
+                        let tooltip_text: String;
+                        if kline.4 != -1.0 {
+                            tooltip_text = format!(
+                                "O: {} H: {} L: {} C: {}\nBuyV: {:.0} SellV: {:.0}",
+                                kline.0, kline.1, kline.2, kline.3, kline.4, kline.5
+                            );
+                        } else {
+                            tooltip_text = format!(
+                                "O: {} H: {} L: {} C: {}\nVolume: {:.0}",
+                                kline.0, kline.1, kline.2, kline.3, kline.5
+                            );
+                        }
 
                         let text = canvas::Text {
                             content: tooltip_text,
