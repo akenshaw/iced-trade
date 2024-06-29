@@ -55,7 +55,7 @@ impl Footprint {
         }
         for trade in trades_raw {
             let rounded_time = (trade.time / aggregate_time) * aggregate_time;
-            let price_level = (trade.price / tick_size).round() as i64 * (tick_size * 100.0) as i64;
+            let price_level: i64 = (trade.price * (1.0 / tick_size)).round() as i64;
 
             let entry: &mut (HashMap<i64, (f32, f32)>, (f32, f32, f32, f32, f32, f32)) = data_points
                 .entry(rounded_time)
