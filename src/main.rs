@@ -457,24 +457,60 @@ impl State {
 
                 self.kline_stream = false;
                 
-                let mut Tasks = vec![];
-                let mut dropped_streams = vec![];
+                let mut tasks = vec![];
 
                 if let Some(pane) = self.panes.panes.get_mut(&pane) {
                     let pane_id = pane.id;
 
                     pane.stream.1 = Some(timeframe);
-                    
-                    let fetch_klines = Task::perform(
-                    market_data::fetch_klines(*selected_ticker, timeframe)
-                        .map_err(|err| format!("{err}")), 
-                    move |klines| {
-                        Message::FetchEvent(klines, pane_id, timeframe)
-                    });
 
-                    dropped_streams.push(pane.id);
-                    
-                    Tasks.push(fetch_klines);                                  
+                    match self.selected_exchange {
+                        Some(Exchange::BinanceFutures) => {
+                            let fetch_klines = Task::perform(
+                                market_data::fetch_klines(*selected_ticker, timeframe)
+                                    .map_err(|err| format!("{err}")), 
+                                move |klines| {
+                                    Message::FetchEvent(klines, pane_id, timeframe)
+                                }
+                            );
+                            
+                            tasks.push(fetch_klines);
+                        },
+                        Some(Exchange::BybitLinear) => {
+                            let fetch_klines: Task<Message> = Task::perform(
+                                bybit::market_data::fetch_klines(self.selected_ticker.unwrap_or(Ticker::BTCUSDT), timeframe)
+                                    .map_err(|err| format!("{err}")), 
+                                move |klines: Result<Vec<bybit::market_data::Kline>, String>| {
+
+                                    match klines {
+                                        Ok(klines) => {
+                                            let binance_klines: Vec<market_data::Kline> = klines.iter().map(|kline| {
+                                                market_data::Kline {
+                                                    time: kline.time,
+                                                    open: kline.open,
+                                                    high: kline.high,
+                                                    low: kline.low,
+                                                    close: kline.close,
+                                                    volume: kline.volume,
+                                                    taker_buy_base_asset_volume: 1.0,
+                                                }
+                                            }).collect();
+
+                                            Message::FetchEvent(Ok(binance_klines), pane_id, timeframe)
+                                        },
+                                        Err(err) => {
+                                            Message::Debug(err)
+                                        }
+                                    }
+                                }
+                            );
+                            
+                            tasks.push(fetch_klines);
+                        },
+                        None => {
+                            eprintln!("No exchange selected");
+                        }
+                    }                               
                 };
         
                 // sleep to drop existent stream and create new one
@@ -484,9 +520,9 @@ impl State {
                     },
                     move |()| Message::CutTheKlineStream
                 );
-                Tasks.push(remove_active_stream);
+                tasks.push(remove_active_stream);
 
-                Task::batch(Tasks)
+                Task::batch(tasks)
             },
             Message::ExchangeSelected(exchange) => {
                 self.selected_exchange = Some(exchange);
@@ -595,7 +631,7 @@ impl State {
                             },
                             PaneId::FootprintChart => {
                                 if let Some(heatmap_chart) = &mut self.heatmap_chart {
-                                    let copied_trades = heatmap_chart.get_raw_trades();
+                                    let copied_trades: Vec<Trade> = heatmap_chart.get_raw_trades();
 
                                     let mut klines_raw: Vec<(i64, f32, f32, f32, f32, f32, f32)> = vec![];
                                     for kline in &klines {
