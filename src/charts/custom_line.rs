@@ -555,7 +555,9 @@ impl canvas::Program<Message> for CustomLine {
                         Point::new(x_position as f32 - (2.0 * self.scaling), bounds.height - bar_height), 
                         Size::new(4.0 * self.scaling, bar_height)
                     );
-                    frame.fill(&bar, Color::from_rgba8(200, 200, 200, 0.4)); 
+                    let color = if close >= open { Color::from_rgba8(81, 205, 160, 0.8) } else { Color::from_rgba8(192, 80, 77, 0.8) };
+
+                    frame.fill(&bar, color);
                 }
             }
         });
