@@ -258,6 +258,8 @@ pub enum Message {
 
     TicksizeSelected(u16),
     SetMinTickSize(f32),
+    
+    ErrorOccurred(String),
 }
 
 struct State {
@@ -543,10 +545,12 @@ impl State {
                         }
                         if pane_state.id == PaneId::FootprintChart {
                             let fetch_ticksize: Task<Message> = Task::perform(
-                                market_data::fetch_ticksize(self.selected_ticker.unwrap_or(Ticker::BTCUSDT))
-                                    .map_err(|err| format!("{err}")), 
-                                move |ticksize: Result<f32, String>| {
-                                    Message::SetMinTickSize(ticksize.unwrap_or(1.0))
+                                bybit::market_data::fetch_ticksize(self.selected_ticker.unwrap_or(Ticker::BTCUSDT)),
+                                move |result| match result {
+                                    Ok(ticksize) => Message::SetMinTickSize(ticksize),
+                                    Err(err) => {
+                                        Message::ErrorOccurred(err.to_string())
+                                    }
                                 }
                             );
                             tasks.push(fetch_ticksize);
@@ -927,6 +931,11 @@ impl State {
             },
             Message::HideLayoutModal => {
                 self.show_layout_modal = false;
+                Task::none()
+            },
+
+            Message::ErrorOccurred(err) => {
+                eprintln!("{err}");
                 Task::none()
             },
         }
