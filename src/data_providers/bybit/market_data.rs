@@ -1,5 +1,3 @@
-use std::os::macos::raw::stat;
-
 use iced::futures;  
 use iced::subscription::{self, Subscription};
 use serde::{de, Deserialize, Deserializer};
@@ -8,6 +6,7 @@ use futures::stream::StreamExt;
 
 use async_tungstenite::tungstenite;
 use serde_json::Value;
+use crate::data_providers::binance::market_data::FeedLatency;
 use crate::{Ticker, Timeframe};
 
 #[derive(Debug)]
@@ -25,7 +24,7 @@ enum State {
 pub enum Event {
     Connected(Connection),
     Disconnected,
-    DepthReceived(i64, LocalDepthCache, Vec<Trade>),
+    DepthReceived(FeedLatency, i64, LocalDepthCache, Vec<Trade>),
     KlineReceived(Kline, Timeframe),
 }
 
@@ -195,9 +194,7 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
 
             let mut orderbook: Depth = Depth::new();
 
-            let mut already_fetching: bool = false;
-
-            let mut prev_id: i64 = 0;
+            let mut trade_latencies: Vec<i64> = Vec::new();
 
             loop {
                 match &mut state {
@@ -234,6 +231,8 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
                     State::Connected(websocket) => {
                         let mut fused_websocket = websocket.by_ref().fuse();
 
+                        let feed_latency: FeedLatency;
+
                         futures::select! {
                             received = fused_websocket.select_next_some() => {
                                 match received {
@@ -244,8 +243,12 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
                                                     stream.data.as_array().unwrap().iter().for_each(|trade| {
                                                         if let Ok(trade) = serde_json::from_value::<Trade>(trade.clone()) {
                                                             trades_buffer.push(trade);
+
+                                                            let latency = chrono::Utc::now().timestamp_millis() - trade.time;
+
+                                                            trade_latencies.push(latency);
                                                         } else {
-                                                            println!("Failed to deserialize trade: {:?}", trade);
+                                                            eprintln!("Failed to deserialize trade: {:?}", trade);
                                                         }
                                                     });
 
@@ -277,7 +280,27 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
 
                                                         let (local_bids, local_asks) = orderbook.update_levels(new_depth);
 
-                                                        let _ = output.send(Event::DepthReceived(stream.time, LocalDepthCache {
+                                                        let depth_latency = chrono::Utc::now().timestamp_millis() - stream.time;
+
+                                                        if !trade_latencies.is_empty() {
+                                                            let avg_trade_latency = trade_latencies.iter().sum::<i64>() / trade_latencies.len() as i64;
+        
+                                                            feed_latency = FeedLatency {
+                                                                time: stream.time,
+                                                                depth_latency,
+                                                                trade_latency: Some(avg_trade_latency),
+                                                            };
+        
+                                                            trade_latencies.clear();
+                                                        } else {
+                                                            feed_latency = FeedLatency {
+                                                                time: stream.time,
+                                                                depth_latency,
+                                                                trade_latency: None,
+                                                            };
+                                                        }
+
+                                                        let _ = output.send(Event::DepthReceived(feed_latency, stream.time, LocalDepthCache {
                                                             time: stream.time,
                                                             bids: local_bids,
                                                             asks: local_asks,
@@ -313,7 +336,7 @@ struct Stream {
     data: Value,
 }
  
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, Clone, Copy)]
 pub struct Trade {
     #[serde(rename = "T")]
     pub time: i64,
