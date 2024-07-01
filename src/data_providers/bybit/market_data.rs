@@ -253,13 +253,14 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
                                                     });
 
                                                 } else if stream.topic == stream_2 {
+                                                    let update_id = stream.data["u"].as_i64().unwrap();
 
-                                                    if stream.stream_type == "snapshot" {
+                                                    if (stream.stream_type == "snapshot") || (update_id == 1) {
                                                         let bids = stream.data["b"].as_array().unwrap();
                                                         let asks = stream.data["a"].as_array().unwrap();
 
                                                         let fetched_depth = Depth {
-                                                            last_update_id: stream.time,
+                                                            last_update_id: update_id,
                                                             time: stream.time,
                                                             bids: bids.iter().map(|x| serde_json::from_value::<Order>(x.clone()).unwrap()).collect(),
                                                             asks: asks.iter().map(|x| serde_json::from_value::<Order>(x.clone()).unwrap()).collect(),
@@ -272,7 +273,7 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
                                                         let asks = stream.data["a"].as_array().unwrap();
 
                                                         let new_depth = Depth {
-                                                            last_update_id: stream.time,
+                                                            last_update_id: update_id,
                                                             time: stream.time,
                                                             bids: bids.iter().map(|x| serde_json::from_value::<Order>(x.clone()).unwrap()).collect(),
                                                             asks: asks.iter().map(|x| serde_json::from_value::<Order>(x.clone()).unwrap()).collect(),
@@ -331,7 +332,7 @@ struct Stream {
     topic: String,
     #[serde(rename = "type")]
     stream_type: String,
-    #[serde(rename = "ts")]
+    #[serde(rename = "cts", default)]
     time: i64,
     data: Value,
 }
