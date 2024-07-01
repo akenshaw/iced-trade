@@ -257,7 +257,7 @@ pub enum Message {
     ShowLayoutModal,
     HideLayoutModal,
 
-    TicksizeSelected(u16),
+    TicksizeSelected(TickMultiplier),
     SetMinTickSize(f32),
     
     ErrorOccurred(String),
@@ -295,7 +295,7 @@ struct State {
 
     kline_stream: bool,
 
-    tick_multiply: u16,
+    tick_multiply: TickMultiplier,
     min_tick_size: Option<f32>,
 
     exchange_latency: Option<u32>,
@@ -384,7 +384,7 @@ impl State {
             focus: None,
             first_pane,
             pane_lock: false,
-            tick_multiply: 1,
+            tick_multiply: TickMultiplier(10),
             min_tick_size: None, 
 
             exchange_latency: None,
@@ -427,7 +427,8 @@ impl State {
                     let copied_trades = heatmap_chart.get_raw_trades();
 
                     if let Some(footprint_chart) = &mut self.footprint_chart {
-                        footprint_chart.change_tick_size(copied_trades, self.tick_multiply as f32 * self.min_tick_size.unwrap_or(1.0));
+                        let tick_size = self.tick_multiply.multiply_with_min_tick_size(self.min_tick_size.unwrap_or(1.0));
+                        footprint_chart.change_tick_size(copied_trades, tick_size);
                     }
                 }
 
@@ -446,14 +447,15 @@ impl State {
             Message::TicksizeSelected(tick_multiply) => {
                 if let Some(heatmap_chart) = &mut self.heatmap_chart {
                     let copied_trades = heatmap_chart.get_raw_trades();
-
+            
                     if let Some(footprint_chart) = &mut self.footprint_chart {
-                        footprint_chart.change_tick_size(copied_trades, tick_multiply as f32 * self.min_tick_size.unwrap_or(1.0));
-
+                        let tick_size = tick_multiply.multiply_with_min_tick_size(self.min_tick_size.unwrap_or(1.0));
+                        footprint_chart.change_tick_size(copied_trades, tick_size);
+            
                         self.tick_multiply = tick_multiply;
                     }
                 }
-
+            
                 Task::none()
             },
             Message::TimeframeSelected(timeframe, pane) => {
@@ -684,7 +686,7 @@ impl State {
                                         Timeframe::M30 => 30,
                                     };
 
-                                    let tick_size = self.tick_multiply as f32 * self.min_tick_size.unwrap_or_default();
+                                    let tick_size = self.tick_multiply.multiply_with_min_tick_size(self.min_tick_size.unwrap_or(1.0));
 
                                     self.footprint_chart = Some(Footprint::new(timeframe_u16, tick_size, klines_raw, copied_trades));
                                 }
@@ -883,11 +885,9 @@ impl State {
                             let mut trade_latency_count: i64 = 0;
 
                             for feed_latency in self.feed_latency_cache.iter() {
-                                // Always add depth_latency
                                 depth_latency_sum += feed_latency.depth_latency;
                                 depth_latency_count += 1;
 
-                                // Add trade_latency if it exists
                                 if let Some(trade_latency) = feed_latency.trade_latency {
                                     trade_latency_sum += trade_latency;
                                     trade_latency_count += 1;
@@ -1217,7 +1217,6 @@ impl State {
                     .spacing(10)
                     .push(ws_controls)
                     .push(Space::with_width(Length::Fill))
-                    .push(button("Debug").on_press(Message::Debug("Debug".to_string())))                
                     .push(layout_controls)
             )
             .push(pane_grid);
@@ -1548,7 +1547,7 @@ fn view_controls<'a>(
     total_panes: usize,
     is_maximized: bool,
     selected_timeframe: Option<&'a Timeframe>,
-    selected_ticksize: u16,
+    selected_ticksize: TickMultiplier,
 ) -> Element<'a, Message> {
     let mut row = row![].spacing(5);
 
@@ -1564,15 +1563,20 @@ fn view_controls<'a>(
             selected_timeframe,
             move |timeframe| Message::TimeframeSelected(timeframe, pane),
         ).placeholder("Choose a timeframe...").text_size(11).width(iced::Pixels(80.0));
-        row = row.push(timeframe_picker);
+
+        let tooltip = tooltip(timeframe_picker, "Timeframe", tooltip::Position::Top).style(style::tooltip);
+
+        row = row.push(tooltip);
     }
     if pane_id == PaneId::FootprintChart {
         let ticksize_picker = pick_list(
-            [1, 2, 5, 10, 25, 50, 100, 200],
-            Some(selected_ticksize),
+            [TickMultiplier(1), TickMultiplier(2), TickMultiplier(5), TickMultiplier(10), TickMultiplier(25), TickMultiplier(50), TickMultiplier(100), TickMultiplier(200)],
+            Some(selected_ticksize), 
             Message::TicksizeSelected,
         ).placeholder("Ticksize multiplier...").text_size(11).width(iced::Pixels(80.0));
-        row = row.push(ticksize_picker);
+        let tooltip = tooltip(ticksize_picker, "Ticksize multiplier", tooltip::Position::Top).style(style::tooltip);
+
+        row = row.push(tooltip);
     }
 
     let mut buttons = vec![
@@ -1593,6 +1597,20 @@ fn view_controls<'a>(
     } 
 
     row.into()
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TickMultiplier(u16);
+
+impl std::fmt::Display for TickMultiplier {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}x", self.0)
+    }
+}
+
+impl TickMultiplier {
+    fn multiply_with_min_tick_size(&self, min_tick_size: f32) -> f32 {
+        self.0 as f32 * min_tick_size
+    }
 }
 
 use crate::market_data::Trade;
