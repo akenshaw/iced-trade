@@ -298,7 +298,7 @@ struct State {
     tick_multiply: TickMultiplier,
     min_tick_size: Option<f32>,
 
-    exchange_latency: Option<u32>,
+    exchange_latency: Option<(u32, u32)>,
 
     feed_latency_cache: VecDeque<FeedLatency>,
 }
@@ -767,27 +767,20 @@ impl State {
                                 }
                             }
 
-                            let average_depth_latency = if depth_latency_count > 0 {
+                            let average_depth_latency: Option<i64> = if depth_latency_count > 0 {
                                 Some(depth_latency_sum / depth_latency_count)
                             } else {
                                 None
                             };
 
-                            let average_trade_latency = if trade_latency_count > 0 {
+                            let average_trade_latency: Option<i64> = if trade_latency_count > 0 {
                                 Some(trade_latency_sum / trade_latency_count)
                             } else {
                                 None
                             };
 
-                            let highest_average_latency = match (average_depth_latency, average_trade_latency) {
-                                (Some(depth), Some(trade)) => Some(std::cmp::max(depth, trade) as u32),
-                                (Some(depth), None) => Some(depth as u32),
-                                (None, Some(trade)) => Some(trade as u32),
-                                (None, None) => None,
-                            };
-
-                            if let Some(latency) = highest_average_latency {
-                                self.exchange_latency = Some(latency);
+                            if let (Some(average_depth_latency), Some(average_trade_latency)) = (average_depth_latency, average_trade_latency) {
+                                self.exchange_latency = Some((average_depth_latency as u32, average_trade_latency as u32));
                             }
 
                             while self.feed_latency_cache.len() > 100 {
@@ -906,15 +899,8 @@ impl State {
                                 None
                             };
 
-                            let highest_average_latency = match (average_depth_latency, average_trade_latency) {
-                                (Some(depth), Some(trade)) => Some(std::cmp::max(depth, trade) as u32),
-                                (Some(depth), None) => Some(depth as u32),
-                                (None, Some(trade)) => Some(trade as u32),
-                                (None, None) => None,
-                            };
-
-                            if let Some(latency) = highest_average_latency {
-                                self.exchange_latency = Some(latency);
+                            if let (Some(average_depth_latency), Some(average_trade_latency)) = (average_depth_latency, average_trade_latency) {
+                                self.exchange_latency = Some((average_depth_latency as u32, average_trade_latency as u32));
                             }
 
                             while self.feed_latency_cache.len() > 100 {
@@ -1170,23 +1156,57 @@ impl State {
             .push(ws_button);
 
         if self.ws_running {
+            let exchange_latency_tooltip: String;
+            let mut highest_latency: i32 = 0;
+
+            if let Some((depth_latency, trade_latency)) = self.exchange_latency {
+                exchange_latency_tooltip = format!(
+                    "Feed Latencies\n->Depth: {depth_latency} ms\n->Trade: {trade_latency} ms",
+                );
+
+                highest_latency = std::cmp::max(depth_latency as i32, trade_latency as i32);
+            } else {
+                exchange_latency_tooltip = "No latency data".to_string();
+
+                highest_latency = 0;
+            }
+
+            let exchange_latency_tooltip = Text::new(exchange_latency_tooltip).size(12);
+
+            let latency_emoji: &str = if highest_latency > 250 {
+                "🔴"
+            } else if highest_latency > 100 {
+                "🟠"
+            } else {
+                "🟢"
+            };
+                
+            let exchange_info = Row::new()
+                .spacing(5)
+                .align_items(Alignment::Center)
+                .push(
+                    Text::new(latency_emoji)
+                        .shaping(text::Shaping::Advanced).size(8)
+                )
+                .push(
+                    Column::new()
+                        .align_items(Alignment::Start)
+                        .push(
+                            Text::new(self.selected_exchange.unwrap_or_else(|| { dbg!("No exchange found"); Exchange::BinanceFutures }).to_string()).size(10)
+                        )
+                        .push(
+                            Text::new(format!("{} ms", highest_latency)).size(10)
+                        )
+                );
+            
             ws_controls = ws_controls.push(
                 Row::new()
                     .spacing(10)
                     .align_items(Alignment::Center)
+                    .push(tooltip(exchange_info, exchange_latency_tooltip, tooltip::Position::Bottom).style(style::tooltip))
                     .push(
-                        Column::new()
-                            .align_items(Alignment::Start)
-                            .push(
-                        Text::new(self.selected_exchange.unwrap_or_else(|| { dbg!("No exchange found"); Exchange::BinanceFutures }).to_string()).size(10)
-                            )
-                            .push(
-                                tooltip(Text::new(format!("{} ms", self.exchange_latency.unwrap_or_default())).size(10), "Exchange feed latency", tooltip::Position::Bottom).style(style::tooltip)
-                            )
+                        Text::new(self.selected_ticker.unwrap_or_else(|| { dbg!("No ticker found"); Ticker::BTCUSDT }).to_string()).size(20)
                     )
-                    .push(
-                Text::new(self.selected_ticker.unwrap_or_else(|| { dbg!("No ticker found"); Ticker::BTCUSDT } ).to_string()).size(20)
-                    )   
             );
         } else {
             let symbol_pick_list = pick_list(
