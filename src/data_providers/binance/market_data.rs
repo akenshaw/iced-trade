@@ -1,3 +1,4 @@
+use hyper::client::conn;
 use iced::futures;  
 use iced::subscription::{self, Subscription};
 use serde::{de, Deserialize, Deserializer};
@@ -8,14 +9,32 @@ use async_tungstenite::tungstenite;
 use serde_json::Value;
 use crate::{Ticker, Timeframe};
 
-#[derive(Debug)]
+use bytes::Bytes;
+
+use sonic_rs::{LazyValue, JsonValueTrait};
+use sonic_rs::{Deserialize as SonicDe, Serialize}; 
+use sonic_rs::{to_array_iter, to_object_iter_unchecked};
+use anyhow::{Context, Result};
+
+use fastwebsockets::FragmentCollector;
+use fastwebsockets::Frame;
+use fastwebsockets::OpCode;
+use http_body_util::Empty;
+use hyper::header::CONNECTION;
+use hyper::header::UPGRADE;
+use hyper::upgrade::Upgraded;
+use hyper::Request;
+use hyper_util::rt::TokioIo;
+use tokio::net::TcpStream;
+use tokio_rustls::rustls::ClientConfig;
+use tokio_rustls::rustls::OwnedTrustAnchor;
+use tokio_rustls::TlsConnector;
+
 #[allow(clippy::large_enum_variant)]
 enum State {
     Disconnected,
     Connected(
-        async_tungstenite::WebSocketStream<
-            async_tungstenite::tokio::ConnectStream,
-        >,
+        FragmentCollector<TokioIo<Upgraded>>
     ),
 }
 
@@ -174,6 +193,247 @@ impl Depth {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct Trade {
+    pub time: i64,
+    pub is_sell: bool,
+    pub price: f32,
+    pub qty: f32,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct SonicDepth {
+	#[serde(rename = "T")]
+	pub time: u64,
+	#[serde(rename = "U")]
+	pub first_id: u64,
+	#[serde(rename = "u")]
+	pub final_id: u64,
+	#[serde(rename = "pu")]
+	pub prev_final_id: u64,
+	#[serde(rename = "b")]
+	pub bids: Vec<BidAsk>,
+	#[serde(rename = "a")]
+	pub asks: Vec<BidAsk>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct BidAsk {
+	#[serde(rename = "0")]
+	pub price: String,
+	#[serde(rename = "1")]
+	pub qty: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct SonicTrade {
+	#[serde(rename = "T")]
+	pub time: u64,
+	#[serde(rename = "p")]
+	pub price: String,
+	#[serde(rename = "q")]
+	pub qty: String,
+	#[serde(rename = "m")]
+	pub is_sell: bool,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct SonicKline {
+    #[serde(rename = "t")]
+    pub time: u64,
+    #[serde(rename = "o")]
+    pub open: String,
+    #[serde(rename = "h")]
+    pub high: String,
+    #[serde(rename = "l")]
+    pub low: String,
+    #[serde(rename = "c")]
+    pub close: String,
+    #[serde(rename = "v")]
+    pub volume: String,
+    #[serde(rename = "V")]
+    pub taker_buy_base_asset_volume: String,
+    #[serde(rename = "i")]
+    pub interval: String,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct SonicKlineWrap {
+    #[serde(rename = "k")]
+    pub kline: SonicKline,
+}
+
+#[derive(Debug)]
+enum StreamData {
+	Trade(SonicTrade),
+	Depth(SonicDepth),
+    Kline(SonicKline),
+}
+
+#[derive(Debug)]
+enum StreamName {
+    Depth,
+    Trade,
+    Unknown,
+}
+impl From<&str> for StreamName {
+    fn from(s: &str) -> Self {
+        match s {
+            "btcusdt@depth@100ms" => StreamName::Depth,
+            "btcusdt@trade" => StreamName::Trade,
+            _ => StreamName::Unknown,
+        }
+    }
+}
+
+#[derive(Debug)]
+enum StreamWrapper {
+	Trade,
+	Depth,
+    Kline
+}
+
+fn feed_de(bytes: Bytes) -> Result<Option<StreamData>> {
+	let mut stream_type: Option<StreamWrapper> = None;
+
+	let iter: sonic_rs::ObjectJsonIter = unsafe { to_object_iter_unchecked(&bytes) };
+
+	for elem in iter {
+		if elem.is_err() {
+			eprintln!("{}", elem.unwrap_err());
+			return Ok(None);
+		}
+
+		let (k, v) = elem?;
+
+		if k == "stream" {
+			if let Some(val) = v.as_str() {
+				match StreamName::from(val) {
+					StreamName::Depth => {
+						stream_type = Some(StreamWrapper::Depth);
+					},
+					StreamName::Trade => {
+						stream_type = Some(StreamWrapper::Trade);
+					},
+					StreamName::Unknown => {
+						stream_type = None;
+					},
+				}
+			}
+		} else if k == "data" {
+			match stream_type {
+				Some(StreamWrapper::Trade) => {
+					let trade: SonicTrade = sonic_rs::from_str(&v.as_raw_faststr())
+						.context("Error parsing trade")?;
+					return Ok(Some(StreamData::Trade(trade)));
+				},
+				Some(StreamWrapper::Depth) => {
+					let depth: SonicDepth = sonic_rs::from_str(&v.as_raw_faststr())
+						.context("Error parsing depth")?;
+					return Ok(Some(StreamData::Depth(depth)));
+				},
+				_ => {
+					eprintln!("Unknown stream type");
+				}
+			}
+		} else {
+			eprintln!("Unknown data: {:?}", k);
+		}
+	}
+
+	Ok(None)
+}
+fn feed_de_klines(bytes: Bytes) -> Result<Option<StreamData>> {
+	let iter: sonic_rs::ObjectJsonIter = unsafe { to_object_iter_unchecked(&bytes) };
+
+	for elem in iter {
+		if elem.is_err() {
+			eprintln!("{}", elem.unwrap_err());
+			return Ok(None);
+		}
+
+		let (k, v) = elem?;
+
+        if k == "data" {
+            let kline_wrap: SonicKlineWrap = sonic_rs::from_str(&v.as_raw_faststr())
+                .context("Error parsing kline")?;
+
+            let kline: SonicKline = kline_wrap.kline;
+
+            return Ok(Some(StreamData::Kline(kline)));
+		}
+	}
+
+	Ok(None)
+}
+
+use std::sync::Arc;
+
+fn tls_connector() -> Result<TlsConnector> {
+	let mut root_store = tokio_rustls::rustls::RootCertStore::empty();
+
+	root_store.add_trust_anchors(
+		webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
+			OwnedTrustAnchor::from_subject_spki_name_constraints(
+			ta.subject,
+			ta.spki,
+			ta.name_constraints,
+			)
+		}),
+	);
+
+	let config = ClientConfig::builder()
+		.with_safe_defaults()
+		.with_root_certificates(root_store)
+		.with_no_client_auth();
+
+	Ok(TlsConnector::from(Arc::new(config)))
+}
+
+async fn connect(domain: &str, streams: &str) -> Result<FragmentCollector<TokioIo<Upgraded>>> {
+	let mut addr = String::from(domain);
+	addr.push_str(":443"); // Port number for binance stream
+
+	let tcp_stream: TcpStream = TcpStream::connect(&addr).await?;
+	let tls_connector: TlsConnector = tls_connector().unwrap();
+	let domain: tokio_rustls::rustls::ServerName =
+	tokio_rustls::rustls::ServerName::try_from(domain).map_err(|_| {
+		std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid dnsname")
+	})?;
+
+	let tls_stream: tokio_rustls::client::TlsStream<TcpStream> = tls_connector.connect(domain, tcp_stream).await?;
+
+    let url = format!("wss://{}/stream?streams={}", &addr, streams);
+    println!("Connecting to {}", url);
+
+	let req: Request<Empty<Bytes>> = Request::builder()
+	.method("GET")
+	.uri(url)
+	.header("Host", &addr)
+	.header(UPGRADE, "websocket")
+	.header(CONNECTION, "upgrade")
+	.header(
+		"Sec-WebSocket-Key",
+		fastwebsockets::handshake::generate_key(),
+	)
+	.header("Sec-WebSocket-Version", "13")
+	.body(Empty::<Bytes>::new())?;
+
+	let (ws, _) = fastwebsockets::handshake::client(&SpawnExecutor, req, tls_stream).await?;
+	Ok(FragmentCollector::new(ws))
+}
+struct SpawnExecutor;
+
+impl<Fut> hyper::rt::Executor<Fut> for SpawnExecutor
+where
+  Fut: std::future::Future + Send + 'static,
+  Fut::Output: Send + 'static,
+{
+  fn execute(&self, fut: Fut) {
+	tokio::task::spawn(fut);
+  }
+}
+
 pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
     struct Connect;
 
@@ -182,7 +442,7 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
         100,
         move |mut output| async move {
             let mut state = State::Disconnected;     
-            let mut trades_buffer = Vec::new(); 
+            let mut trades_buffer: Vec<Trade> = Vec::new(); 
 
             let symbol_str = match selected_ticker {
                 Ticker::BTCUSDT => "btcusdt",
@@ -205,10 +465,11 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
             loop {
                 match &mut state {
                     State::Disconnected => {        
-                        let websocket_server = format!("wss://fstream.binance.com/stream?streams={stream_1}/{stream_2}");
+                        let streams = format!("{stream_1}/{stream_2}");
 
-                        if let Ok((websocket, _)) = async_tungstenite::tokio::connect_async(
-                            websocket_server,
+                        let domain: &str = "fstream.binance.com";
+
+                        if let Ok(websocket) = connect(domain, streams.as_str()
                         )
                         .await {
                             let (tx, rx) = tokio::sync::oneshot::channel();
@@ -244,142 +505,140 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
                            let _ = output.send(Event::Disconnected).await;
                         }
                     }
-                    State::Connected(websocket) => {
-                        let mut fused_websocket = websocket.by_ref().fuse();
-
+                    State::Connected(ws) => {
                         let feed_latency: FeedLatency;
 
-                        futures::select! {
-                            received = fused_websocket.select_next_some() => {
-                                match received {
-                                    Ok(tungstenite::Message::Text(message)) => {
-                                        let stream: Stream = serde_json::from_str(&message).unwrap_or(Stream { stream: String::new() });
-                                        
-                                        if stream.stream == stream_1 {
-                                            let agg_trade: AggTrade = serde_json::from_str(&message).unwrap();
-                                            trades_buffer.push(agg_trade.data);
+                        match ws.read_frame().await {
+                            Ok(msg) => match msg.opcode {
+                                OpCode::Text => {                    
+                                    let json_bytes: Bytes = Bytes::from(msg.payload.to_vec());
+                    
+                                    let data: Option<StreamData> = feed_de(json_bytes).unwrap();
+                    
+                                    if let Some(StreamData::Trade(de_trade)) = data {
+                                        let trade = Trade {
+                                            time: de_trade.time as i64,
+                                            is_sell: de_trade.is_sell,
+                                            price: de_trade.price.parse::<f32>().unwrap(),
+                                            qty: de_trade.qty.parse::<f32>().unwrap(),
+                                        };
+                                        trades_buffer.push(trade);
 
-                                            let latency = chrono::Utc::now().timestamp_millis() - agg_trade.data.time;
+                                        let latency = chrono::Utc::now().timestamp_millis() - trade.time;
 
-                                            trade_latencies.push(latency);
-                                            
-                                        } else if stream.stream == stream_2 {
-                                            if already_fetching {
-                                                println!("Already fetching...\n");
-
-                                                continue;
-                                            }
-
-                                            let depth_update: Value = serde_json::from_str(&message).unwrap();
-                                            let depth_data = depth_update.get("data").unwrap();
-
-                                            let first_update_id = depth_data.get("U").unwrap().as_i64().unwrap();
-                                            let final_update_id = depth_data.get("u").unwrap().as_i64().unwrap();
-
-                                            let last_final_update_id = depth_data.get("pu").unwrap().as_i64().unwrap();
-
-                                            let last_update_id = orderbook.get_fetch_id();
-
-                                            if (final_update_id <= last_update_id) || last_update_id == 0 {
-                                                continue;
-                                            }
-
-                                            if prev_id == 0 && (first_update_id > last_update_id + 1) || (last_update_id + 1 > final_update_id) {
-                                                println!("Out of sync on first event...\nU: {first_update_id}, last_id: {last_update_id}, u: {final_update_id}, pu: {last_final_update_id}\n");
-
-                                                let (tx, rx) = tokio::sync::oneshot::channel();
-                                                already_fetching = true;
-
-                                                tokio::spawn(async move {
-                                                    let fetched_depth = fetch_depth(selected_ticker).await;
-
-                                                    let depth: Depth = match fetched_depth {
-                                                        Ok(depth) => {
-                                                            Depth {
-                                                                last_update_id: depth.update_id,
-                                                                time: depth.time,
-                                                                bids: depth.bids,
-                                                                asks: depth.asks,
-                                                            }
-                                                        },
-                                                        Err(_) => return,
-                                                    };
-
-                                                    let _ = tx.send(depth);
-                                                });
-                                                match rx.await {
-                                                    Ok(depth) => {
-                                                        orderbook.fetched(depth)
-                                                    },
-                                                    Err(_) => orderbook.fetched(Depth::default()),
-                                                }
-                                                already_fetching = false;
-                                            }
+                                        trade_latencies.push(latency);
                                     
-                                            if (prev_id == 0) || (prev_id == last_final_update_id) {
-                                                let depth_update: DepthUpdate = serde_json::from_str(&message).unwrap();
+                                    } else if let Some(StreamData::Depth(de_depth)) = data {
+                                        if already_fetching {
+                                            println!("Already fetching...\n");
 
-                                                let time = depth_update.data.time;
-
-                                                let depth_latency = chrono::Utc::now().timestamp_millis() - time;
-
-                                                let bids = depth_update.data.bids;
-                                                let asks = depth_update.data.asks;
-
-                                                let depth = Depth { last_update_id: final_update_id, time, bids, asks };
-
-                                                let (local_bids, local_asks) = orderbook.update_levels(depth);
-
-                                                let local_depth_cache = LocalDepthCache {
-                                                    time: time,
-                                                    bids: local_bids,
-                                                    asks: local_asks,
-                                                };
-                                                
-                                                if !trade_latencies.is_empty() {
-                                                    let avg_trade_latency = trade_latencies.iter().sum::<i64>() / trade_latencies.len() as i64;
-
-                                                    feed_latency = FeedLatency {
-                                                        time,
-                                                        depth_latency,
-                                                        trade_latency: Some(avg_trade_latency),
-                                                    };
-
-                                                    trade_latencies.clear();
-                                                } else {
-                                                    feed_latency = FeedLatency {
-                                                        time,
-                                                        depth_latency,
-                                                        trade_latency: None,
-                                                    };
-                                                }
-
-                                                let _ = output.send(
-                                                    Event::DepthReceived(
-                                                        feed_latency,
-                                                        time, 
-                                                        local_depth_cache,
-                                                        std::mem::take(&mut trades_buffer)
-                                                    )
-                                                ).await;
-
-                                                prev_id = final_update_id;
-                                            } else {
-                                                println!("Out of sync...\n");
-                                            }
-
-                                        } else {
-                                            dbg!(stream.stream);
+                                            continue;
                                         }
+
+                                        let first_update_id = de_depth.first_id as i64;
+                                        let final_update_id = de_depth.final_id as i64;
+
+                                        let prev_final_id = de_depth.prev_final_id as i64;
+
+                                        let last_update_id = orderbook.get_fetch_id();
+                                        
+                                        if (final_update_id <= last_update_id) || last_update_id == 0 {
+                                            continue;
+                                        }
+
+                                        if prev_id == 0 && (first_update_id > last_update_id + 1) || (last_update_id + 1 > final_update_id) {
+                                            println!("Out of sync on first event...\nU: {first_update_id}, last_id: {last_update_id}, u: {final_update_id}, pu: {prev_final_id}\n");
+
+                                            let (tx, rx) = tokio::sync::oneshot::channel();
+                                            already_fetching = true;
+
+                                            tokio::spawn(async move {
+                                                let fetched_depth = fetch_depth(selected_ticker).await;
+
+                                                let depth: Depth = match fetched_depth {
+                                                    Ok(depth) => {
+                                                        Depth {
+                                                            last_update_id: depth.update_id,
+                                                            time: depth.time,
+                                                            bids: depth.bids,
+                                                            asks: depth.asks,
+                                                        }
+                                                    },
+                                                    Err(_) => return,
+                                                };
+
+                                                let _ = tx.send(depth);
+                                            });
+                                            match rx.await {
+                                                Ok(depth) => {
+                                                    orderbook.fetched(depth)
+                                                },
+                                                Err(_) => orderbook.fetched(Depth::default()),
+                                            }
+                                            already_fetching = false;
+                                        }
+                                
+                                        if (prev_id == 0) || (prev_id == prev_final_id) {
+                                            let time = de_depth.time as i64;
+
+                                            let depth_latency = chrono::Utc::now().timestamp_millis() - time;
+
+                                            let depth_update = Depth {
+                                                last_update_id: final_update_id,
+                                                time,
+                                                bids: de_depth.bids.iter().map(|x| Order { price: x.price.parse::<f32>().unwrap(), qty: x.qty.parse::<f32>().unwrap() }).collect(),
+                                                asks: de_depth.asks.iter().map(|x| Order { price: x.price.parse::<f32>().unwrap(), qty: x.qty.parse::<f32>().unwrap() }).collect(),
+                                            };
+
+                                            let (local_bids, local_asks) = orderbook.update_levels(depth_update);
+
+                                            let local_depth_cache = LocalDepthCache {
+                                                time,
+                                                bids: local_bids,
+                                                asks: local_asks,
+                                            };
+                                            
+                                            let avg_trade_latency = if !trade_latencies.is_empty() {
+                                                let avg = trade_latencies.iter().sum::<i64>() / trade_latencies.len() as i64;
+                                                trade_latencies.clear();
+                                                Some(avg)
+                                            } else {
+                                                None
+                                            };
+                                            feed_latency = FeedLatency {
+                                                time,
+                                                depth_latency,
+                                                trade_latency: avg_trade_latency,
+                                            };
+
+                                            let _ = output.send(
+                                                Event::DepthReceived(
+                                                    feed_latency,
+                                                    time, 
+                                                    local_depth_cache,
+                                                    std::mem::take(&mut trades_buffer)
+                                                )
+                                            ).await;
+
+                                            prev_id = final_update_id;
+                                        } else {
+                                            println!("Out of sync...\n");
+                                        }
+
+                                    } else {
+                                        eprintln!("\nUnknown data: {:?}", data);
                                     }
-                                    Err(_) => {
-                                        let _ = output.send(Event::Disconnected).await;
-                                        state = State::Disconnected;
-                                    }
-                                    Ok(_) => continue,
                                 }
+                                OpCode::Close => {
+                                    eprintln!("Connection closed");
+                                    let _ = output.send(Event::Disconnected).await;
+                                }
+                                _ => {}
+                            },
+                            Err(e) => {
+                                println!("Error reading frame: {}", e);
                             }
-                        }
+                        };
                     }
                 }
             }
@@ -416,10 +675,12 @@ pub fn connect_kline_stream(vec: Vec<(Ticker, Timeframe)>) -> Subscription<Event
             loop {
                 match &mut state {
                     State::Disconnected => {
-                        let websocket_server = format!("wss://fstream.binance.com/stream?streams={stream_str}");
+                        let domain: &str = "fstream.binance.com";
+
+                        let streams = stream_str.as_str();
                         
-                        if let Ok((websocket, _)) = async_tungstenite::tokio::connect_async(
-                            websocket_server,
+                        if let Ok(websocket) = connect(
+                            domain, streams
                         )
                         .await {
                            state = State::Connected(websocket);
@@ -429,43 +690,36 @@ pub fn connect_kline_stream(vec: Vec<(Ticker, Timeframe)>) -> Subscription<Event
                            let _ = output.send(Event::Disconnected).await;
                         }
                     }
-                    State::Connected(websocket) => {
-                        let mut fused_websocket = websocket.by_ref().fuse();
+                    State::Connected(ws) => {
+                        match ws.read_frame().await {
+                            Ok(msg) => match msg.opcode {
+                                OpCode::Text => {                    
+                                    let json_bytes: Bytes = Bytes::from(msg.payload.to_vec());
 
-                        futures::select! {
-                            received = fused_websocket.select_next_some() => {
-                                match received {
-                                    Ok(tungstenite::Message::Text(message)) => {
-                                        match serde_json::from_str::<serde_json::Value>(&message) {
-                                            Ok(data) => {
-                                                match (data.get("data"), data["data"]["k"]["i"].as_str(), data["data"]["k"].as_object()) {
-                                                    (Some(inner_data), Some(interval), Some(kline_obj)) if inner_data["e"].as_str() == Some("kline") => {
-                                                        let kline = Kline {
-                                                            time: kline_obj["t"].as_u64().unwrap_or_default(),
-                                                            open: kline_obj["o"].as_str().unwrap_or_default().parse::<f32>().unwrap_or_default(),
-                                                            high: kline_obj["h"].as_str().unwrap_or_default().parse::<f32>().unwrap_or_default(),
-                                                            low: kline_obj["l"].as_str().unwrap_or_default().parse::<f32>().unwrap_or_default(),
-                                                            close: kline_obj["c"].as_str().unwrap_or_default().parse::<f32>().unwrap_or_default(),
-                                                            volume: kline_obj["v"].as_str().unwrap_or_default().parse::<f32>().unwrap_or_default(),
-                                                            taker_buy_base_asset_volume: kline_obj["V"].as_str().unwrap_or_default().parse::<f32>().unwrap_or_default(),
-                                                        };
-                                                
-                                                        if let Some(timeframe) = vec.iter().find(|(_, tf)| tf.to_string() == interval) {
-                                                            let _ = output.send(Event::KlineReceived(kline, timeframe.1)).await;
-                                                        }
-                                                    },
-                                                    _ => continue,
-                                                }                                                
-                                            },
-                                            Err(_) => continue,
+                                    let data: Option<StreamData> = feed_de_klines(json_bytes).unwrap();
+                    
+                                    if let Some(StreamData::Kline(de_kline)) = data {
+                                        let kline = Kline {
+                                            time: de_kline.time,
+                                            open: de_kline.open.parse::<f32>().unwrap(),
+                                            high: de_kline.high.parse::<f32>().unwrap(),
+                                            low: de_kline.low.parse::<f32>().unwrap(),
+                                            close: de_kline.close.parse::<f32>().unwrap(),
+                                            volume: de_kline.volume.parse::<f32>().unwrap(),
+                                            taker_buy_base_asset_volume: de_kline.taker_buy_base_asset_volume.parse::<f32>().unwrap(),
+                                        };
+
+                                        if let Some(timeframe) = vec.iter().find(|(_, tf)| tf.to_string() == de_kline.interval) {
+                                            let _ = output.send(Event::KlineReceived(kline, timeframe.1)).await;
                                         }
-                                    },
-                                    Err(_) => {
-                                        let _ = output.send(Event::Disconnected).await;
-                                        state = State::Disconnected;
-                                    },
-                                    Ok(_) => continue,
+                                    } else {
+                                        eprintln!("\nUnknown data: {:?}", data);
+                                    }
                                 }
+                                _ => {}
+                            }, 
+                            Err(e) => {
+                                eprintln!("Error reading frame: {}", e);
                             }
                         }
                     }
@@ -485,31 +739,6 @@ mod string_to_f32 {
         let s: &str = <&str>::deserialize(deserializer)?;
         s.parse::<f32>().map_err(serde::de::Error::custom)
     }
-}
-
-#[derive(Deserialize)]
-struct Stream {
-    stream: String,
-}
-#[derive(Deserialize, Debug)]
-struct AggTrade {
-    data: Trade,
-}
-#[derive(Deserialize, Debug)]
-struct DepthUpdate {
-    data: Depth,
-}
-
-#[derive(Deserialize, Debug, Clone, Copy)]
-pub struct Trade {
-    #[serde(rename = "T")]
-    pub time: i64,
-    #[serde(rename = "m")]
-    pub is_sell: bool,
-    #[serde(with = "string_to_f32", rename = "p")]
-    pub price: f32,
-    #[serde(with = "string_to_f32", rename = "q")]
-    pub qty: f32,
 }
 
 #[derive(Deserialize, Debug, Clone, Copy)]
@@ -622,8 +851,6 @@ pub async fn fetch_ticksize(ticker: Ticker) -> Result<f32, reqwest::Error> {
 
     Ok(tick_size)
 }
-
-use anyhow::{Result, Context};
 
 pub async fn fetch_server_time() -> Result<i64> {
     let url = "https://fapi.binance.com/fapi/v1/time";
