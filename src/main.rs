@@ -302,6 +302,8 @@ struct State {
     feed_latency_cache: VecDeque<FeedLatency>,
     
     pane_state_cache: HashMap<PaneId, (Option<Ticker>, Option<Timeframe>, Option<f32>)>,
+
+    last_axis_split: Option<pane_grid::Axis>,
 }
 
 impl State {
@@ -393,6 +395,8 @@ impl State {
             feed_latency_cache: VecDeque::new(),
 
             pane_state_cache: HashMap::new(),
+
+            last_axis_split: None,
         }
     }
 
@@ -937,7 +941,9 @@ impl State {
 
                 if Some(focus_pane).is_some() {
                     self.focus = focus_pane;
-                } 
+                }
+
+                self.last_axis_split = Some(axis);
 
                 Task::none()
             },
@@ -1261,13 +1267,25 @@ impl State {
                 (PaneId::TimeAndSales, "Time & Sales"),
             ];
 
+            let pane_to_split = self.focus.unwrap_or_else(|| { dbg!("No focused pane found"); self.first_pane });
+
+            let mut axis_to_split = if rand::random() { pane_grid::Axis::Horizontal } else { pane_grid::Axis::Vertical };
+
+            if let Some(axis) = self.last_axis_split {
+                if axis == pane_grid::Axis::Horizontal {
+                    axis_to_split = pane_grid::Axis::Vertical;
+                } else {
+                    axis_to_split = pane_grid::Axis::Horizontal;
+                }
+            } 
+
             for (pane_id, label) in pane_info {
                 let button = button(label).width(iced::Pixels(200.0));
 
-                if self.panes.iter().any(|(_p, ps)| ps.id == pane_id) {
+                if self.panes.iter().any(|(_, ps)| ps.id == pane_id) {
                     buttons = buttons.push(button);
                 } else {
-                    let message = Message::Split(pane_grid::Axis::Vertical, self.first_pane, pane_id);
+                    let message = Message::Split(axis_to_split, pane_to_split, pane_id);
                     buttons = buttons.push(button.on_press(message));
                 }
             }
