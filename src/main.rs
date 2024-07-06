@@ -7,9 +7,8 @@ mod charts;
 use charts::custom_line::{self, CustomLine};
 use charts::heatmap::{self, Heatmap};
 use charts::footprint::{self, Footprint};
-use iced::event;
 
-use std::collections::VecDeque;
+use std::collections::{VecDeque, HashMap};
 use std::vec;
 use chrono::{NaiveDateTime, DateTime, Utc};
 use iced::{
@@ -180,11 +179,11 @@ struct PaneSpec {
 }
 
 impl PaneSpec {
-    fn new(id: PaneId) -> Self {
+    fn new(id: PaneId, from_cache: (Option<Ticker>, Option<Timeframe>, Option<f32>)) -> Self {
         Self { 
             id,
             show_modal: false,
-            stream: (None, None, None),
+            stream: from_cache,
         }
     }
 }
@@ -301,6 +300,8 @@ struct State {
     exchange_latency: Option<(u32, u32)>,
 
     feed_latency_cache: VecDeque<FeedLatency>,
+    
+    pane_state_cache: HashMap<PaneId, (Option<Ticker>, Option<Timeframe>, Option<f32>)>,
 }
 
 impl State {
@@ -390,6 +391,8 @@ impl State {
             exchange_latency: None,
 
             feed_latency_cache: VecDeque::new(),
+
+            pane_state_cache: HashMap::new(),
         }
     }
 
@@ -922,10 +925,12 @@ impl State {
 
             // Pane grid
             Message::Split(axis, pane, pane_id) => {
-                let focus_pane = if let Some((pane, _)) = self.panes.split(axis, pane, PaneSpec::new(pane_id)) {
+                let cached_pane_state: (Option<Ticker>, Option<Timeframe>, Option<f32>) = *self.pane_state_cache.get(&pane_id).unwrap_or(&(None, None, None));
+
+                let focus_pane = if let Some((pane, _)) = self.panes.split(axis, pane, PaneSpec::new(pane_id, cached_pane_state)) {
                     Some(pane)
                 } else if let Some((&first_pane, _)) = self.panes.panes.iter().next() {
-                    self.panes.split(axis, first_pane, PaneSpec::new(pane_id)).map(|(pane, _)| pane)
+                    self.panes.split(axis, first_pane, PaneSpec::new(pane_id, cached_pane_state)).map(|(pane, _)| pane)
                 } else {
                     None
                 };
@@ -962,7 +967,11 @@ impl State {
                 self.panes.restore();
                 Task::none()
             },
-            Message::Close(pane) => {                
+            Message::Close(pane) => {       
+                let pane_state = self.panes.get(pane).unwrap();
+                
+                self.pane_state_cache.insert(pane_state.id, (pane_state.stream.0, pane_state.stream.1, pane_state.stream.2));
+
                 if let Some((_, sibling)) = self.panes.close(pane) {
                     self.focus = Some(sibling);
                 }
