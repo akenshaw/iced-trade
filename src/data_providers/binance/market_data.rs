@@ -275,9 +275,9 @@ enum StreamName {
 impl StreamName {
     fn from_symbol_and_type(symbol: &str, stream_type: &str) -> Self {
         match stream_type {
-            _ if stream_type == format!("{symbol}depth@100ms") => StreamName::Depth,
-            _ if stream_type == format!("{symbol}trade") => StreamName::Trade,
-            _ if stream_type.starts_with(&format!("{symbol}kline_")) => StreamName::Kline,
+            _ if stream_type == format!("{symbol}@depth@100ms") => StreamName::Depth,
+            _ if stream_type == format!("{symbol}@trade") => StreamName::Trade,
+            _ if stream_type.starts_with(&format!("{symbol}@kline_")) => StreamName::Kline,
             _ => StreamName::Unknown,
         }
     }
