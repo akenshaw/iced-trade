@@ -218,6 +218,8 @@ pub enum MarketEvents {
 pub enum Message {
     Debug(String),
 
+    RestartStream(Option<pane_grid::Pane>, (Option<Ticker>, Option<Timeframe>, Option<f32>)),
+
     CustomLine(custom_line::Message),
     Candlestick(custom_line::Message),
     Heatmap(heatmap::Message),
@@ -548,6 +550,25 @@ impl State {
                 self.selected_exchange = Some(exchange);
                 Task::none()
             },
+            Message::RestartStream(pane, cached_state) => {
+                if let Some(pane) = pane {
+                    if let Some(timeframe) = cached_state.1 {
+                        Task::perform(
+                            async {
+                            },
+                            move |()| Message::TimeframeSelected(timeframe, pane)
+                        )
+                    } else {
+                        Task::perform(
+                            async {
+                            },
+                            move |()| Message::ErrorOccurred(format!("No timeframe found in pane state to stream"))
+                        )
+                    }
+                } else {
+                    Task::none()
+                }
+            }
             Message::WsToggle => {
                 self.ws_running = !self.ws_running;
 
@@ -931,10 +952,12 @@ impl State {
             Message::Split(axis, pane, pane_id) => {
                 let cached_pane_state: (Option<Ticker>, Option<Timeframe>, Option<f32>) = *self.pane_state_cache.get(&pane_id).unwrap_or(&(None, None, None));
 
-                let focus_pane = if let Some((pane, _)) = self.panes.split(axis, pane, PaneSpec::new(pane_id, cached_pane_state)) {
-                    Some(pane)
+                let new_pane = None;
+
+                let focus_pane = if let Some((new_pane, _)) = self.panes.split(axis, pane, PaneSpec::new(pane_id, cached_pane_state)) {
+                    Some(new_pane)
                 } else if let Some((&first_pane, _)) = self.panes.panes.iter().next() {
-                    self.panes.split(axis, first_pane, PaneSpec::new(pane_id, cached_pane_state)).map(|(pane, _)| pane)
+                    self.panes.split(axis, first_pane, PaneSpec::new(pane_id, cached_pane_state)).map(|(new_pane, _)| new_pane)
                 } else {
                     None
                 };
@@ -945,7 +968,11 @@ impl State {
 
                 self.last_axis_split = Some(axis);
 
-                Task::none()
+                Task::perform(
+                    async {
+                    },
+                    move |()| Message::RestartStream(new_pane, cached_pane_state)
+                )
             },
             Message::Clicked(pane) => {
                 self.focus = Some(pane);
@@ -984,7 +1011,6 @@ impl State {
                 Task::none()
             },
             Message::ToggleLayoutLock => {
-                self.focus = None;
                 self.pane_lock = !self.pane_lock;
                 Task::none()
             },
