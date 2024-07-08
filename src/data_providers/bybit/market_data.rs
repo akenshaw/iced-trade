@@ -1,22 +1,36 @@
+use hyper::client::conn;
 use iced::futures;  
 use iced::subscription::{self, Subscription};
 use serde::{de, Deserialize, Deserializer};
 use futures::sink::SinkExt;
-use futures::stream::StreamExt;
 
-use async_tungstenite::tungstenite;
 use serde_json::Value;
 use crate::data_providers::binance::market_data::FeedLatency;
 use crate::{Ticker, Timeframe};
 
-#[derive(Debug)]
+use bytes::Bytes;
+
+use sonic_rs::{LazyValue, JsonValueTrait};
+use sonic_rs::{Deserialize as SonicDe, Serialize}; 
+use sonic_rs::{to_array_iter, to_object_iter_unchecked};
+
+use anyhow::{Context, Result};
+
+use fastwebsockets::{Frame, FragmentCollector, OpCode};
+use http_body_util::Empty;
+use hyper::header::{CONNECTION, UPGRADE};
+use hyper::upgrade::Upgraded;
+use hyper::Request;
+use hyper_util::rt::TokioIo;
+use tokio::net::TcpStream;
+use tokio_rustls::rustls::{ClientConfig, OwnedTrustAnchor};
+use tokio_rustls::TlsConnector;
+
 #[allow(clippy::large_enum_variant)]
 enum State {
     Disconnected,
     Connected(
-        async_tungstenite::WebSocketStream<
-            async_tungstenite::tokio::ConnectStream,
-        >,
+        FragmentCollector<TokioIo<Upgraded>>
     ),
 }
 
@@ -171,6 +185,229 @@ impl Depth {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+struct SonicDepth {
+	#[serde(rename = "u")]
+	pub update_id: u64,
+	#[serde(rename = "b")]
+	pub bids: Vec<BidAsk>,
+	#[serde(rename = "a")]
+	pub asks: Vec<BidAsk>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct BidAsk {
+	#[serde(rename = "0")]
+	pub price: String,
+	#[serde(rename = "1")]
+	pub qty: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct SonicTrade {
+	#[serde(rename = "T")]
+	pub time: u64,
+	#[serde(rename = "p")]
+	pub price: String,
+	#[serde(rename = "v")]
+	pub qty: String,
+	#[serde(rename = "S")]
+	pub is_sell: String,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct SonicKline {
+    #[serde(rename = "start")]
+    pub time: u64,
+    #[serde(rename = "open")]
+    pub open: String,
+    #[serde(rename = "high")]
+    pub high: String,
+    #[serde(rename = "low")]
+    pub low: String,
+    #[serde(rename = "close")]
+    pub close: String,
+    #[serde(rename = "volume")]
+    pub volume: String,
+    #[serde(rename = "interval")]
+    pub interval: String,
+}
+
+#[derive(Debug)]
+enum StreamData {
+	Trade(Vec<SonicTrade>),
+	Depth(SonicDepth, String, i64),
+    Kline(Vec<SonicKline>),
+}
+
+#[derive(Debug)]
+enum StreamName {
+    Depth,
+    Trade,
+    Kline,
+    Unknown,
+}
+impl StreamName {
+    fn from_symbol_and_type(symbol: &str, stream_type: &str) -> Self {
+        match stream_type {
+            _ if stream_type == format!("orderbook.200.{symbol}") => StreamName::Depth,
+            _ if stream_type == format!("publicTrade.{symbol}") => StreamName::Trade,
+            _ if stream_type.starts_with(&format!("kline")) => StreamName::Kline,
+            _ => StreamName::Unknown,
+        }
+    }
+}
+
+#[derive(Debug)]
+enum StreamWrapper {
+	Trade,
+	Depth,
+    Kline,
+}
+
+fn feed_de(bytes: &Bytes, symbol: &str) -> Result<StreamData> {
+    let mut stream_type: Option<StreamWrapper> = None;
+
+    let mut depth_wrap: Option<SonicDepth> = None;
+
+    let mut data_type: String = String::new();
+
+    let iter: sonic_rs::ObjectJsonIter = unsafe { to_object_iter_unchecked(bytes) };
+
+    for elem in iter {
+        let (k, v) = elem.context("Error parsing stream")?;
+
+        if k == "topic" {
+            if let Some(val) = v.as_str() {
+                match StreamName::from_symbol_and_type(symbol, val) {
+                    StreamName::Depth => {
+                        stream_type = Some(StreamWrapper::Depth);
+                    },
+                    StreamName::Trade => {
+                        stream_type = Some(StreamWrapper::Trade);
+                    },
+                    StreamName::Kline => {
+                        stream_type = Some(StreamWrapper::Kline);
+                    },
+                    _ => {
+                        eprintln!("Unknown stream name");
+                    }
+                }
+            }
+        } else if k == "type" {
+            data_type = v.as_str().unwrap().to_owned();
+        } else if k == "data" {
+            match stream_type {
+                Some(StreamWrapper::Trade) => {
+                    let trade_wrap: Vec<SonicTrade> = sonic_rs::from_str(&v.as_raw_faststr())
+                        .context("Error parsing trade")?;
+
+                    return Ok(StreamData::Trade(trade_wrap));
+                },
+                Some(StreamWrapper::Depth) => {
+                    if depth_wrap.is_none() {
+                        depth_wrap = Some(SonicDepth {
+                            update_id: 0,
+                            bids: Vec::new(),
+                            asks: Vec::new(),
+                        });
+                    }
+                    depth_wrap = Some(sonic_rs::from_str(&v.as_raw_faststr())
+                        .context("Error parsing depth")?);
+                },
+                Some(StreamWrapper::Kline) => {
+                    let kline_wrap: Vec<SonicKline> = sonic_rs::from_str(&v.as_raw_faststr())
+                        .context("Error parsing kline")?;
+
+                    return Ok(StreamData::Kline(kline_wrap));
+                },
+                _ => {
+                    eprintln!("Unknown stream type");
+                }
+            }
+        } else if k == "cts" {
+            if let Some(dw) = depth_wrap {
+                let time: u64 = v.as_u64().context("Error parsing time")?;
+                
+                return Ok(StreamData::Depth(dw, data_type.to_string(), time as i64));
+            }
+        }
+    }
+
+    Err(anyhow::anyhow!("Unknown data"))
+}
+
+fn tls_connector() -> Result<TlsConnector> {
+	let mut root_store = tokio_rustls::rustls::RootCertStore::empty();
+
+	root_store.add_trust_anchors(
+		webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
+			OwnedTrustAnchor::from_subject_spki_name_constraints(
+			ta.subject,
+			ta.spki,
+			ta.name_constraints,
+			)
+		}),
+	);
+
+	let config = ClientConfig::builder()
+		.with_safe_defaults()
+		.with_root_certificates(root_store)
+		.with_no_client_auth();
+
+	Ok(TlsConnector::from(std::sync::Arc::new(config)))
+}
+
+async fn connect(domain: &str) -> Result<FragmentCollector<TokioIo<Upgraded>>> {
+	let mut addr = String::from(domain);
+    addr.push_str(":443");
+
+	let tcp_stream: TcpStream = TcpStream::connect(&addr).await?;
+	let tls_connector: TlsConnector = tls_connector().unwrap();
+	let domain: tokio_rustls::rustls::ServerName =
+	tokio_rustls::rustls::ServerName::try_from(domain).map_err(|_| {
+		std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid dnsname")
+	})?;
+
+	let tls_stream: tokio_rustls::client::TlsStream<TcpStream> = tls_connector.connect(domain, tcp_stream).await?;
+
+    let url = format!("wss://stream.bybit.com/v5/public/linear");
+
+	let req: Request<Empty<Bytes>> = Request::builder()
+	.method("GET")
+	.uri(url)
+	.header("Host", &addr)
+	.header(UPGRADE, "websocket")
+	.header(CONNECTION, "upgrade")
+	.header(
+		"Sec-WebSocket-Key",
+		fastwebsockets::handshake::generate_key(),
+	)
+	.header("Sec-WebSocket-Version", "13")
+	.body(Empty::<Bytes>::new())?;
+
+	let (ws, _) = fastwebsockets::handshake::client(&SpawnExecutor, req, tls_stream).await?;
+	Ok(FragmentCollector::new(ws))
+}
+struct SpawnExecutor;
+
+impl<Fut> hyper::rt::Executor<Fut> for SpawnExecutor
+where
+  Fut: std::future::Future + Send + 'static,
+  Fut::Output: Send + 'static,
+{
+  fn execute(&self, fut: Fut) {
+	tokio::task::spawn(fut);
+  }
+}
+
+fn str_f32_parse(s: &str) -> f32 {
+    s.parse::<f32>().unwrap_or_else(|e| {
+        eprintln!("Failed to parse float: {}, error: {}", s, e);
+        0.0
+    })
+}
+
 pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
     struct Connect;
 
@@ -199,26 +436,23 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
             loop {
                 match &mut state {
                     State::Disconnected => {        
-                        let websocket_server = format!("wss://stream.bybit.com/v5/public/linear");
+                        let domain: &str = "stream.bybit.com";
 
-                        println!("Connecting to websocket server...\n");
-
-                        if let Ok((mut websocket, _)) = async_tungstenite::tokio::connect_async(
-                            websocket_server,
+                        if let Ok(mut websocket) = connect(domain
                         )
                         .await {
-                            let subscribe_message = serde_json::json!({
+                            let subscribe_message: String = serde_json::json!({
                                 "op": "subscribe",
-                                "args": [format!("publicTrade.{symbol_str}"), format!("orderbook.200.{symbol_str}")]
+                                "args": [stream_1, stream_2]
                             }).to_string();
     
-                            if let Err(e) = websocket.send(tungstenite::Message::Text(subscribe_message)).await {
+                            if let Err(e) = websocket.write_frame(Frame::text(fastwebsockets::Payload::Borrowed(subscribe_message.as_bytes()))).await {
                                 eprintln!("Failed subscribing: {}", e);
 
                                 let _ = output.send(Event::Disconnected).await;
 
                                 continue;
-                            } 
+                            }
 
                             state = State::Connected(websocket);
                             
@@ -229,95 +463,90 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
                         }
                     }
                     State::Connected(websocket) => {
-                        let mut fused_websocket = websocket.by_ref().fuse();
-
                         let feed_latency: FeedLatency;
 
-                        futures::select! {
-                            received = fused_websocket.select_next_some() => {
-                                match received {
-                                    Ok(tungstenite::Message::Text(message)) => {
-                                        match serde_json::from_str::<Stream>(&message) {
-                                            Ok(stream) => {
-                                                if stream.topic == stream_1 {
-                                                    stream.data.as_array().unwrap().iter().for_each(|trade| {
-                                                        if let Ok(trade) = serde_json::from_value::<Trade>(trade.clone()) {
-                                                            trades_buffer.push(trade);
+                        match websocket.read_frame().await {
+                            Ok(msg) => match msg.opcode {
+                                OpCode::Text => {       
+                                    let json_bytes: Bytes = Bytes::from(msg.payload.to_vec());
 
-                                                            let latency = chrono::Utc::now().timestamp_millis() - trade.time;
+                                    if let Ok(data) = feed_de(&json_bytes, symbol_str) {
+                                        match data {
+                                            StreamData::Trade(de_trade_vec) => {
+                                                for de_trade in de_trade_vec.iter() {
+                                                    let trade = Trade {
+                                                        time: de_trade.time as i64,
+                                                        is_sell: if de_trade.is_sell == "Sell" { true } else { false },
+                                                        price: str_f32_parse(&de_trade.price),
+                                                        qty: str_f32_parse(&de_trade.qty),
+                                                    };
 
-                                                            trade_latencies.push(latency);
-                                                        } else {
-                                                            eprintln!("Failed to deserialize trade: {:?}", trade);
-                                                        }
-                                                    });
+                                                    trade_latencies.push(
+                                                        chrono::Utc::now().timestamp_millis() - trade.time
+                                                    );
 
-                                                } else if stream.topic == stream_2 {
-                                                    let update_id = stream.data["u"].as_i64().unwrap();
+                                                    trades_buffer.push(trade);
+                                                }                                             
+                                            },
+                                            StreamData::Depth(de_depth, data_type, time) => {                                            
+                                                let depth_latency = chrono::Utc::now().timestamp_millis() - time;
 
-                                                    if (stream.stream_type == "snapshot") || (update_id == 1) {
-                                                        let bids = stream.data["b"].as_array().unwrap();
-                                                        let asks = stream.data["a"].as_array().unwrap();
+                                                let depth_update = Depth {
+                                                    last_update_id: de_depth.update_id as i64,
+                                                    time,
+                                                    bids: de_depth.bids.iter().map(|x| Order { price: str_f32_parse(&x.price), qty: str_f32_parse(&x.qty) }).collect(),
+                                                    asks: de_depth.asks.iter().map(|x| Order { price: str_f32_parse(&x.price), qty: str_f32_parse(&x.qty) }).collect(),
+                                                };
 
-                                                        let fetched_depth = Depth {
-                                                            last_update_id: update_id,
-                                                            time: stream.time,
-                                                            bids: bids.iter().map(|x| serde_json::from_value::<Order>(x.clone()).unwrap()).collect(),
-                                                            asks: asks.iter().map(|x| serde_json::from_value::<Order>(x.clone()).unwrap()).collect(),
-                                                        };
+                                                if (data_type == "snapshot") || (depth_update.last_update_id == 1) {
+                                                    orderbook.fetched(depth_update);
 
-                                                        orderbook.fetched(fetched_depth);
+                                                } else if data_type == "delta" {
+                                                    let (local_bids, local_asks) = orderbook.update_levels(depth_update);
 
-                                                    } else if stream.stream_type == "delta" {
-                                                        let bids = stream.data["b"].as_array().unwrap();
-                                                        let asks = stream.data["a"].as_array().unwrap();
+                                                    let local_depth_cache = LocalDepthCache {
+                                                        time,
+                                                        bids: local_bids,
+                                                        asks: local_asks,
+                                                    };
 
-                                                        let new_depth = Depth {
-                                                            last_update_id: update_id,
-                                                            time: stream.time,
-                                                            bids: bids.iter().map(|x| serde_json::from_value::<Order>(x.clone()).unwrap()).collect(),
-                                                            asks: asks.iter().map(|x| serde_json::from_value::<Order>(x.clone()).unwrap()).collect(),
-                                                        };
+                                                    let avg_trade_latency = if !trade_latencies.is_empty() {
+                                                        let avg = trade_latencies.iter().sum::<i64>() / trade_latencies.len() as i64;
+                                                        trade_latencies.clear();
+                                                        Some(avg)
+                                                    } else {
+                                                        None
+                                                    };
+                                                    feed_latency = FeedLatency {
+                                                        time,
+                                                        depth_latency,
+                                                        trade_latency: avg_trade_latency,
+                                                    };
 
-                                                        let (local_bids, local_asks) = orderbook.update_levels(new_depth);
-
-                                                        let depth_latency = chrono::Utc::now().timestamp_millis() - stream.time;
-
-                                                        if !trade_latencies.is_empty() {
-                                                            let avg_trade_latency = trade_latencies.iter().sum::<i64>() / trade_latencies.len() as i64;
-        
-                                                            feed_latency = FeedLatency {
-                                                                time: stream.time,
-                                                                depth_latency,
-                                                                trade_latency: Some(avg_trade_latency),
-                                                            };
-        
-                                                            trade_latencies.clear();
-                                                        } else {
-                                                            feed_latency = FeedLatency {
-                                                                time: stream.time,
-                                                                depth_latency,
-                                                                trade_latency: None,
-                                                            };
-                                                        }
-
-                                                        let _ = output.send(Event::DepthReceived(feed_latency, stream.time, LocalDepthCache {
-                                                            time: stream.time,
-                                                            bids: local_bids,
-                                                            asks: local_asks,
-                                                        }, std::mem::take(&mut trades_buffer))).await;
-                                                    }
+                                                    let _ = output.send(
+                                                        Event::DepthReceived(
+                                                            feed_latency,
+                                                            time, 
+                                                            local_depth_cache,
+                                                            std::mem::take(&mut trades_buffer)
+                                                        )
+                                                    ).await;
                                                 }
                                             },
-                                            Err(e) => println!("Failed to deserialize message: {}. Error: {}", message, e),
+                                            _ => {
+                                                println!("Unknown data: {:?}", &data);
+                                            }
                                         }
                                     }
-                                    Err(_) => {
-                                        let _ = output.send(Event::Disconnected).await;
-                                        state = State::Disconnected;
-                                    }
-                                    Ok(_) => continue,
-                                }
+                                },
+                                OpCode::Close => {
+                                    eprintln!("Connection closed");
+                                    let _ = output.send(Event::Disconnected).await;
+                                },
+                                _ => {}
+                            },
+                            Err(e) => {
+                                println!("Error reading frame: {}", e);
                             }
                         }
                     }
@@ -380,8 +609,10 @@ pub fn connect_kline_stream(vec: Vec<(Ticker, Timeframe)>) -> Subscription<Event
         move |mut output| async move {
             let mut state = State::Disconnected;    
 
+            let mut symbol_str: &str = "";
+
             let stream_str = vec.iter().map(|(ticker, timeframe)| {
-                let symbol_str = match ticker {
+                symbol_str = match ticker {
                     Ticker::BTCUSDT => "BTCUSDT",
                     Ticker::ETHUSDT => "ETHUSDT",
                     Ticker::SOLUSDT => "SOLUSDT",
@@ -400,10 +631,10 @@ pub fn connect_kline_stream(vec: Vec<(Ticker, Timeframe)>) -> Subscription<Event
             loop {
                 match &mut state {
                     State::Disconnected => {
-                        let websocket_server = format!("wss://stream.bybit.com/v5/public/linear");
+                        let domain = "stream.bybit.com";
                         
-                        if let Ok((mut websocket, _)) = async_tungstenite::tokio::connect_async(
-                            websocket_server,
+                        if let Ok(mut websocket) = connect(
+                            domain,
                         )
                         .await {
                             let subscribe_message = serde_json::json!({
@@ -411,7 +642,7 @@ pub fn connect_kline_stream(vec: Vec<(Ticker, Timeframe)>) -> Subscription<Event
                                 "args": stream_str 
                             }).to_string();
     
-                            if let Err(e) = websocket.send(tungstenite::Message::Text(subscribe_message)).await {
+                            if let Err(e) = websocket.write_frame(Frame::text(fastwebsockets::Payload::Borrowed(subscribe_message.as_bytes()))).await {
                                 eprintln!("Failed subscribing: {}", e);
 
                                 let _ = output.send(Event::Disconnected).await;
@@ -428,44 +659,37 @@ pub fn connect_kline_stream(vec: Vec<(Ticker, Timeframe)>) -> Subscription<Event
                         }
                     }
                     State::Connected(websocket) => {
-                        let mut fused_websocket = websocket.by_ref().fuse();
+                        match websocket.read_frame().await {
+                            Ok(msg) => match msg.opcode {
+                                OpCode::Text => {                    
+                                    let json_bytes: Bytes = Bytes::from(msg.payload.to_vec());
                     
-                        futures::select! {
-                            received = fused_websocket.select_next_some() => {
-                                match received {
-                                    Ok(tungstenite::Message::Text(message)) => {
-                                        match serde_json::from_str::<serde_json::Value>(&message) {
-                                            Ok(data) => {
-                                                if let Some(data_array) = data["data"].as_array() {
-                                                    for kline_obj in data_array {
-                                                        let kline = Kline {
-                                                            time: kline_obj["start"].as_u64().unwrap_or_default(),
-                                                            open: kline_obj["open"].as_str().unwrap_or_default().parse::<f32>().unwrap_or_default(),
-                                                            high: kline_obj["high"].as_str().unwrap_or_default().parse::<f32>().unwrap_or_default(),
-                                                            low: kline_obj["low"].as_str().unwrap_or_default().parse::<f32>().unwrap_or_default(),
-                                                            close: kline_obj["close"].as_str().unwrap_or_default().parse::<f32>().unwrap_or_default(),
-                                                            volume: kline_obj["volume"].as_str().unwrap_or_default().parse::<f32>().unwrap_or_default(),
-                                                        };
+                                    if let Ok(StreamData::Kline(de_kline_vec)) = feed_de(&json_bytes, symbol_str) {
+                                        for de_kline in de_kline_vec.iter() {
+                                            let kline = Kline {
+                                                time: de_kline.time,
+                                                open: str_f32_parse(&de_kline.open),
+                                                high: str_f32_parse(&de_kline.high),
+                                                low: str_f32_parse(&de_kline.low),
+                                                close: str_f32_parse(&de_kline.close),
+                                                volume: str_f32_parse(&de_kline.volume),
+                                            };
 
-                                                        let interval = kline_obj["interval"].as_str().unwrap_or_default();
-                     
-                                                        if let Some(timeframe) = string_to_timeframe(interval) {
-                                                            let _ = output.send(Event::KlineReceived(kline, timeframe)).await;
-                                                        } else {
-                                                            println!("Failed to find timeframe: {}, {:?}", interval, vec);
-                                                        }
-                                                    }
-                                                }
-                                            },
-                                            Err(_) => continue,
+                                            if let Some(timeframe) = string_to_timeframe(&de_kline.interval) {
+                                                let _ = output.send(Event::KlineReceived(kline, timeframe)).await;
+                                            } else {
+                                                eprintln!("Failed to find timeframe: {}, {:?}", &de_kline.interval, vec);
+                                            }
                                         }
-                                    },
-                                    Err(_) => {
-                                        let _ = output.send(Event::Disconnected).await;
-                                        state = State::Disconnected;
-                                    },
-                                    Ok(_) => continue,
+                                         
+                                    } else {
+                                        eprintln!("\nUnknown data: {:?}", &json_bytes);
+                                    }
                                 }
+                                _ => {}
+                            },
+                            Err(e) => {
+                                eprintln!("Error reading frame: {}", e);
                             }
                         }
                     }
@@ -540,8 +764,6 @@ pub async fn fetch_klines(ticker: Ticker, timeframe: Timeframe) -> Result<Vec<Kl
 
     Ok(klines)
 }
-
-use anyhow::{Result, Context};
 
 pub async fn fetch_ticksize(ticker: Ticker) -> Result<f32> {
     let symbol_str = match ticker {
