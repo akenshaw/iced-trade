@@ -1,7 +1,6 @@
 use hyper::client::conn;
 use iced::futures;  
 use iced::subscription::{self, Subscription};
-use serde::{de, Deserialize, Deserializer};
 use futures::sink::SinkExt;
 
 use serde_json::Value;
@@ -11,9 +10,10 @@ use crate::{Ticker, Timeframe};
 use bytes::Bytes;
 
 use sonic_rs::{LazyValue, JsonValueTrait};
-use sonic_rs::{Deserialize as SonicDe, Serialize}; 
+use sonic_rs::{Deserialize, Serialize}; 
 use sonic_rs::{to_array_iter, to_object_iter_unchecked};
 
+use anyhow::anyhow;
 use anyhow::{Context, Result};
 
 use fastwebsockets::{Frame, FragmentCollector, OpCode};
@@ -45,13 +45,6 @@ pub enum Event {
 #[derive(Debug, Clone)]
 pub struct Connection;
 
-#[derive(Debug, Deserialize, Clone)]
-pub struct FetchedDepth {
-    #[serde(rename = "b")]
-    pub bids: Vec<Order>,
-    #[serde(rename = "a")]
-    pub asks: Vec<Order>,
-}
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Order {
     pub price: f32,
@@ -63,34 +56,12 @@ pub struct LocalDepthCache {
     pub bids: Box<[Order]>,
     pub asks: Box<[Order]>,
 }
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Depth {
-    #[serde(default)]
     pub last_update_id: i64,
-    #[serde(rename = "T")]
     pub time: i64,
-    #[serde(rename = "b")]
     pub bids: Vec<Order>,
-    #[serde(rename = "a")]
     pub asks: Vec<Order>,
-}
-
-use std::str::FromStr;
-impl<'de> Deserialize<'de> for Order {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value: Vec<String> = Deserialize::deserialize(deserializer)?;
-        if value.len() != 2 {
-            return Err(serde::de::Error::custom("Expected an array of two strings"));
-        }
-
-        let price = f32::from_str(&value[0]).map_err(serde::de::Error::custom)?;
-        let qty = f32::from_str(&value[1]).map_err(serde::de::Error::custom)?;
-
-        Ok(Order { price, qty })
-    }
 }
 
 impl Depth {
@@ -178,10 +149,6 @@ impl Depth {
         local_asks.sort_by(|a, b| a.price.partial_cmp(&b.price).unwrap());
 
         (local_bids.into_boxed_slice(), local_asks.into_boxed_slice())
-    }
-
-    pub fn get_fetch_id(&self) -> i64 {
-        self.last_update_id
     }
 }
 
@@ -408,6 +375,27 @@ fn str_f32_parse(s: &str) -> f32 {
     })
 }
 
+fn string_to_timeframe(interval: &str) -> Option<Timeframe> {
+    Timeframe::ALL.iter().find(|&tf| tf.to_string() == format!("{}m", interval)).copied()
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Trade {
+    pub time: i64,
+    pub is_sell: bool,
+    pub price: f32,
+    pub qty: f32,
+}
+#[derive(Deserialize, Debug, Clone, Copy)]
+pub struct Kline {
+    pub time: u64,
+    pub open: f32,
+    pub high: f32,
+    pub low: f32,
+    pub close: f32,
+    pub volume: f32,
+}
+
 pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
     struct Connect;
 
@@ -555,51 +543,7 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
         },
     )
 }
-
-#[derive(Deserialize)]
-struct Stream {
-    topic: String,
-    #[serde(rename = "type")]
-    stream_type: String,
-    #[serde(rename = "cts", default)]
-    time: i64,
-    data: Value,
-}
  
-#[derive(Deserialize, Debug, Clone, Copy)]
-pub struct Trade {
-    #[serde(rename = "T")]
-    pub time: i64,
-    #[serde(rename = "S", deserialize_with = "deserialize_is_sell")]
-    pub is_sell: bool,
-    #[serde(with = "string_to_f32", rename = "p")]
-    pub price: f32,
-    #[serde(with = "string_to_f32", rename = "v")]
-    pub qty: f32,
-}
-fn deserialize_is_sell<'de, D>(deserializer: D) -> Result<bool, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s: String = Deserialize::deserialize(deserializer)?;
-    match s.as_str() {
-        "Sell" => Ok(true),
-        "Buy" => Ok(false),
-        _ => Err(serde::de::Error::custom("Unexpected value for is_sell")),
-    }
-}
-mod string_to_f32 {
-    use serde::{self, Deserialize, Deserializer};
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<f32, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s: String = Deserialize::deserialize(deserializer)?;
-        s.parse::<f32>().map_err(serde::de::Error::custom)
-    }
-}
-
 pub fn connect_kline_stream(vec: Vec<(Ticker, Timeframe)>) -> Subscription<Event> {
     struct Connect;
 
@@ -699,20 +643,6 @@ pub fn connect_kline_stream(vec: Vec<(Ticker, Timeframe)>) -> Subscription<Event
     )
 }
 
-fn string_to_timeframe(interval: &str) -> Option<Timeframe> {
-    Timeframe::ALL.iter().find(|&tf| tf.to_string() == format!("{}m", interval)).copied()
-}
-
-#[derive(Deserialize, Debug, Clone, Copy)]
-pub struct Kline {
-    pub time: u64,
-    pub open: f32,
-    pub high: f32,
-    pub low: f32,
-    pub close: f32,
-    pub volume: f32,
-}
-
 #[derive(Deserialize, Debug)]
 struct ApiResponse {
     #[serde(rename = "retCode")]
@@ -729,14 +659,14 @@ struct ApiResult {
     list: Vec<Vec<Value>>,
 }
 
-pub async fn fetch_klines(ticker: Ticker, timeframe: Timeframe) -> Result<Vec<Kline>, reqwest::Error> {
-    let symbol_str = match ticker {
+pub async fn fetch_klines(ticker: Ticker, timeframe: Timeframe) -> Result<Vec<Kline>> {
+    let symbol_str: &str = match ticker {
         Ticker::BTCUSDT => "BTCUSDT",
         Ticker::ETHUSDT => "ETHUSDT",
         Ticker::SOLUSDT => "SOLUSDT",
         Ticker::LTCUSDT => "LTCUSDT",
     };
-    let timeframe_str = match timeframe {
+    let timeframe_str: &str = match timeframe {
         Timeframe::M1 => "1",
         Timeframe::M3 => "3",
         Timeframe::M5 => "5",
@@ -744,25 +674,47 @@ pub async fn fetch_klines(ticker: Ticker, timeframe: Timeframe) -> Result<Vec<Kl
         Timeframe::M30 => "30",
     };
 
-    let url = format!("https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol_str}&interval={timeframe_str}&limit=250");
+    let url: String = format!("https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol_str}&interval={timeframe_str}&limit=250");
 
-    let response: reqwest::Response = reqwest::get(&url).await?;
-    let text: String = response.text().await?;
+    let response: reqwest::Response = reqwest::get(&url).await
+        .context("Failed to send request")?;
+    let text: String = response.text().await
+        .context("Failed to read response text")?;
 
-    let api_response: ApiResponse = serde_json::from_str(&text).unwrap();
+    let api_response: ApiResponse = sonic_rs::from_str(&text)
+        .context("Failed to parse JSON")?;
     
-    let klines: Vec<Kline> = api_response.result.list.iter().map(|kline| {
-        Kline {
-            time: kline[0].as_str().unwrap().parse::<u64>().unwrap(),
-            open: kline[1].as_str().unwrap().parse::<f32>().unwrap(),
-            high: kline[2].as_str().unwrap().parse::<f32>().unwrap(),
-            low: kline[3].as_str().unwrap().parse::<f32>().unwrap(),
-            close: kline[4].as_str().unwrap().parse::<f32>().unwrap(),
-            volume: kline[5].as_str().unwrap().parse::<f32>().unwrap(),
-        }
+    let klines: Result<Vec<Kline>, anyhow::Error> = api_response.result.list.iter().map(|kline| {
+        let time = kline[0].as_str().ok_or_else(|| anyhow!("Missing time value"))
+            .and_then(|s| s.parse::<u64>()
+            .context("Failed to parse time as u64"));
+        let open = kline[1].as_str().ok_or_else(|| anyhow!("Missing open value"))
+            .and_then(|s| s.parse::<f32>()
+            .context("Failed to parse open as f32"));
+        let high = kline[2].as_str().ok_or_else(|| anyhow!("Missing high value"))
+            .and_then(|s| s.parse::<f32>()
+            .context("Failed to parse high as f32"));
+        let low = kline[3].as_str().ok_or_else(|| anyhow!("Missing low value"))
+            .and_then(|s| s.parse::<f32>()
+            .context("Failed to parse low as f32"));
+        let close = kline[4].as_str().ok_or_else(|| anyhow!("Missing close value"))
+            .and_then(|s| s.parse::<f32>()
+            .context("Failed to parse close as f32"));
+        let volume = kline[5].as_str().ok_or_else(|| anyhow!("Missing volume value"))
+            .and_then(|s| s.parse::<f32>()
+            .context("Failed to parse volume as f32"));
+    
+        Ok(Kline {
+            time: time?,
+            open: open?,
+            high: high?,
+            low: low?,
+            close: close?,
+            volume: volume?,
+        })
     }).collect();
 
-    Ok(klines)
+    Ok(klines?)
 }
 
 pub async fn fetch_ticksize(ticker: Ticker) -> Result<f32> {
@@ -775,23 +727,27 @@ pub async fn fetch_ticksize(ticker: Ticker) -> Result<f32> {
 
     let url = format!("https://api.bybit.com/v5/market/instruments-info?category=linear&symbol={}", symbol_str);
 
-    let response: reqwest::Response = reqwest::get(&url).await.context("Failed to send request")?;
-    let text: String = response.text().await.context("Failed to read response text")?;
-    let exchange_info: Value = serde_json::from_str(&text).context("Failed to parse JSON")?;
+    let response: reqwest::Response = reqwest::get(&url).await
+        .context("Failed to send request")?;
+    let text: String = response.text().await
+        .context("Failed to read response text")?;
 
-    let result_list: &Vec<Value> = exchange_info["result"]["list"].as_array().context("Result list is not an array")?;
+    let exchange_info: Value = sonic_rs::from_str(&text)
+        .context("Failed to parse JSON")?;
+
+    let result_list: &Vec<Value> = exchange_info["result"]["list"].as_array()
+        .context("Result list is not an array")?;
 
     for item in result_list {
         if item["symbol"] == symbol_str {
-            if let Some(price_filter) = item["priceFilter"].as_object() {
-                if let Some(tick_size_str) = price_filter.get("tickSize") {
-                    if let Ok(tick_size) = tick_size_str.as_str().unwrap().parse::<f32>() {
+            let price_filter: &serde_json::Map<String, Value> = item["priceFilter"].as_object()
+                .context("Price filter not found")?;
 
-                        println!("Tick size for {} is {}", symbol_str, tick_size);
-                        return Ok(tick_size);
-                    }
-                }
-            }
+            let tick_size_str: &str = price_filter.get("tickSize").context("Tick size not found")?.as_str()
+                .context("Tick size is not a string")?;
+
+            return Ok(tick_size_str.parse::<f32>()
+                .context("Failed to parse tick size")?);
         }
     }
 
