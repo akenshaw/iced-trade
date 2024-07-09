@@ -1,7 +1,7 @@
 use hyper::client::conn;
 use iced::futures;  
 use iced::subscription::{self, Subscription};
-use serde::{de, Deserialize, Deserializer};
+use serde::{de, Deserializer};
 use futures::sink::SinkExt;
 
 use serde_json::Value;
@@ -10,7 +10,7 @@ use crate::{Ticker, Timeframe};
 use bytes::Bytes;
 
 use sonic_rs::{LazyValue, JsonValueTrait};
-use sonic_rs::{Deserialize as SonicDe, Serialize}; 
+use sonic_rs::{Deserialize, Serialize}; 
 use sonic_rs::{to_array_iter, to_object_iter_unchecked};
 
 use anyhow::{Context, Result};
@@ -65,13 +65,13 @@ impl<'de> Deserialize<'de> for Order {
 #[derive(Debug, Deserialize, Clone)]
 pub struct FetchedDepth {
     #[serde(rename = "lastUpdateId")]
-    pub update_id: i64,
+    update_id: i64,
     #[serde(rename = "T")]
-    pub time: i64,
+    time: i64,
     #[serde(rename = "bids")]
-    pub bids: Vec<Order>,
+    bids: Vec<Order>,
     #[serde(rename = "asks")]
-    pub asks: Vec<Order>,
+    asks: Vec<Order>,
 }
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Order {
@@ -84,15 +84,11 @@ pub struct LocalDepthCache {
     pub bids: Box<[Order]>,
     pub asks: Box<[Order]>,
 }
-#[derive(Debug, Deserialize, Clone, Default)]
+
 pub struct Depth {
-    #[serde(default)]
     pub last_update_id: i64,
-    #[serde(rename = "T")]
     pub time: i64,
-    #[serde(rename = "b")]
     pub bids: Vec<Order>,
-    #[serde(rename = "a")]
     pub asks: Vec<Order>,
 }
 
@@ -199,63 +195,63 @@ pub struct Trade {
 #[derive(Serialize, Deserialize, Debug)]
 struct SonicDepth {
 	#[serde(rename = "T")]
-	pub time: u64,
+	time: u64,
 	#[serde(rename = "U")]
-	pub first_id: u64,
+	first_id: u64,
 	#[serde(rename = "u")]
-	pub final_id: u64,
+	final_id: u64,
 	#[serde(rename = "pu")]
-	pub prev_final_id: u64,
+	prev_final_id: u64,
 	#[serde(rename = "b")]
-	pub bids: Vec<BidAsk>,
+	bids: Vec<BidAsk>,
 	#[serde(rename = "a")]
-	pub asks: Vec<BidAsk>,
+	asks: Vec<BidAsk>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 struct BidAsk {
 	#[serde(rename = "0")]
-	pub price: String,
+	price: String,
 	#[serde(rename = "1")]
-	pub qty: String,
+	qty: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 struct SonicTrade {
 	#[serde(rename = "T")]
-	pub time: u64,
+	time: u64,
 	#[serde(rename = "p")]
-	pub price: String,
+	price: String,
 	#[serde(rename = "q")]
-	pub qty: String,
+	qty: String,
 	#[serde(rename = "m")]
-	pub is_sell: bool,
+	is_sell: bool,
 }
 
 #[derive(Deserialize, Debug, Clone)]
-pub struct SonicKline {
+struct SonicKline {
     #[serde(rename = "t")]
-    pub time: u64,
+    time: u64,
     #[serde(rename = "o")]
-    pub open: String,
+    open: String,
     #[serde(rename = "h")]
-    pub high: String,
+    high: String,
     #[serde(rename = "l")]
-    pub low: String,
+    low: String,
     #[serde(rename = "c")]
-    pub close: String,
+    close: String,
     #[serde(rename = "v")]
-    pub volume: String,
+    volume: String,
     #[serde(rename = "V")]
-    pub taker_buy_base_asset_volume: String,
+    taker_buy_base_asset_volume: String,
     #[serde(rename = "i")]
-    pub interval: String,
+    interval: String,
 }
 
 #[derive(Deserialize, Debug, Clone)]
-pub struct SonicKlineWrap {
+struct SonicKlineWrap {
     #[serde(rename = "k")]
-    pub kline: SonicKline,
+    kline: SonicKline,
 }
 
 #[derive(Debug)]
@@ -371,7 +367,7 @@ fn tls_connector() -> Result<TlsConnector> {
 
 async fn connect(domain: &str, streams: &str) -> Result<FragmentCollector<TokioIo<Upgraded>>> {
 	let mut addr = String::from(domain);
-	addr.push_str(":443"); // Port number for binance stream
+	addr.push_str(":443");
 
 	let tcp_stream: TcpStream = TcpStream::connect(&addr).await?;
 	let tls_connector: TlsConnector = tls_connector().unwrap();
@@ -475,7 +471,7 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
                                     orderbook.fetched(depth);
                                     state = State::Connected(websocket);
                                 },
-                                Err(_) => orderbook.fetched(Depth::default()),
+                                Err(_) => output.send(Event::Disconnected).await.expect("Trying to send disconnect event..."),
                             }
                             
                         } else {
@@ -548,7 +544,10 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
                                                         Ok(depth) => {
                                                             orderbook.fetched(depth)
                                                         },
-                                                        Err(_) => orderbook.fetched(Depth::default()),
+                                                        Err(_) => {
+                                                            state = State::Disconnected;
+                                                            output.send(Event::Disconnected).await.expect("Trying to send disconnect event...");
+                                                        },
                                                     }
                                                     already_fetching = false;
                                                 }
