@@ -7,9 +7,8 @@ mod charts;
 use charts::custom_line::{self, CustomLine};
 use charts::heatmap::{self, Heatmap};
 use charts::footprint::{self, Footprint};
-use iced::event;
 
-use std::collections::VecDeque;
+use std::collections::{VecDeque, HashMap};
 use std::vec;
 use chrono::{NaiveDateTime, DateTime, Utc};
 use iced::{
@@ -180,11 +179,11 @@ struct PaneSpec {
 }
 
 impl PaneSpec {
-    fn new(id: PaneId) -> Self {
+    fn new(id: PaneId, from_cache: (Option<Ticker>, Option<Timeframe>, Option<f32>)) -> Self {
         Self { 
             id,
             show_modal: false,
-            stream: (None, None, None),
+            stream: from_cache,
         }
     }
 }
@@ -218,6 +217,8 @@ pub enum MarketEvents {
 #[derive(Debug, Clone)]
 pub enum Message {
     Debug(String),
+
+    RestartStream(Option<pane_grid::Pane>, (Option<Ticker>, Option<Timeframe>, Option<f32>)),
 
     CustomLine(custom_line::Message),
     Candlestick(custom_line::Message),
@@ -301,6 +302,10 @@ struct State {
     exchange_latency: Option<(u32, u32)>,
 
     feed_latency_cache: VecDeque<FeedLatency>,
+    
+    pane_state_cache: HashMap<PaneId, (Option<Ticker>, Option<Timeframe>, Option<f32>)>,
+
+    last_axis_split: Option<pane_grid::Axis>,
 }
 
 impl State {
@@ -390,6 +395,10 @@ impl State {
             exchange_latency: None,
 
             feed_latency_cache: VecDeque::new(),
+
+            pane_state_cache: HashMap::new(),
+
+            last_axis_split: None,
         }
     }
 
@@ -541,6 +550,25 @@ impl State {
                 self.selected_exchange = Some(exchange);
                 Task::none()
             },
+            Message::RestartStream(pane, cached_state) => {
+                if let Some(pane) = pane {
+                    if let Some(timeframe) = cached_state.1 {
+                        Task::perform(
+                            async {
+                            },
+                            move |()| Message::TimeframeSelected(timeframe, pane)
+                        )
+                    } else {
+                        Task::perform(
+                            async {
+                            },
+                            move |()| Message::ErrorOccurred(format!("No timeframe found in pane state to stream"))
+                        )
+                    }
+                } else {
+                    Task::none()
+                }
+            }
             Message::WsToggle => {
                 self.ws_running = !self.ws_running;
 
@@ -922,19 +950,29 @@ impl State {
 
             // Pane grid
             Message::Split(axis, pane, pane_id) => {
-                let focus_pane = if let Some((pane, _)) = self.panes.split(axis, pane, PaneSpec::new(pane_id)) {
-                    Some(pane)
+                let cached_pane_state: (Option<Ticker>, Option<Timeframe>, Option<f32>) = *self.pane_state_cache.get(&pane_id).unwrap_or(&(None, None, None));
+
+                let new_pane = None;
+
+                let focus_pane = if let Some((new_pane, _)) = self.panes.split(axis, pane, PaneSpec::new(pane_id, cached_pane_state)) {
+                    Some(new_pane)
                 } else if let Some((&first_pane, _)) = self.panes.panes.iter().next() {
-                    self.panes.split(axis, first_pane, PaneSpec::new(pane_id)).map(|(pane, _)| pane)
+                    self.panes.split(axis, first_pane, PaneSpec::new(pane_id, cached_pane_state)).map(|(new_pane, _)| new_pane)
                 } else {
                     None
                 };
 
                 if Some(focus_pane).is_some() {
                     self.focus = focus_pane;
-                } 
+                }
 
-                Task::none()
+                self.last_axis_split = Some(axis);
+
+                Task::perform(
+                    async {
+                    },
+                    move |()| Message::RestartStream(new_pane, cached_pane_state)
+                )
             },
             Message::Clicked(pane) => {
                 self.focus = Some(pane);
@@ -962,14 +1000,17 @@ impl State {
                 self.panes.restore();
                 Task::none()
             },
-            Message::Close(pane) => {                
+            Message::Close(pane) => {       
+                let pane_state = self.panes.get(pane).unwrap();
+                
+                self.pane_state_cache.insert(pane_state.id, (pane_state.stream.0, pane_state.stream.1, pane_state.stream.2));
+
                 if let Some((_, sibling)) = self.panes.close(pane) {
                     self.focus = Some(sibling);
                 }
                 Task::none()
             },
             Message::ToggleLayoutLock => {
-                self.focus = None;
                 self.pane_lock = !self.pane_lock;
                 Task::none()
             },
@@ -1252,13 +1293,25 @@ impl State {
                 (PaneId::TimeAndSales, "Time & Sales"),
             ];
 
+            let pane_to_split = self.focus.unwrap_or_else(|| { dbg!("No focused pane found"); self.first_pane });
+
+            let mut axis_to_split = if rand::random() { pane_grid::Axis::Horizontal } else { pane_grid::Axis::Vertical };
+
+            if let Some(axis) = self.last_axis_split {
+                if axis == pane_grid::Axis::Horizontal {
+                    axis_to_split = pane_grid::Axis::Vertical;
+                } else {
+                    axis_to_split = pane_grid::Axis::Horizontal;
+                }
+            } 
+
             for (pane_id, label) in pane_info {
                 let button = button(label).width(iced::Pixels(200.0));
 
-                if self.panes.iter().any(|(_p, ps)| ps.id == pane_id) {
+                if self.panes.iter().any(|(_, ps)| ps.id == pane_id) {
                     buttons = buttons.push(button);
                 } else {
-                    let message = Message::Split(pane_grid::Axis::Vertical, self.first_pane, pane_id);
+                    let message = Message::Split(axis_to_split, pane_to_split, pane_id);
                     buttons = buttons.push(button.on_press(message));
                 }
             }
