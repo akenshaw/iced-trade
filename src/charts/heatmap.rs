@@ -112,10 +112,10 @@ impl Heatmap {
             let mut min_bid_price = f32::MAX;
 
             for (_, (depth, _)) in self.data_points.range(earliest..=latest) {
-                if depth.asks.len() > 20 && depth.bids.len() > 20 {
-                    let ask_price = depth.asks[20].price;
-                    let bid_price = depth.bids[20].price;
-
+                if !depth.asks.is_empty() && !depth.bids.is_empty() {        
+                    let ask_price: f32 = depth.asks[std::cmp::min(20, depth.asks.len() - 1)].price;
+                    let bid_price: f32 = depth.bids[std::cmp::min(20, depth.bids.len() - 1)].price;
+        
                     if ask_price > max_ask_price {
                         max_ask_price = ask_price;
                     };
