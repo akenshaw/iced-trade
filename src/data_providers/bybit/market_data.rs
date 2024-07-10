@@ -86,23 +86,19 @@ impl Depth {
         for order in new_bids {
             if order.qty == 0.0 {
                 self.bids.retain(|x| x.price != order.price);
+            } else if let Some(existing_order) = self.bids.iter_mut().find(|x| x.price == order.price) {
+                existing_order.qty = order.qty;
             } else {
-                if let Some(existing_order) = self.bids.iter_mut().find(|x| x.price == order.price) {
-                    existing_order.qty = order.qty;
-                } else {
-                    self.bids.push(*order);
-                }
+                self.bids.push(*order);
             }
         }
         for order in new_asks {
             if order.qty == 0.0 {
                 self.asks.retain(|x| x.price != order.price);
+            } else if let Some(existing_order) = self.asks.iter_mut().find(|x| x.price == order.price) {
+                existing_order.qty = order.qty;
             } else {
-                if let Some(existing_order) = self.asks.iter_mut().find(|x| x.price == order.price) {
-                    existing_order.qty = order.qty;
-                } else {
-                    self.asks.push(*order);
-                }
+                self.asks.push(*order);
             }
         }
     }
@@ -746,8 +742,8 @@ pub async fn fetch_ticksize(ticker: Ticker) -> Result<f32> {
             let tick_size_str: &str = price_filter.get("tickSize").context("Tick size not found")?.as_str()
                 .context("Tick size is not a string")?;
 
-            return Ok(tick_size_str.parse::<f32>()
-                .context("Failed to parse tick size")?);
+            return tick_size_str.parse::<f32>()
+                .context("Failed to parse tick size");
         }
     }
 

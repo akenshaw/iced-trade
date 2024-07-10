@@ -647,18 +647,17 @@ impl canvas::Program<Message> for Footprint {
                     if let Some((_, kline)) = self.data_points.iter()
                         .find(|(time, _)| **time == rounded_timestamp) {
 
-                            let tooltip_text: String;
-                            if kline.1.4 != -1.0 {
-                                tooltip_text = format!(
+                            let tooltip_text: String = if kline.1.4 != -1.0 {
+                                format!(
                                     "O: {} H: {} L: {} C: {}\nBuyV: {:.0} SellV: {:.0}",
                                     kline.1.0, kline.1.1, kline.1.2, kline.1.3, kline.1.4, kline.1.5
-                                );
+                                )
                             } else {
-                                tooltip_text = format!(
+                                format!(
                                     "O: {} H: {} L: {} C: {}\nVolume: {:.0}",
                                     kline.1.0, kline.1.1, kline.1.2, kline.1.3, kline.1.5
-                                );
-                            }
+                                )
+                            };
 
                             let text = canvas::Text {
                                 content: tooltip_text,

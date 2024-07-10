@@ -84,14 +84,13 @@ impl CustomLine {
     }
 
     pub fn insert_datapoint(&mut self, kline: &Kline) {
-        let buy_volume = kline.taker_buy_base_asset_volume;
-        let sell_volume: f32;
-        
-        if buy_volume != -1.0 {
-            sell_volume = kline.volume - buy_volume;
+        let buy_volume: f32 = kline.taker_buy_base_asset_volume;
+        let sell_volume: f32 = if buy_volume != -1.0 {
+            kline.volume - buy_volume
         } else {
-            sell_volume = kline.volume;
-        }
+            kline.volume
+        };
+
         self.klines_raw.insert(kline.time as i64, (kline.open, kline.high, kline.low, kline.close, buy_volume, sell_volume));
 
         self.render_start();
@@ -587,18 +586,18 @@ impl canvas::Program<Message> for CustomLine {
                     if let Some((_, kline)) = self.klines_raw.iter()
                         .find(|(time, _)| **time == rounded_timestamp as i64) {
 
-                        let tooltip_text: String;
-                        if kline.4 != -1.0 {
-                            tooltip_text = format!(
+                        
+                        let tooltip_text: String = if kline.4 != -1.0 {
+                            format!(
                                 "O: {} H: {} L: {} C: {}\nBuyV: {:.0} SellV: {:.0}",
                                 kline.0, kline.1, kline.2, kline.3, kline.4, kline.5
-                            );
+                            )
                         } else {
-                            tooltip_text = format!(
+                            format!(
                                 "O: {} H: {} L: {} C: {}\nVolume: {:.0}",
                                 kline.0, kline.1, kline.2, kline.3, kline.5
-                            );
-                        }
+                            )
+                        };
 
                         let text = canvas::Text {
                             content: tooltip_text,

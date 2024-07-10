@@ -92,7 +92,7 @@ impl Heatmap {
     pub fn get_raw_trades(&mut self) -> Vec<Trade> {
         let mut trades_source = vec![];
 
-        for (_, (_, trades)) in &self.data_points {
+        for (_, trades) in self.data_points.values() {
             trades_source.extend(trades.iter().cloned());
         }
 

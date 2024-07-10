@@ -114,23 +114,19 @@ impl Depth {
         for order in new_bids {
             if order.qty == 0.0 {
                 self.bids.retain(|x| x.price != order.price);
-            } else {
-                if let Some(existing_order) = self.bids.iter_mut().find(|x| x.price == order.price) {
+            } else if let Some(existing_order) = self.bids.iter_mut().find(|x| x.price == order.price) {
                     existing_order.qty = order.qty;
-                } else {
-                    self.bids.push(*order);
-                }
+            } else {
+                self.bids.push(*order);
             }
         }
         for order in new_asks {
             if order.qty == 0.0 {
                 self.asks.retain(|x| x.price != order.price);
+            } else if let Some(existing_order) = self.asks.iter_mut().find(|x| x.price == order.price) {
+                existing_order.qty = order.qty;
             } else {
-                if let Some(existing_order) = self.asks.iter_mut().find(|x| x.price == order.price) {
-                    existing_order.qty = order.qty;
-                } else {
-                    self.asks.push(*order);
-                }
+                self.asks.push(*order);
             }
         }
     }
