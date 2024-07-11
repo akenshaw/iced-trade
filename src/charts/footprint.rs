@@ -28,6 +28,7 @@ pub struct Footprint {
     scaling: f32,
     
     data_points: BTreeMap<i64, (HashMap<i64, (f32, f32)>, (f32, f32, f32, f32, f32, f32))>,
+    raw_trades: Vec<Trade>,
 
     autoscale: bool,
     crosshair: bool,
@@ -45,7 +46,7 @@ impl Footprint {
     const MIN_SCALING: f32 = 0.4;
     const MAX_SCALING: f32 = 3.6;
 
-    pub fn new(timeframe: u16, tick_size: f32, klines_raw: Vec<(i64, f32, f32, f32, f32, f32, f32)>, trades_raw: Vec<Trade>) -> Footprint {
+    pub fn new(timeframe: u16, tick_size: f32, klines_raw: Vec<(i64, f32, f32, f32, f32, f32, f32)>, raw_trades: Vec<Trade>) -> Footprint {
         let mut data_points = BTreeMap::new();
         let aggregate_time = 1000 * 60 * timeframe as i64;
 
@@ -53,7 +54,7 @@ impl Footprint {
             let kline_raw = (kline.1, kline.2, kline.3, kline.4, kline.5, kline.6);
             data_points.entry(kline.0).or_insert((HashMap::new(), kline_raw));
         }
-        for trade in trades_raw {
+        for trade in &raw_trades {
             let rounded_time = (trade.time / aggregate_time) * aggregate_time;
             let price_level: i64 = (trade.price * (1.0 / tick_size)).round() as i64;
 
@@ -99,6 +100,7 @@ impl Footprint {
             timeframe,
             tick_size,
             data_points,
+            raw_trades,
         }
     }
 
@@ -123,12 +125,14 @@ impl Footprint {
                     trades.insert(price_level, (trade.qty, 0.0));
                 }
             }
+
+            self.raw_trades.push(trade);
         }
     
         self.render_start();
     }
 
-    pub fn change_tick_size(&mut self, trades_raw: Vec<Trade>, new_tick_size: f32) {
+    pub fn change_tick_size(&mut self, new_tick_size: f32) {
         let mut new_data_points = BTreeMap::new();
         let aggregate_time = 1000 * 60 * self.timeframe as i64;
 
@@ -136,7 +140,7 @@ impl Footprint {
             new_data_points.entry(*time).or_insert((HashMap::new(), *kline_values));
         }
 
-        for trade in trades_raw {
+        for trade in self.raw_trades.iter() {
             let rounded_time = (trade.time / aggregate_time) * aggregate_time;
             let price_level: i64 = (trade.price * (1.0 / new_tick_size)).round() as i64;
 
