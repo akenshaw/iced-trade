@@ -86,6 +86,15 @@ impl Heatmap {
         
         self.data_points.entry(rounded_depth_update).or_insert((depth, trades_buffer.into_boxed_slice()));
 
+        if self.data_points.len() > 3600 {
+            while let Some((&key_to_remove, _)) = self.data_points.iter().next() {
+                self.data_points.remove(&key_to_remove);
+                if self.data_points.len() <= 3000 {
+                    break;
+                }
+            }
+        }
+
         self.render_start();
     }
 
