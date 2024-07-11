@@ -432,13 +432,9 @@ impl State {
             Message::SetMinTickSize(min_tick_size) => {
                 self.min_tick_size = Some(min_tick_size);
 
-                if let Some(heatmap_chart) = &mut self.heatmap_chart {
-                    let copied_trades = heatmap_chart.get_raw_trades();
-
-                    if let Some(footprint_chart) = &mut self.footprint_chart {
-                        let tick_size = self.tick_multiply.multiply_with_min_tick_size(self.min_tick_size.unwrap_or(1.0));
-                        footprint_chart.change_tick_size(copied_trades, tick_size);
-                    }
+                if let Some(footprint_chart) = &mut self.footprint_chart {
+                    let tick_size = self.tick_multiply.multiply_with_min_tick_size(self.min_tick_size.unwrap_or(1.0));
+                    footprint_chart.change_tick_size(tick_size);
                 }
 
                 Task::none()
@@ -454,15 +450,11 @@ impl State {
                 Task::none()
             },
             Message::TicksizeSelected(tick_multiply) => {
-                if let Some(heatmap_chart) = &mut self.heatmap_chart {
-                    let copied_trades = heatmap_chart.get_raw_trades();
-            
-                    if let Some(footprint_chart) = &mut self.footprint_chart {
-                        let tick_size = tick_multiply.multiply_with_min_tick_size(self.min_tick_size.unwrap_or(1.0));
-                        footprint_chart.change_tick_size(copied_trades, tick_size);
-            
-                        self.tick_multiply = tick_multiply;
-                    }
+                if let Some(footprint_chart) = &mut self.footprint_chart {
+                    let tick_size = tick_multiply.multiply_with_min_tick_size(self.min_tick_size.unwrap_or(1.0));
+                    footprint_chart.change_tick_size(tick_size);
+        
+                    self.tick_multiply = tick_multiply;
                 }
             
                 Task::none()
