@@ -1,101 +1,48 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use chrono::NaiveDateTime;
 use iced::{
-    alignment, mouse, widget::{button, canvas::{self, event::{self, Event}, stroke::Stroke, Cache, Canvas, Geometry, Path}}, window, Border, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector
+    alignment, color, mouse, widget::{button, canvas::{self, event::{self, Event}, stroke::Stroke, Cache, Canvas, Geometry, Path}}, window, Border, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector
 };
 use iced::widget::{Column, Row, Container, Text};
 use crate::data_providers::binance::market_data::{LocalDepthCache, Trade};
 
-#[derive(Debug, Clone, Copy)]
-pub enum Message {
-    Translated(Vector),
-    Scaled(f32, Option<Vector>),
-    ChartBounds(Rectangle),
-    AutoscaleToggle,
-    CrosshairToggle,
-    CrosshairMoved(Point),
-    YScaling(f32),
-}
+use super::{Chart, CommonChartData, Message, chart_button};
 
-#[derive(Debug)]
 pub struct Heatmap {
-    heatmap_cache: Cache,
-    crosshair_cache: Cache,
-    x_labels_cache: Cache,
-    y_labels_cache: Cache,
-    y_croshair_cache: Cache,
-    x_crosshair_cache: Cache,
-    translation: Vector,
-    scaling: f32,
-    y_scaling: f32,
-    
+    chart: CommonChartData,
     data_points: BTreeMap<i64, (LocalDepthCache, Box<[Trade]>)>,
+    tick_size: f32,
+    y_scaling: f32,
     size_filter: f32,
-
-    autoscale: bool,
-    crosshair: bool,
-    crosshair_position: Point,
-    x_min_time: i64,
-    x_max_time: i64,
-    y_min_price: f32,
-    y_max_price: f32,
-    bounds: Rectangle,
 }
+
+impl Chart for Heatmap {
+    type DataPoint = BTreeMap<i64, (LocalDepthCache, Box<[Trade]>)>;
+
+    fn get_common_data(&self) -> &CommonChartData {
+        &self.chart
+    }
+    fn get_common_data_mut(&mut self) -> &mut CommonChartData {
+        &mut self.chart
+    }
+}
+
 impl Heatmap {
     const MIN_SCALING: f32 = 0.6;
     const MAX_SCALING: f32 = 3.6;
 
-    const THREE_MIN: i64 = 3 * 60 * 1000;
-    const ONE_MIN: i64 = 1 * 60 * 1000;
-
-    pub fn new() -> Heatmap {
-        let _size = window::Settings::default().size;
-    
+    pub fn new() -> Self {
         Heatmap {
-            heatmap_cache: canvas::Cache::default(),
-            crosshair_cache: canvas::Cache::default(),
-            x_labels_cache: canvas::Cache::default(),
-            y_labels_cache: canvas::Cache::default(),
-            y_croshair_cache: canvas::Cache::default(),
-            x_crosshair_cache: canvas::Cache::default(),
-
+            chart: CommonChartData::default(),
             data_points: BTreeMap::new(),
-            size_filter: 0.0,
-
-            translation: Vector::default(),
-            scaling: 1.0,
+            tick_size: 0.0,
             y_scaling: 0.0001,
-            autoscale: true,
-            crosshair: false,
-            crosshair_position: Point::new(0.0, 0.0),
-            x_min_time: 0,
-            x_max_time: 0,
-            y_min_price: 0.0,
-            y_max_price: 0.0,
-            bounds: Rectangle::default(),
+            size_filter: 0.0,
         }
     }
 
     pub fn set_size_filter(&mut self, size_filter: f32) {
         self.size_filter = size_filter;
-    }
-
-    pub fn insert_datapoint(&mut self, trades_buffer: Vec<Trade>, depth_update: i64, depth: LocalDepthCache) {
-        let aggregate_time = 100; // 100 ms
-        let rounded_depth_update = (depth_update / aggregate_time) * aggregate_time;
-        
-        self.data_points.entry(rounded_depth_update).or_insert((depth, trades_buffer.into_boxed_slice()));
-
-        if self.data_points.len() > 3600 {
-            while let Some((&key_to_remove, _)) = self.data_points.iter().next() {
-                self.data_points.remove(&key_to_remove);
-                if self.data_points.len() <= 3000 {
-                    break;
-                }
-            }
-        }
-
-        self.render_start();
     }
 
     pub fn get_raw_trades(&mut self) -> Vec<Trade> {
@@ -107,99 +54,128 @@ impl Heatmap {
 
         trades_source
     }
-    
-    pub fn render_start(&mut self) {    
-        self.heatmap_cache.clear();
 
+    pub fn insert_datapoint(&mut self, trades_buffer: Vec<Trade>, depth_update: i64, depth: LocalDepthCache) {
+        let aggregate_time = 100; // 100 ms
+        let rounded_depth_update = (depth_update / aggregate_time) * aggregate_time;
+        
+        self.data_points.entry(rounded_depth_update).or_insert((depth, trades_buffer.into_boxed_slice()));
+        
+        if self.data_points.len() > 3600 {
+            while let Some((&key_to_remove, _)) = self.data_points.iter().next() {
+                self.data_points.remove(&key_to_remove);
+                if self.data_points.len() <= 3000 {
+                    break;
+                }
+            }
+        }     
+
+        self.render_start();
+    }
+
+    pub fn render_start(&mut self) {  
+        let (latest, earliest, highest, lowest) = self.calculate_range();
+
+        let chart = self.get_common_data_mut();
+
+        if earliest != chart.x_min_time || latest != chart.x_max_time {         
+            chart.x_min_time = earliest;
+            chart.x_max_time = latest;
+
+            chart.x_labels_cache.clear();
+            chart.x_crosshair_cache.clear();
+        };
+
+        if lowest != chart.y_min_price || highest != chart.y_max_price {   
+            chart.y_min_price = lowest;
+            chart.y_max_price = highest;
+
+            chart.y_labels_cache.clear();
+            chart.y_crosshair_cache.clear();
+        };
+        
+        chart.crosshair_cache.clear();     
+        chart.main_cache.clear();   
+    }
+
+    fn calculate_range(&self) -> (i64, i64, f32, f32) {
         let timestamp_latest: &i64 = self.data_points.keys().last().unwrap_or(&0);
 
-        let latest: i64 = *timestamp_latest - (self.translation.x*80.0) as i64;
-        let earliest: i64 = latest - (64000.0 / (self.scaling / (self.bounds.width/800.0))) as i64;
-            
-        if self.data_points.len() > 1 {
-            let mut max_ask_price = f32::MIN;
-            let mut min_bid_price = f32::MAX;
+        let latest: i64 = *timestamp_latest - (self.chart.translation.x*80.0) as i64;
+        let earliest: i64 = latest - (64000.0 / (self.chart.scaling / (self.chart.bounds.width/800.0))) as i64;
+    
+        let mut max_ask_price = f32::MIN;
+        let mut min_bid_price = f32::MAX;
 
-            for (_, (depth, _)) in self.data_points.range(earliest..=latest) {
-                if !depth.asks.is_empty() && !depth.bids.is_empty() {        
-                    let ask_price: f32 = depth.asks[std::cmp::min(20, depth.asks.len() - 1)].price;
-                    let bid_price: f32 = depth.bids[std::cmp::min(20, depth.bids.len() - 1)].price;
-        
-                    if ask_price > max_ask_price {
-                        max_ask_price = ask_price;
-                    };
-                    if bid_price < min_bid_price {
-                        min_bid_price = bid_price;
-                    };
+        for (_, (depth, _)) in self.data_points.range(earliest..=latest) {
+            if !depth.asks.is_empty() && !depth.bids.is_empty() {        
+                let ask_price: f32 = depth.asks[std::cmp::min(20, depth.asks.len() - 1)].price;
+                let bid_price: f32 = depth.bids[std::cmp::min(20, depth.bids.len() - 1)].price;
+    
+                if ask_price > max_ask_price {
+                    max_ask_price = ask_price;
+                };
+                if bid_price < min_bid_price {
+                    min_bid_price = bid_price;
                 };
             };
-
-            let lowest = min_bid_price - (min_bid_price * self.y_scaling);
-            let highest = max_ask_price + (max_ask_price * self.y_scaling);
-
-            if lowest != self.y_min_price || highest != self.y_max_price {   
-                self.y_min_price = lowest;
-                self.y_max_price = highest;
-
-                self.y_labels_cache.clear();
-                self.y_croshair_cache.clear();
-            };
         };
 
-        if earliest != self.x_min_time || latest != self.x_max_time {         
-            self.x_min_time = earliest;
-            self.x_max_time = latest;
+        let lowest = min_bid_price - (min_bid_price * self.y_scaling);
+        let highest = max_ask_price + (max_ask_price * self.y_scaling);
 
-            self.x_labels_cache.clear();
-            self.x_crosshair_cache.clear();
-        };
-        
-        self.crosshair_cache.clear();        
+        (latest, earliest, highest, lowest)
     }
 
     pub fn update(&mut self, message: &Message) {
         match message {
             Message::Translated(translation) => {
-                if self.autoscale {
-                    self.translation.x = translation.x;
+                let chart = self.get_common_data_mut();
+
+                if chart.autoscale {
+                    chart.translation.x = translation.x;
                 } else {
-                    self.translation = *translation;
+                    chart.translation = *translation;
                 }
-                self.crosshair_position = Point::new(0.0, 0.0);
+                chart.crosshair_position = Point::new(0.0, 0.0);
 
                 self.render_start();
-            }
+            },
             Message::Scaled(scaling, translation) => {
-                self.scaling = *scaling;
+                let chart = self.get_common_data_mut();
+
+                chart.scaling = *scaling;
                 
                 if let Some(translation) = translation {
-                    if self.autoscale {
-                        self.translation.x = translation.x;
+                    if chart.autoscale {
+                        chart.translation.x = translation.x;
                     } else {
-                        self.translation = *translation;
+                        chart.translation = *translation;
                     }
                 }
-                self.crosshair_position = Point::new(0.0, 0.0);
+                chart.crosshair_position = Point::new(0.0, 0.0);
 
                 self.render_start();
-            }
+            },
             Message::ChartBounds(bounds) => {
-                self.bounds = *bounds;
-            }
+                self.chart.bounds = *bounds;
+            },
             Message::AutoscaleToggle => {
-                self.autoscale = !self.autoscale;
-            }
+                self.chart.autoscale = !self.chart.autoscale;
+            },
             Message::CrosshairToggle => {
-                self.crosshair = !self.crosshair;
-            }
+                self.chart.crosshair = !self.chart.crosshair;
+            },
             Message::CrosshairMoved(position) => {
-                self.crosshair_position = *position;
-                if self.crosshair {
-                    self.crosshair_cache.clear();
-                    self.y_croshair_cache.clear();
-                    self.x_crosshair_cache.clear();
+                let chart = self.get_common_data_mut();
+
+                chart.crosshair_position = *position;
+                if chart.crosshair {
+                    chart.crosshair_cache.clear();
+                    chart.y_crosshair_cache.clear();
+                    chart.x_crosshair_cache.clear();
                 }
-            }
+            },
             Message::YScaling(scaling) => {
                 self.y_scaling = *scaling;
                 self.render_start();
@@ -211,27 +187,29 @@ impl Heatmap {
         let chart = Canvas::new(self)
             .width(Length::FillPortion(10))
             .height(Length::FillPortion(10));
+
+        let chart_state = self.get_common_data();
         
         let axis_labels_x = Canvas::new(
             AxisLabelXCanvas { 
-                labels_cache: &self.x_labels_cache, 
-                min: self.x_min_time, 
-                max: self.x_max_time, 
-                crosshair_cache: &self.x_crosshair_cache, 
-                crosshair_position: self.crosshair_position, 
-                crosshair: self.crosshair,
+                labels_cache: &chart_state.x_labels_cache, 
+                min: chart_state.x_min_time, 
+                max: chart_state.x_max_time, 
+                crosshair_cache: &chart_state.x_crosshair_cache, 
+                crosshair_position: chart_state.crosshair_position, 
+                crosshair: chart_state.crosshair,
             })
             .width(Length::FillPortion(10))
             .height(Length::Fixed(26.0));
 
         let axis_labels_y = Canvas::new(
             AxisLabelYCanvas { 
-                labels_cache: &self.y_labels_cache, 
-                y_croshair_cache: &self.y_croshair_cache, 
-                min: self.y_min_price,
-                max: self.y_max_price,
-                crosshair_position: self.crosshair_position, 
-                crosshair: self.crosshair,
+                labels_cache: &chart_state.y_labels_cache, 
+                y_croshair_cache: &chart_state.y_crosshair_cache, 
+                min: chart_state.y_min_price,
+                max: chart_state.y_max_price,
+                crosshair_position: chart_state.crosshair_position, 
+                crosshair: chart_state.crosshair,
                 y_scaling: self.y_scaling,
             })
             .width(Length::Fixed(60.0))
@@ -245,7 +223,7 @@ impl Heatmap {
             .width(Length::Fill)
             .height(Length::Fill)
             .on_press(Message::AutoscaleToggle)
-            .style(|_theme: &Theme, _status: iced::widget::button::Status| chart_button(_theme, _status, self.autoscale));
+            .style(|_theme: &Theme, _status: iced::widget::button::Status| chart_button(_theme, _status, chart_state.autoscale));
         let crosshair_button = button(
             Text::new("+")
                 .size(12)
@@ -254,7 +232,7 @@ impl Heatmap {
             .width(Length::Fill)
             .height(Length::Fill)
             .on_press(Message::CrosshairToggle)
-            .style(|_theme: &Theme, _status: iced::widget::button::Status| chart_button(_theme, _status, self.crosshair));
+            .style(|_theme: &Theme, _status: iced::widget::button::Status| chart_button(_theme, _status, chart_state.crosshair));
     
         let chart_controls = Container::new(
             Row::new()
@@ -282,25 +260,6 @@ impl Heatmap {
     }
 }
 
-fn chart_button(_theme: &Theme, _status: button::Status, is_active: bool) -> button::Style {
-    button::Style {
-        background: Some(Color::from_rgba8(20, 20, 20, 1.0).into()),
-        border: Border {
-            color: {
-                if is_active {
-                    Color::from_rgba8(50, 50, 50, 1.0)
-                } else {
-                    Color::from_rgba8(20, 20, 20, 1.0)
-                }
-            },
-            width: 1.0,
-            radius: 2.0.into(),
-        },
-        text_color: Color::WHITE,
-        ..button::Style::default()
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 pub enum Interaction {
     None,
@@ -323,8 +282,10 @@ impl canvas::Program<Message> for Heatmap {
         event: Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
-    ) -> (event::Status, Option<Message>) {        
-        if bounds != self.bounds {
+    ) -> (event::Status, Option<Message>) {
+        let chart_state = self.get_common_data();
+
+        if bounds != chart_state.bounds {
             return (event::Status::Ignored, Some(Message::ChartBounds(bounds)));
         } 
     
@@ -334,7 +295,7 @@ impl canvas::Program<Message> for Heatmap {
 
         let Some(cursor_position) = cursor.position_in(bounds) else {
             return (event::Status::Ignored, 
-                if self.crosshair {
+                if chart_state.crosshair {
                     Some(Message::CrosshairMoved(Point::new(0.0, 0.0)))
                 } else {
                     None
@@ -352,7 +313,7 @@ impl canvas::Program<Message> for Heatmap {
                         }
                         mouse::Button::Left => {
                             *interaction = Interaction::Panning {
-                                translation: self.translation,
+                                translation: chart_state.translation,
                                 start: cursor_position,
                             };
                             None
@@ -370,11 +331,11 @@ impl canvas::Program<Message> for Heatmap {
                             Some(Message::Translated(
                                 translation
                                     + (cursor_position - start)
-                                        * (1.0 / self.scaling),
+                                        * (1.0 / chart_state.scaling),
                             ))
                         }
                         Interaction::None => 
-                            if self.crosshair && cursor.is_over(bounds) {
+                            if chart_state.crosshair && cursor.is_over(bounds) {
                                 Some(Message::CrosshairMoved(cursor_position))
                             } else {
                                 None
@@ -391,12 +352,12 @@ impl canvas::Program<Message> for Heatmap {
                 mouse::Event::WheelScrolled { delta } => match delta {
                     mouse::ScrollDelta::Lines { y, .. }
                     | mouse::ScrollDelta::Pixels { y, .. } => {
-                        if y < 0.0 && self.scaling > Self::MIN_SCALING
-                            || y > 0.0 && self.scaling < Self::MAX_SCALING
+                        if y < 0.0 && chart_state.scaling > Self::MIN_SCALING
+                            || y > 0.0 && chart_state.scaling < Self::MAX_SCALING
                         {
                             //let old_scaling = self.scaling;
 
-                            let scaling = (self.scaling * (1.0 + y / 30.0))
+                            let scaling = (chart_state.scaling * (1.0 + y / 30.0))
                                 .clamp(
                                     Self::MIN_SCALING, 
                                     Self::MAX_SCALING,  
@@ -446,8 +407,10 @@ impl canvas::Program<Message> for Heatmap {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<Geometry> {    
-        let (latest, earliest) = (self.x_max_time, self.x_min_time);    
-        let (lowest, highest) = (self.y_min_price, self.y_max_price);
+        let chart = self.get_common_data();
+
+        let (latest, earliest) = (chart.x_max_time, chart.x_min_time);    
+        let (lowest, highest) = (chart.y_min_price, chart.y_max_price);
 
         let y_range: f32 = highest - lowest;
         
@@ -456,7 +419,7 @@ impl canvas::Program<Message> for Heatmap {
 
         let depth_area_width: f32 = bounds.width / 20.0;
 
-        let heatmap = self.heatmap_cache.draw(renderer, bounds.size(), |frame| {
+        let heatmap = chart.main_cache.draw(renderer, bounds.size(), |frame| {
             let (mut min_trade_qty, mut max_trade_qty) = (f32::MAX, 0.0f32);
 
             let mut max_volume: f32 = 0.0;
@@ -674,8 +637,8 @@ impl canvas::Program<Message> for Heatmap {
             };
         });
 
-        if self.crosshair {
-            let crosshair = self.crosshair_cache.draw(renderer, bounds.size(), |frame| {
+        if chart.crosshair {
+            let crosshair = chart.crosshair_cache.draw(renderer, bounds.size(), |frame| {
                 if let Some(cursor_position) = cursor.position_in(bounds) {
                     let line = Path::line(
                         Point::new(0.0, cursor_position.y), 
@@ -717,7 +680,7 @@ impl canvas::Program<Message> for Heatmap {
             Interaction::Erasing => mouse::Interaction::Crosshair,
             Interaction::Panning { .. } => mouse::Interaction::Grabbing,
             Interaction::None if cursor.is_over(bounds) => {
-                if self.crosshair {
+                if self.chart.crosshair {
                     mouse::Interaction::Crosshair
                 } else {
                     mouse::Interaction::default()

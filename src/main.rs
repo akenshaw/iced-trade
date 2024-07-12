@@ -4,9 +4,9 @@ mod data_providers;
 use data_providers::binance::market_data::{self, FeedLatency};
 use data_providers::{binance, bybit};
 mod charts;
-use charts::custom_line::{self, CustomLine};
-use charts::heatmap::{self, Heatmap};
 use charts::footprint::{self, Footprint};
+use charts::heatmap::{self, Heatmap};
+use charts::candlesticks::{self, Candlesticks};
 
 use std::collections::{VecDeque, HashMap};
 use std::vec;
@@ -220,10 +220,10 @@ pub enum Message {
 
     RestartStream(Option<pane_grid::Pane>, (Option<Ticker>, Option<Timeframe>, Option<f32>)),
 
-    CustomLine(custom_line::Message),
-    Candlestick(custom_line::Message),
-    Heatmap(heatmap::Message),
-    Footprint(footprint::Message),
+    Candlesticks(charts::Message),
+    Candlestick(charts::Message),
+    Heatmap(charts::Message),
+    Footprint(charts::Message),
 
     // Market&User data stream
     UserKeySucceed(String),
@@ -267,9 +267,9 @@ pub enum Message {
 struct State {
     show_layout_modal: bool,
 
-    candlestick_chart: Option<CustomLine>,
+    candlestick_chart: Option<Candlesticks>,
     time_and_sales: Option<TimeAndSales>,
-    custom_line: Option<CustomLine>,
+    custom_line: Option<Candlesticks>,
     heatmap_chart: Option<Heatmap>,
     footprint_chart: Option<Footprint>,
 
@@ -404,7 +404,7 @@ impl State {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::CustomLine(message) => {
+            Message::Candlesticks(message) => {
                 if let Some(custom_line) = &mut self.custom_line {
                     custom_line.update(&message);
                 }
@@ -681,10 +681,10 @@ impl State {
                     Ok(klines) => {
                         match target_pane {
                             PaneId::CustomChart => {
-                                self.custom_line = Some(CustomLine::new(klines, timeframe));
+                                self.custom_line = Some(Candlesticks::new(klines, timeframe));
                             },
                             PaneId::CandlestickChart => {
-                                self.candlestick_chart = Some(CustomLine::new(klines, timeframe));
+                                self.candlestick_chart = Some(Candlesticks::new(klines, timeframe));
                             },
                             PaneId::FootprintChart => {
                                 if let Some(heatmap_chart) = &mut self.heatmap_chart {
@@ -716,7 +716,7 @@ impl State {
                     },
                     Err(err) => {
                         eprintln!("Error fetching klines: {err}");
-                        self.candlestick_chart = Some(CustomLine::new(vec![], Timeframe::M1)); 
+                        self.candlestick_chart = Some(Candlesticks::new(vec![], Timeframe::M1)); 
                     },
                 }
                 Task::none()
@@ -1434,8 +1434,8 @@ fn view_content<'a, 'b: 'a>(
     footprint_chart: &'a Option<Footprint>,
     heatmap_chart: &'a Option<Heatmap>,
     time_and_sales: &'a Option<TimeAndSales>,
-    candlestick_chart: &'a Option<CustomLine>,
-    custom_line: &'a Option<CustomLine>,
+    candlestick_chart: &'a Option<Candlesticks>,
+    custom_line: &'a Option<Candlesticks>,
 ) -> Element<'a, Message> {
     let content: Element<Message, Theme, Renderer> = match pane_id {
         PaneId::HeatmapChart => {
@@ -1531,7 +1531,7 @@ fn view_content<'a, 'b: 'a>(
                 underlay =
                     custom_line
                         .view()
-                        .map(Message::CustomLine);
+                        .map(Message::Candlesticks);
             } else {
                 underlay = Text::new("No data")
                     .width(Length::Fill)
