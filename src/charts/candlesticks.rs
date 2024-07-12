@@ -88,6 +88,8 @@ impl Candlesticks {
 
         chart_state.y_labels_cache.clear();
         chart_state.crosshair_cache.clear();
+
+        chart_state.main_cache.clear();
     }
 
     fn calculate_range(&self) -> (i64, i64, f32, f32) {
