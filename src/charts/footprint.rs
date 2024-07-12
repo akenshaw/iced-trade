@@ -91,8 +91,6 @@ impl Footprint {
 
             self.raw_trades.push(trade);
         }
-    
-        //self.render_start();
     }
 
     pub fn update_latest_kline(&mut self, kline: &Kline) {
@@ -109,6 +107,8 @@ impl Footprint {
                 kline_value.5 = kline.volume;
             }
         }
+
+        self.render_start();
     }
     
     pub fn change_tick_size(&mut self, new_tick_size: f32) {
