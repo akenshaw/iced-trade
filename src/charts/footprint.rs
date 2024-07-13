@@ -267,7 +267,7 @@ impl FootprintChart {
                 crosshair_cache: &chart_state.x_crosshair_cache, 
                 crosshair_position: chart_state.crosshair_position, 
                 crosshair: chart_state.crosshair,
-                timeframe: self.timeframe
+                timeframe: Some(self.timeframe)
             })
             .width(Length::FillPortion(10))
             .height(Length::Fixed(26.0));

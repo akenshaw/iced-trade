@@ -198,7 +198,7 @@ impl CandlestickChart {
                 crosshair_cache: &chart_state.x_crosshair_cache, 
                 crosshair_position: chart_state.crosshair_position, 
                 crosshair: chart_state.crosshair,
-                timeframe: self.timeframe
+                timeframe: Some(self.timeframe)
             })
             .width(Length::FillPortion(10))
             .height(Length::Fixed(26.0));
@@ -435,7 +435,7 @@ impl canvas::Program<Message> for CandlestickChart {
         let (step, rounded_lowest) = calculate_price_step(highest, lowest, y_labels_can_fit);
 
         let x_labels_can_fit = (bounds.width / 90.0) as i32;
-        let (time_step, rounded_earliest) = calculate_time_step(earliest, latest, x_labels_can_fit, self.timeframe);
+        let (time_step, rounded_earliest) = calculate_time_step(earliest, latest, x_labels_can_fit, Some(self.timeframe));
 
         let background = self.mesh_cache.draw(renderer, bounds.size(), |frame| {
             frame.with_save(|frame| {
