@@ -6,9 +6,9 @@ use iced::{
 use iced::widget::{Column, Row, Container, Text};
 use crate::data_providers::binance::market_data::{LocalDepthCache, Trade};
 
-use super::{Chart, CommonChartData, Message, chart_button};
+use super::{Chart, CommonChartData, Message, chart_button, calculate_price_step};
 
-pub struct Heatmap {
+pub struct HeatmapChart {
     chart: CommonChartData,
     data_points: BTreeMap<i64, (LocalDepthCache, Box<[Trade]>)>,
     tick_size: f32,
@@ -16,7 +16,7 @@ pub struct Heatmap {
     size_filter: f32,
 }
 
-impl Chart for Heatmap {
+impl Chart for HeatmapChart {
     type DataPoint = BTreeMap<i64, (LocalDepthCache, Box<[Trade]>)>;
 
     fn get_common_data(&self) -> &CommonChartData {
@@ -27,12 +27,12 @@ impl Chart for Heatmap {
     }
 }
 
-impl Heatmap {
+impl HeatmapChart {
     const MIN_SCALING: f32 = 0.6;
     const MAX_SCALING: f32 = 3.6;
 
     pub fn new() -> Self {
-        Heatmap {
+        HeatmapChart {
             chart: CommonChartData::default(),
             data_points: BTreeMap::new(),
             tick_size: 0.0,
@@ -273,7 +273,7 @@ impl Default for Interaction {
         Self::None
     }
 }
-impl canvas::Program<Message> for Heatmap {
+impl canvas::Program<Message> for HeatmapChart {
     type State = Interaction;
 
     fn update(
@@ -689,38 +689,6 @@ impl canvas::Program<Message> for Heatmap {
             Interaction::None => { mouse::Interaction::default() }
         }
     }
-}
-
-const PRICE_STEPS: [f32; 15] = [
-    1000.0,
-    500.0,
-    200.0,
-    100.0,
-    50.0,
-    20.0,
-    10.0,
-    5.0,
-    2.0,
-    1.0,
-    0.5,
-    0.2,
-    0.1,
-    0.05,
-    0.01,
-];
-fn calculate_price_step(highest: f32, lowest: f32, labels_can_fit: i32) -> (f32, f32) {
-    let range = highest - lowest;
-    let mut step = 1000.0; 
-
-    for &s in PRICE_STEPS.iter().rev() {
-        if range / s <= labels_can_fit as f32 {
-            step = s;
-            break;
-        }
-    }
-    let rounded_lowest = (lowest / step).floor() * step;
-
-    (step, rounded_lowest)
 }
 
 const TIME_STEPS: [i64; 8] = [
