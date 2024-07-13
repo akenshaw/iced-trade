@@ -6,7 +6,7 @@ use iced::{
 use iced::widget::{Column, Row, Container, Text};
 use crate::data_providers::binance::market_data::{LocalDepthCache, Trade};
 
-use super::{Chart, CommonChartData, Message, chart_button, calculate_price_step, Interaction};
+use super::{Chart, CommonChartData, Message, chart_button, calculate_price_step, Interaction, AxisLabelYCanvas};
 
 pub struct HeatmapChart {
     chart: CommonChartData,
@@ -210,7 +210,6 @@ impl HeatmapChart {
                 max: chart_state.y_max_price,
                 crosshair_position: chart_state.crosshair_position, 
                 crosshair: chart_state.crosshair,
-                y_scaling: self.y_scaling,
             })
             .width(Length::Fixed(60.0))
             .height(Length::FillPortion(10));
@@ -825,188 +824,6 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
             Interaction::Panning { .. } => mouse::Interaction::ResizingHorizontally,
             Interaction::None if cursor.is_over(bounds) => {
                 mouse::Interaction::ResizingHorizontally
-            }
-            Interaction::None => mouse::Interaction::default(),
-        }
-    }
-}
-
-pub struct AxisLabelYCanvas<'a> {
-    labels_cache: &'a Cache,
-    y_croshair_cache: &'a Cache,
-    min: f32,
-    max: f32,
-    crosshair_position: Point,
-    crosshair: bool,
-    y_scaling: f32,
-}
-impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
-    type State = Interaction;
-
-    fn update(
-        &self,
-        interaction: &mut Interaction,
-        event: Event,
-        bounds: Rectangle,
-        cursor: mouse::Cursor,
-    ) -> (event::Status, Option<Message>) {        
-        if let Event::Mouse(mouse::Event::ButtonReleased(_)) = event {
-            *interaction = Interaction::None;
-        }
-
-        if !cursor.is_over(bounds) {
-            return (event::Status::Ignored, None);
-        };
-
-        match event {
-            Event::Mouse(mouse_event) => match mouse_event {
-                mouse::Event::ButtonPressed(button) => {
-                    let message = match button {
-                        mouse::Button::Right => {
-                            *interaction = Interaction::Drawing;
-                            None
-                        }
-                        mouse::Button::Left => {
-                            None
-                        }
-                        _ => None,
-                    };
-
-                    (event::Status::Captured, message)
-                }
-                mouse::Event::CursorMoved { .. } => {
-                    let message = match *interaction {
-                        Interaction::Drawing => None,
-                        Interaction::Erasing => None,
-                        Interaction::Panning { translation, start } => {
-                            None
-                        }
-                        Interaction::None => 
-                            None
-                    };
-
-                    let event_status = match interaction {
-                        Interaction::None => event::Status::Ignored,
-                        _ => event::Status::Captured,
-                    };
-
-                    (event_status, message)
-                }
-                mouse::Event::WheelScrolled { delta } => match delta {
-                    mouse::ScrollDelta::Lines { y, .. }
-                    | mouse::ScrollDelta::Pixels { y, .. } => {
-                        if y > 0.0 && self.y_scaling > 0.00001
-                            || y < 0.0 && self.y_scaling < 0.001
-                        {
-                            let scaling = (self.y_scaling * (1.0 - y / 30.0))
-                                .clamp(
-                                    0.00001, 
-                                    0.001,  
-                                );
-
-                            (
-                                event::Status::Captured,
-                                Some(Message::YScaling(scaling)),
-                            )
-                        } else {
-                            (event::Status::Captured, None)
-                        }
-                    }
-                },
-                _ => (event::Status::Ignored, None),
-            },
-            _ => (event::Status::Ignored, None),
-        }
-    }
-    
-    fn draw(
-        &self,
-        _state: &Self::State,
-        renderer: &Renderer,
-        _theme: &Theme,
-        bounds: Rectangle,
-        _cursor: mouse::Cursor,
-    ) -> Vec<Geometry> {
-        if self.max == 0.0 {
-            return vec![];
-        }
-
-        let y_labels_can_fit = (bounds.height / 32.0) as i32;
-        let (step, rounded_lowest) = calculate_price_step(self.max, self.min, y_labels_can_fit);
-
-        let volume_area_height = bounds.height / 8.0; 
-        let candlesticks_area_height = bounds.height - volume_area_height;
-
-        let labels = self.labels_cache.draw(renderer, bounds.size(), |frame| {
-            frame.with_save(|frame| {
-                let y_range = self.max - self.min;
-                let mut y = rounded_lowest;
-
-                while y <= self.max {
-                    let y_position = candlesticks_area_height - ((y - self.min) / y_range * candlesticks_area_height);
-
-                    let text_size = 12.0;
-                    let decimal_places = if step < 0.5 { 2 } else { usize::from(step < 1.0) };
-                    let label_content = format!("{y:.decimal_places$}");
-                    let label = canvas::Text {
-                        content: label_content,
-                        position: Point::new(10.0, y_position - text_size / 2.0),
-                        size: iced::Pixels(text_size),
-                        color: Color::from_rgba8(200, 200, 200, 1.0),
-                        ..canvas::Text::default()
-                    };  
-
-                    label.draw_with(|path, color| {
-                        frame.fill(&path, color);
-                    });
-
-                    y += step;
-                }
-            });
-        });
-        let crosshair = self.y_croshair_cache.draw(renderer, bounds.size(), |frame| {
-            if self.crosshair && self.crosshair_position.y > 0.0 {
-                let text_size = 12.0;
-                let y_range = self.max - self.min;
-                let decimal_places = if step < 1.0 { 2 } else { 1 };
-                let label_content = format!("{:.*}", decimal_places, self.min + (y_range * (candlesticks_area_height - self.crosshair_position.y) / candlesticks_area_height));
-                
-                let growth_amount = 3.0; 
-                let rectangle_position = Point::new(8.0 - growth_amount, self.crosshair_position.y - text_size / 2.0 - 3.0);
-                let text_position = Point::new(8.0, self.crosshair_position.y - text_size / 2.0 - 3.0);
-
-                let text_background = canvas::Path::rectangle(rectangle_position, Size::new(label_content.len() as f32 * text_size / 2.0 + 2.0 * growth_amount + 4.0, text_size + text_size / 1.8));
-                frame.fill(&text_background, Color::from_rgba8(200, 200, 200, 1.0));
-
-                let label = canvas::Text {
-                    content: label_content,
-                    position: text_position,
-                    size: iced::Pixels(text_size),
-                    color: Color::from_rgba8(0, 0, 0, 1.0),
-                    ..canvas::Text::default()
-                };
-
-                label.draw_with(|path, color| {
-                    frame.fill(&path, color);
-                });
-            }
-        });
-
-        vec![labels, crosshair]
-    }
-
-    fn mouse_interaction(
-        &self,
-        interaction: &Interaction,
-        bounds: Rectangle,
-        cursor: mouse::Cursor,
-    ) -> mouse::Interaction {
-        match interaction {
-            Interaction::Drawing => mouse::Interaction::Crosshair,
-            Interaction::Erasing => mouse::Interaction::Crosshair,
-            Interaction::Panning { .. } => mouse::Interaction::ResizingVertically,
-            Interaction::None if cursor.is_over(bounds) => {
-                mouse::Interaction::ResizingVertically
             }
             Interaction::None => mouse::Interaction::default(),
         }
