@@ -6,7 +6,7 @@ use iced::{
 use iced::widget::{Column, Row, Container, Text};
 use crate::data_providers::binance::market_data::{Kline, Trade};
 
-use super::{Chart, CommonChartData, Message, chart_button, calculate_price_step, calculate_time_step};
+use super::{Chart, CommonChartData, Message, chart_button, calculate_price_step, calculate_time_step, Interaction};
 
 pub struct FootprintChart {
     chart: CommonChartData,
@@ -655,19 +655,6 @@ impl canvas::Program<Message> for FootprintChart {
             }
             Interaction::None => { mouse::Interaction::default() }
         }
-    }
-}
-#[derive(Debug, Clone, Copy)]
-pub enum Interaction {
-    None,
-    Drawing,
-    Erasing,
-    Panning { translation: Vector, start: Point },
-}
-
-impl Default for Interaction {
-    fn default() -> Self {
-        Self::None
     }
 }
 

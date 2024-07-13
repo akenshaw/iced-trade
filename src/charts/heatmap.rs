@@ -6,7 +6,7 @@ use iced::{
 use iced::widget::{Column, Row, Container, Text};
 use crate::data_providers::binance::market_data::{LocalDepthCache, Trade};
 
-use super::{Chart, CommonChartData, Message, chart_button, calculate_price_step};
+use super::{Chart, CommonChartData, Message, chart_button, calculate_price_step, Interaction};
 
 pub struct HeatmapChart {
     chart: CommonChartData,
@@ -260,19 +260,6 @@ impl HeatmapChart {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum Interaction {
-    None,
-    Drawing,
-    Erasing,
-    Panning { translation: Vector, start: Point },
-}
-
-impl Default for Interaction {
-    fn default() -> Self {
-        Self::None
-    }
-}
 impl canvas::Program<Message> for HeatmapChart {
     type State = Interaction;
 
