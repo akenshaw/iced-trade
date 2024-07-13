@@ -4,7 +4,7 @@ use iced::{
 
 pub mod heatmap;
 pub mod footprint;
-pub mod candlesticks;
+pub mod candlestick;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Message {
@@ -91,4 +91,99 @@ fn chart_button(_theme: &Theme, _status: button::Status, is_active: bool) -> but
         text_color: Color::WHITE,
         ..button::Style::default()
     }
+}
+
+// price steps, to be used for y-axis labels on all charts
+const PRICE_STEPS: [f32; 15] = [
+    1000.0,
+    500.0,
+    200.0,
+    100.0,
+    50.0,
+    20.0,
+    10.0,
+    5.0,
+    2.0,
+    1.0,
+    0.5,
+    0.2,
+    0.1,
+    0.05,
+    0.01,
+];
+fn calculate_price_step(highest: f32, lowest: f32, labels_can_fit: i32) -> (f32, f32) {
+    let range = highest - lowest;
+    let mut step = 1000.0; 
+
+    for &s in PRICE_STEPS.iter().rev() {
+        if range / s <= labels_can_fit as f32 {
+            step = s;
+            break;
+        }
+    }
+    let rounded_lowest = (lowest / step).floor() * step;
+
+    (step, rounded_lowest)
+}
+
+// time steps in ms, to be used for x-axis labels on candlesticks and footprint charts
+const M1_TIME_STEPS: [i64; 9] = [
+    1000 * 60 * 720, // 12 hour
+    1000 * 60 * 180, // 3 hour
+    1000 * 60 * 60, // 1 hour
+    1000 * 60 * 30, // 30 min
+    1000 * 60 * 15, // 15 min
+    1000 * 60 * 10, // 10 min
+    1000 * 60 * 5, // 5 min
+    1000 * 60 * 2, // 2 min
+    60 * 1000, // 1 min
+];
+const M3_TIME_STEPS: [i64; 9] = [
+    1000 * 60 * 1440, // 24 hour
+    1000 * 60 * 720, // 12 hour
+    1000 * 60 * 180, // 6 hour
+    1000 * 60 * 120, // 2 hour
+    1000 * 60 * 60, // 1 hour
+    1000 * 60 * 30, // 30 min
+    1000 * 60 * 15, // 15 min
+    1000 * 60 * 9, // 9 min
+    1000 * 60 * 3, // 3 min
+];
+const M5_TIME_STEPS: [i64; 9] = [
+    1000 * 60 * 1440, // 24 hour
+    1000 * 60 * 720, // 12 hour
+    1000 * 60 * 480, // 8 hour
+    1000 * 60 * 240, // 4 hour
+    1000 * 60 * 120, // 2 hour
+    1000 * 60 * 60, // 1 hour
+    1000 * 60 * 30, // 30 min
+    1000 * 60 * 15, // 15 min
+    1000 * 60 * 5, // 5 min
+];
+fn calculate_time_step(earliest: i64, latest: i64, labels_can_fit: i32, timeframe: u16) -> (i64, i64) {
+    let duration = latest - earliest;
+
+    let time_steps = match timeframe {
+        1 => &M1_TIME_STEPS,
+        3 => &M3_TIME_STEPS,
+        5 => &M5_TIME_STEPS,
+        15 => &M5_TIME_STEPS[..7],
+        30 => &M5_TIME_STEPS[..6],
+        _ => &M1_TIME_STEPS,
+    };
+
+    let mut selected_step = time_steps[0];
+    for &step in time_steps.iter() {
+        if duration / step >= labels_can_fit as i64 {
+            selected_step = step;
+            break;
+        }
+        if step <= duration {
+            selected_step = step;
+        }
+    }
+
+    let rounded_earliest = (earliest / selected_step) * selected_step;
+
+    (selected_step, rounded_earliest)
 }
