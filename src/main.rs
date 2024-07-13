@@ -4,9 +4,9 @@ mod data_providers;
 use data_providers::binance::market_data::{self, FeedLatency};
 use data_providers::{binance, bybit};
 mod charts;
-use charts::footprint::{self, Footprint};
-use charts::heatmap::{self, Heatmap};
-use charts::candlesticks::{self, Candlesticks};
+use charts::footprint::{self, FootprintChart};
+use charts::heatmap::{self, HeatmapChart};
+use charts::candlestick::{self, CandlestickChart};
 
 use std::collections::{VecDeque, HashMap};
 use std::vec;
@@ -165,8 +165,8 @@ impl Default for UserWsState {
 pub enum PaneId {
     HeatmapChart,
     FootprintChart,
-    CandlestickChart,
-    CustomChart,
+    CandlestickChartA,
+    CandlestickChartB,
     TimeAndSales,
     TradePanel,
 }
@@ -220,8 +220,8 @@ pub enum Message {
 
     RestartStream(Option<pane_grid::Pane>, (Option<Ticker>, Option<Timeframe>, Option<f32>)),
 
-    Candlesticks(charts::Message),
-    Candlestick(charts::Message),
+    CandlestickA(charts::Message),
+    CandlestickB(charts::Message),
     Heatmap(charts::Message),
     Footprint(charts::Message),
 
@@ -267,11 +267,11 @@ pub enum Message {
 struct State {
     show_layout_modal: bool,
 
-    candlestick_chart: Option<Candlesticks>,
+    candlestick_chart_a: Option<CandlestickChart>,
     time_and_sales: Option<TimeAndSales>,
-    custom_line: Option<Candlesticks>,
-    heatmap_chart: Option<Heatmap>,
-    footprint_chart: Option<Footprint>,
+    candlestick_chart_b: Option<CandlestickChart>,
+    heatmap_chart: Option<HeatmapChart>,
+    footprint_chart: Option<FootprintChart>,
 
     // data streams
     listen_key: Option<String>,
@@ -321,16 +321,16 @@ impl State {
                     ratio: 0.5,
                     a: Box::new(Configuration::Pane(
                         PaneSpec { 
-                            id: PaneId::CandlestickChart, 
+                            id: PaneId::CandlestickChartA, 
                             show_modal: false, 
-                            stream: (Some(Ticker::BTCUSDT), Some(Timeframe::M1), None)
+                            stream: (Some(Ticker::BTCUSDT), Some(Timeframe::M15), None)
                         })
                     ),
                     b: Box::new(Configuration::Pane(
                         PaneSpec { 
-                            id: PaneId::CustomChart, 
+                            id: PaneId::CandlestickChartB, 
                             show_modal: false, 
-                            stream: (Some(Ticker::BTCUSDT), Some(Timeframe::M15), None)
+                            stream: (Some(Ticker::BTCUSDT), Some(Timeframe::M1), None)
                         })
                     ),
                 }),
@@ -372,9 +372,9 @@ impl State {
             sync_heatmap: false,
             kline_stream: true,
 
-            candlestick_chart: None,
+            candlestick_chart_a: None,
             time_and_sales: None,
-            custom_line: None,
+            candlestick_chart_b: None,
             heatmap_chart: None,
             footprint_chart: None,
 
@@ -404,15 +404,15 @@ impl State {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::Candlesticks(message) => {
-                if let Some(custom_line) = &mut self.custom_line {
-                    custom_line.update(&message);
+            Message::CandlestickA(message) => {
+                if let Some(chart) = &mut self.candlestick_chart_a {
+                    chart.update(&message);
                 }
                 Task::none()
             },
-            Message::Candlestick(message) => {
-                if let Some(candlesticks) = &mut self.candlestick_chart {
-                    candlesticks.update(&message);
+            Message::CandlestickB(message) => {
+                if let Some(chart) = &mut self.candlestick_chart_b {
+                    chart.update(&message);
                 }
                 Task::none()
             },
@@ -569,7 +569,7 @@ impl State {
         
                     for (_, pane_state) in self.panes.iter() {
                         if pane_state.id == PaneId::HeatmapChart {
-                            self.heatmap_chart = Some(Heatmap::new());
+                            self.heatmap_chart = Some(HeatmapChart::new());
                         }
                         if pane_state.id == PaneId::TimeAndSales {
                             self.time_and_sales = Some(TimeAndSales::new());
@@ -665,9 +665,9 @@ impl State {
                     self.bybit_ws_state = BybitWsState::Disconnected;
 
                     self.heatmap_chart = None;
-                    self.candlestick_chart = None;
                     self.time_and_sales = None;
-                    self.custom_line = None;
+                    self.candlestick_chart_a = None;
+                    self.candlestick_chart_b = None;
                     self.footprint_chart = None;
 
                     self.exchange_latency = None;
@@ -680,11 +680,11 @@ impl State {
                 match klines {
                     Ok(klines) => {
                         match target_pane {
-                            PaneId::CustomChart => {
-                                self.custom_line = Some(Candlesticks::new(klines, timeframe));
+                            PaneId::CandlestickChartA => {
+                                self.candlestick_chart_a = Some(CandlestickChart::new(klines, timeframe));
                             },
-                            PaneId::CandlestickChart => {
-                                self.candlestick_chart = Some(Candlesticks::new(klines, timeframe));
+                            PaneId::CandlestickChartB => {
+                                self.candlestick_chart_b = Some(CandlestickChart::new(klines, timeframe));
                             },
                             PaneId::FootprintChart => {
                                 if let Some(heatmap_chart) = &mut self.heatmap_chart {
@@ -708,7 +708,7 @@ impl State {
 
                                     let tick_size = self.tick_multiply.multiply_with_min_tick_size(self.min_tick_size.unwrap_or(1.0));
 
-                                    self.footprint_chart = Some(Footprint::new(timeframe_u16, tick_size, klines_raw, copied_trades));
+                                    self.footprint_chart = Some(FootprintChart::new(timeframe_u16, tick_size, klines_raw, copied_trades));
                                 }
                             },
                             _ => {}
@@ -716,7 +716,6 @@ impl State {
                     },
                     Err(err) => {
                         eprintln!("Error fetching klines: {err}");
-                        self.candlestick_chart = Some(Candlesticks::new(vec![], Timeframe::M1)); 
                     },
                 }
                 Task::none()
@@ -751,14 +750,14 @@ impl State {
                                 if let Some(selected_timeframe) = pane_state.stream.1 {
                                     if selected_timeframe == timeframe {
                                         match pane_state.id {
-                                            PaneId::CandlestickChart => {
-                                                if let Some(candlestick_chart) = &mut self.candlestick_chart {
-                                                    candlestick_chart.insert_datapoint(&kline);
+                                            PaneId::CandlestickChartA => {
+                                                if let Some(chart) = &mut self.candlestick_chart_a {
+                                                    chart.insert_datapoint(&kline);
                                                 }
                                             },
-                                            PaneId::CustomChart => {
-                                                if let Some(custom_line) = &mut self.custom_line {
-                                                    custom_line.insert_datapoint(&kline);
+                                            PaneId::CandlestickChartB => {
+                                                if let Some(chart) = &mut self.candlestick_chart_b {
+                                                    chart.insert_datapoint(&kline);
                                                 }
                                             },
                                             PaneId::FootprintChart => {
@@ -871,14 +870,14 @@ impl State {
                                         };
 
                                         match pane_state.id {
-                                            PaneId::CandlestickChart => {
-                                                if let Some(candlestick_chart) = &mut self.candlestick_chart {
-                                                    candlestick_chart.insert_datapoint(&binance_kline);
+                                            PaneId::CandlestickChartA => {
+                                                if let Some(chart) = &mut self.candlestick_chart_a {
+                                                    chart.insert_datapoint(&binance_kline);
                                                 }
                                             },
-                                            PaneId::CustomChart => {
-                                                if let Some(custom_line) = &mut self.custom_line {
-                                                    custom_line.insert_datapoint(&binance_kline);
+                                            PaneId::CandlestickChartB => {
+                                                if let Some(chart) = &mut self.candlestick_chart_b {
+                                                    chart.insert_datapoint(&binance_kline);
                                                 }
                                             },
                                             PaneId::FootprintChart => {
@@ -1100,8 +1099,8 @@ impl State {
                     &self.footprint_chart,
                     &self.heatmap_chart,
                     &self.time_and_sales,
-                    &self.candlestick_chart, 
-                    &self.custom_line,
+                    &self.candlestick_chart_a, 
+                    &self.candlestick_chart_b,
                 )
             }));
     
@@ -1119,8 +1118,8 @@ impl State {
                 let title = match pane.id {
                     PaneId::HeatmapChart => "Heatmap",
                     PaneId::FootprintChart => "Footprint",
-                    PaneId::CandlestickChart => "Candlesticks",
-                    PaneId::CustomChart => "Candlesticks",
+                    PaneId::CandlestickChartA => "Candlestick",
+                    PaneId::CandlestickChartB => "Candlestick",
                     PaneId::TimeAndSales => "Time&Sales",
                     PaneId::TradePanel => "Trade Panel",
                 };
@@ -1280,8 +1279,8 @@ impl State {
             let pane_info = vec![
                 (PaneId::HeatmapChart, "Heatmap Chart"),
                 (PaneId::FootprintChart, "Footprint Chart"),
-                (PaneId::CandlestickChart, "Candlestick Chart"),
-                (PaneId::CustomChart, "Custom Chart"),
+                (PaneId::CandlestickChartA, "Candlestick Chart 1"),
+                (PaneId::CandlestickChartB, "Candlestick Chart 2"),
                 (PaneId::TimeAndSales, "Time & Sales"),
             ];
 
@@ -1431,11 +1430,11 @@ fn view_content<'a, 'b: 'a>(
     sync_heatmap: bool,
     _total_panes: usize,
     _size: Size,
-    footprint_chart: &'a Option<Footprint>,
-    heatmap_chart: &'a Option<Heatmap>,
+    footprint_chart: &'a Option<FootprintChart>,
+    heatmap_chart: &'a Option<HeatmapChart>,
     time_and_sales: &'a Option<TimeAndSales>,
-    candlestick_chart: &'a Option<Candlesticks>,
-    custom_line: &'a Option<Candlesticks>,
+    candlestick_chart_a: &'a Option<CandlestickChart>,
+    candlestick_chart_b: &'a Option<CandlestickChart>,
 ) -> Element<'a, Message> {
     let content: Element<Message, Theme, Renderer> = match pane_id {
         PaneId::HeatmapChart => {
@@ -1509,13 +1508,13 @@ fn view_content<'a, 'b: 'a>(
             underlay
         },
         
-        PaneId::CandlestickChart => { 
+        PaneId::CandlestickChartA => { 
             let underlay; 
-            if let Some(candlestick_chart) = candlestick_chart {
+            if let Some(chart) = candlestick_chart_a {
                 underlay =
-                    candlestick_chart
+                    chart
                         .view()
-                        .map(Message::Candlestick);
+                        .map(Message::CandlestickA);
             } else {
                 underlay = Text::new("No data")
                     .width(Length::Fill)
@@ -1525,13 +1524,13 @@ fn view_content<'a, 'b: 'a>(
             underlay
         },
 
-        PaneId::CustomChart => { 
+        PaneId::CandlestickChartB => { 
             let underlay; 
-            if let Some(custom_line) = custom_line {
+            if let Some(chart) = candlestick_chart_b {
                 underlay =
-                    custom_line
+                    chart
                         .view()
-                        .map(Message::Candlesticks);
+                        .map(Message::CandlestickB);
             } else {
                 underlay = Text::new("No data")
                     .width(Length::Fill)
@@ -1622,7 +1621,7 @@ fn view_controls<'a>(
         (Icon::ResizeFull, Message::Maximize(pane))
     };
 
-    if pane_id == PaneId::CandlestickChart || pane_id == PaneId::CustomChart || pane_id == PaneId::FootprintChart {
+    if pane_id == PaneId::CandlestickChartA || pane_id == PaneId::CandlestickChartB || pane_id == PaneId::FootprintChart {
         let timeframe_picker = pick_list(
             &Timeframe::ALL[..],
             selected_timeframe,
