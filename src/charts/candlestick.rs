@@ -1,12 +1,11 @@
-use std::collections::{BTreeMap, HashMap};
-use chrono::NaiveDateTime;
+use std::collections::BTreeMap;
 use iced::{
     alignment, color, mouse, widget::{button, canvas::{self, event::{self, Event}, stroke::Stroke, Cache, Canvas, Geometry, Path}}, window, Border, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector
 };
 use iced::widget::{Column, Row, Container, Text};
 use crate::{market_data::Kline, Timeframe};
 
-use super::{Chart, CommonChartData, Message, chart_button, calculate_price_step, calculate_time_step, Interaction};
+use super::{Chart, CommonChartData, Message, chart_button, calculate_price_step, calculate_time_step, Interaction, AxisLabelXCanvas};
 
 pub struct CandlestickChart {
     chart: CommonChartData,
@@ -605,125 +604,6 @@ impl canvas::Program<Message> for CandlestickChart {
     }
 }
 
-pub struct AxisLabelXCanvas<'a> {
-    labels_cache: &'a Cache,
-    crosshair_cache: &'a Cache,
-    crosshair_position: Point,
-    crosshair: bool,
-    min: i64,
-    max: i64,
-    timeframe: u16,
-}
-impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
-    type State = Interaction;
-
-    fn update(
-        &self,
-        _interaction: &mut Interaction,
-        _event: Event,
-        _bounds: Rectangle,
-        _cursor: mouse::Cursor,
-    ) -> (event::Status, Option<Message>) {
-        (event::Status::Ignored, None)
-    }
-    
-    fn draw(
-        &self,
-        _state: &Self::State,
-        renderer: &Renderer,
-        _theme: &Theme,
-        bounds: Rectangle,
-        _cursor: mouse::Cursor,
-    ) -> Vec<Geometry> {
-        if self.max == 0 {
-            return vec![];
-        }
-        let x_labels_can_fit = (bounds.width / 90.0) as i32;
-        let (time_step, rounded_earliest) = calculate_time_step(self.min, self.max, x_labels_can_fit, self.timeframe);
-
-        let labels = self.labels_cache.draw(renderer, bounds.size(), |frame| {
-            frame.with_save(|frame| {
-                let mut time = rounded_earliest;
-
-                while time <= self.max {                    
-                    let x_position = ((time - self.min) as f64 / (self.max - self.min) as f64) * bounds.width as f64;
-
-                    if x_position >= 0.0 && x_position <= bounds.width as f64 {
-                        let text_size = 12.0;
-                        let time_as_datetime = NaiveDateTime::from_timestamp(time / 1000, 0);
-                        let label = canvas::Text {
-                            content: time_as_datetime.format("%H:%M").to_string(),
-                            position: Point::new(x_position as f32 - (text_size*4.0/3.0), bounds.height - 20.0),
-                            size: iced::Pixels(text_size),
-                            color: Color::from_rgba8(200, 200, 200, 1.0),
-                            ..canvas::Text::default()
-                        };  
-
-                        label.draw_with(|path, color| {
-                            frame.fill(&path, color);
-                        });
-                    }
-                    
-                    time += time_step;
-                }
-            });
-        });
-        let crosshair = self.crosshair_cache.draw(renderer, bounds.size(), |frame| {
-            if self.crosshair && self.crosshair_position.x > 0.0 {
-                let crosshair_ratio = self.crosshair_position.x as f64 / bounds.width as f64;
-                let crosshair_millis = self.min as f64 + crosshair_ratio * (self.max - self.min) as f64;
-                let crosshair_time = NaiveDateTime::from_timestamp((crosshair_millis / 1000.0) as i64, 0);
-
-                let crosshair_timestamp = crosshair_time.timestamp();
-                let rounded_timestamp = (crosshair_timestamp as f64 / (self.timeframe as f64 * 60.0)).round() as i64 * self.timeframe as i64 * 60;
-                let rounded_time = NaiveDateTime::from_timestamp(rounded_timestamp, 0);
-
-                let snap_ratio = (rounded_timestamp as f64 * 1000.0 - self.min as f64) / (self.max as f64 - self.min as f64);
-                let snap_x = snap_ratio * bounds.width as f64;
-
-                let text_size: f32 = 12.0;
-                let text_content: String = rounded_time.format("%H:%M").to_string();
-                let growth_amount: f32 = 6.0; 
-                let rectangle_position: Point = Point::new(snap_x as f32 - (text_size*4.0/3.0) - growth_amount, bounds.height - 20.0);
-                let text_position: Point = Point::new(snap_x as f32 - (text_size*4.0/3.0), bounds.height - 20.0);
-
-                let text_background = canvas::Path::rectangle(rectangle_position, Size::new(text_content.len() as f32 * text_size/2.0 + 2.0 * growth_amount + 1.0, text_size + text_size/2.0));
-                frame.fill(&text_background, Color::from_rgba8(200, 200, 200, 1.0));
-
-                let crosshair_label = canvas::Text {
-                    content: text_content,
-                    position: text_position,
-                    size: iced::Pixels(text_size),
-                    color: Color::from_rgba8(0, 0, 0, 1.0),
-                    ..canvas::Text::default()
-                };
-
-                crosshair_label.draw_with(|path, color| {
-                    frame.fill(&path, color);
-                });
-            }
-        });
-
-        vec![labels, crosshair]
-    }
-
-    fn mouse_interaction(
-        &self,
-        interaction: &Interaction,
-        bounds: Rectangle,
-        cursor: mouse::Cursor,
-    ) -> mouse::Interaction {
-        match interaction {
-            Interaction::Drawing => mouse::Interaction::Crosshair,
-            Interaction::Erasing => mouse::Interaction::Crosshair,
-            Interaction::Panning { .. } => mouse::Interaction::ResizingHorizontally,
-            Interaction::None if cursor.is_over(bounds) => {
-                mouse::Interaction::ResizingHorizontally
-            }
-            Interaction::None => mouse::Interaction::default(),
-        }
-    }
-}
 pub struct AxisLabelYCanvas<'a> {
     labels_cache: &'a Cache,
     y_croshair_cache: &'a Cache,
