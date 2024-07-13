@@ -74,6 +74,19 @@ trait Chart {
     fn get_common_data_mut(&mut self) -> &mut CommonChartData;
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum Interaction {
+    None,
+    Drawing,
+    Erasing,
+    Panning { translation: Vector, start: Point },
+}
+impl Default for Interaction {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
 fn chart_button(_theme: &Theme, _status: button::Status, is_active: bool) -> button::Style {
     button::Style {
         background: Some(Color::from_rgba8(20, 20, 20, 1.0).into()),
