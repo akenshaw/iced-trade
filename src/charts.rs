@@ -177,32 +177,60 @@ const M5_TIME_STEPS: [i64; 9] = [
     1000 * 60 * 15, // 15 min
     1000 * 60 * 5, // 5 min
 ];
-fn calculate_time_step(earliest: i64, latest: i64, labels_can_fit: i32, timeframe: u16) -> (i64, i64) {
+
+// time steps in ms, to be used for x-axis labels on heatmap chart
+const TIME_STEPS: [i64; 8] = [
+    60 * 1000, // 1 minute
+    30 * 1000, // 30 seconds
+    15 * 1000, // 15 seconds
+    10 * 1000, // 10 seconds
+    5 * 1000,  // 5 seconds
+    2 * 1000,  // 2 seconds
+    1000,  // 1 second
+    500,       // 500 milliseconds
+];
+
+fn calculate_time_step(earliest: i64, latest: i64, labels_can_fit: i32, timeframe: Option<u16>) -> (i64, i64) {
     let duration = latest - earliest;
 
-    let time_steps = match timeframe {
-        1 => &M1_TIME_STEPS,
-        3 => &M3_TIME_STEPS,
-        5 => &M5_TIME_STEPS,
-        15 => &M5_TIME_STEPS[..7],
-        30 => &M5_TIME_STEPS[..6],
-        _ => &M1_TIME_STEPS,
-    };
+    if let Some(timeframe) = timeframe {
+        let time_steps = match timeframe {
+            1 => &M1_TIME_STEPS,
+            3 => &M3_TIME_STEPS,
+            5 => &M5_TIME_STEPS,
+            15 => &M5_TIME_STEPS[..7],
+            30 => &M5_TIME_STEPS[..6],
+            _ => &M1_TIME_STEPS,
+        };
 
-    let mut selected_step = time_steps[0];
-    for &step in time_steps.iter() {
-        if duration / step >= labels_can_fit as i64 {
-            selected_step = step;
-            break;
+        let mut selected_step = time_steps[0];
+        for &step in time_steps.iter() {
+            if duration / step >= labels_can_fit as i64 {
+                selected_step = step;
+                break;
+            }
+            if step <= duration {
+                selected_step = step;
+            }
         }
-        if step <= duration {
-            selected_step = step;
+
+        let rounded_earliest = (earliest / selected_step) * selected_step;
+
+        (selected_step, rounded_earliest)
+
+    } else {
+        let mut selected_step = TIME_STEPS[0];
+        for &step in &TIME_STEPS {
+            if duration / step >= labels_can_fit as i64 {
+                selected_step = step;
+                break;
+            }
         }
+
+        let rounded_earliest = (earliest / selected_step) * selected_step;
+
+        (selected_step, rounded_earliest)
     }
-
-    let rounded_earliest = (earliest / selected_step) * selected_step;
-
-    (selected_step, rounded_earliest)
 }
 
 pub struct AxisLabelXCanvas<'a> {
@@ -212,7 +240,7 @@ pub struct AxisLabelXCanvas<'a> {
     crosshair: bool,
     min: i64,
     max: i64,
-    timeframe: u16,
+    timeframe: Option<u16>,
 }
 impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
     type State = Interaction;
@@ -242,21 +270,29 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
         let earliest_in_millis = self.min; 
 
         let x_labels_can_fit = (bounds.width / 120.0) as i32;
-        let (time_step, rounded_earliest) = calculate_time_step(self.min, self.max, x_labels_can_fit, self.timeframe);
 
+        let (time_step, rounded_earliest) = calculate_time_step(earliest_in_millis, latest_in_millis, x_labels_can_fit, self.timeframe);
+        
         let labels = self.labels_cache.draw(renderer, bounds.size(), |frame| {
             frame.with_save(|frame| {
                 let mut time: i64 = rounded_earliest;
-                let latest_time: i64 = latest_in_millis;
 
-                while time <= latest_time {                    
+                while time <= latest_in_millis {                    
                     let x_position = ((time - earliest_in_millis) as f64 / (latest_in_millis - earliest_in_millis) as f64) * bounds.width as f64;
 
                     if x_position >= 0.0 && x_position <= bounds.width as f64 {
                         let text_size = 12.0;
                         let time_as_datetime = NaiveDateTime::from_timestamp(time / 1000, 0);
+                        
+                        let time_format: &str;
+                        if let Some(_) = self.timeframe {
+                            time_format = "%H:%M";
+                        } else {
+                            time_format = "%M:%S";
+                        }
+
                         let label = canvas::Text {
-                            content: time_as_datetime.format("%H:%M").to_string(),
+                            content: time_as_datetime.format(time_format).to_string(),
                             position: Point::new(x_position as f32 - (text_size*4.0/3.0), bounds.height - 20.0),
                             size: iced::Pixels(text_size),
                             color: Color::from_rgba8(200, 200, 200, 1.0),
@@ -278,28 +314,44 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
                 frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(81, 81, 81, 0.2)).with_width(1.0));
             });
         });
+        
         let crosshair = self.crosshair_cache.draw(renderer, bounds.size(), |frame| {
             if self.crosshair && self.crosshair_position.x > 0.0 {
                 let crosshair_ratio = self.crosshair_position.x as f64 / bounds.width as f64;
                 let crosshair_millis = earliest_in_millis as f64 + crosshair_ratio * (latest_in_millis - earliest_in_millis) as f64;
-                let crosshair_time = NaiveDateTime::from_timestamp((crosshair_millis / 1000.0) as i64, 0);
-
-                let crosshair_timestamp = crosshair_time.timestamp();
-                let rounded_timestamp = (crosshair_timestamp as f64 / (self.timeframe as f64 * 60.0)).round() as i64 * self.timeframe as i64 * 60;
-                let rounded_time = NaiveDateTime::from_timestamp(rounded_timestamp, 0);
-
-                let snap_ratio = (rounded_timestamp as f64 * 1000.0 - earliest_in_millis as f64) / (latest_in_millis as f64 - earliest_in_millis as f64);
+        
+                let (snap_ratio, text_content) = if let Some(timeframe) = self.timeframe {
+                    let crosshair_time = NaiveDateTime::from_timestamp((crosshair_millis / 1000.0) as i64, 0);
+                    let crosshair_timestamp = crosshair_time.timestamp();
+                    let rounded_timestamp = (crosshair_timestamp as f64 / (timeframe as f64 * 60.0)).round() as i64 * timeframe as i64 * 60;
+                    let rounded_time = NaiveDateTime::from_timestamp(rounded_timestamp, 0);
+        
+                    let snap_ratio = (rounded_timestamp as f64 * 1000.0 - earliest_in_millis as f64) / (latest_in_millis as f64 - earliest_in_millis as f64);
+                    (snap_ratio, rounded_time.format("%H:%M").to_string())
+                } else {
+                    let crosshair_millis = (crosshair_millis / 100.0).round() * 100.0;
+                    let crosshair_time = NaiveDateTime::from_timestamp((crosshair_millis / 1000.0).floor() as i64, ((crosshair_millis % 1000.0) * 1_000_000.0).round() as u32);
+                    let crosshair_timestamp = crosshair_time.timestamp_millis();
+        
+                    let snap_ratio = (crosshair_timestamp as f64 - earliest_in_millis as f64) / (latest_in_millis as f64 - earliest_in_millis as f64);
+                    (snap_ratio, crosshair_time.format("%M:%S:%3f").to_string().replace('.', ""))
+                };
+        
                 let snap_x = snap_ratio * bounds.width as f64;
-
+        
                 let text_size = 12.0;
-                let text_content = rounded_time.format("%H:%M").to_string();
-                let growth_amount = 6.0; 
-                let rectangle_position = Point::new(snap_x as f32 - 14.0 - growth_amount, bounds.height - 20.0);
-                let text_position = Point::new(snap_x as f32 - 14.0, bounds.height - 20.0);
-
+                let growth_amount = 6.0;
+                let (rectangle_position, text_position) = if self.timeframe.is_some() {
+                    (Point::new(snap_x as f32 - 14.0 - growth_amount, bounds.height - 20.0),
+                     Point::new(snap_x as f32 - 14.0, bounds.height - 20.0))
+                } else {
+                    (Point::new(snap_x as f32 - 26.0 - growth_amount, bounds.height - 20.0),
+                     Point::new(snap_x as f32 - 26.0, bounds.height - 20.0))
+                };
+        
                 let text_background = canvas::Path::rectangle(rectangle_position, Size::new(text_content.len() as f32 * text_size/2.0 + 2.0 * growth_amount + 1.0, text_size + text_size/2.0));
                 frame.fill(&text_background, Color::from_rgba8(200, 200, 200, 1.0));
-
+        
                 let crosshair_label = canvas::Text {
                     content: text_content,
                     position: text_position,
@@ -307,7 +359,7 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
                     color: Color::from_rgba8(0, 0, 0, 1.0),
                     ..canvas::Text::default()
                 };
-
+        
                 crosshair_label.draw_with(|path, color| {
                     frame.fill(&path, color);
                 });
