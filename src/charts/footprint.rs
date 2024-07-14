@@ -151,8 +151,6 @@ impl FootprintChart {
         if highest == 0.0 || lowest == std::f32::MAX || lowest == 0.0 {
             return;
         }
-        highest = highest + (highest - lowest) * 0.05;
-        lowest = lowest - (highest - lowest) * 0.05;
 
         let chart_state = &mut self.chart;
 
@@ -195,6 +193,9 @@ impl FootprintChart {
                 lowest = kline.2;
             }
         }
+
+        highest = highest + (highest - lowest) * 0.05;
+        lowest = lowest - (highest - lowest) * 0.05;
 
         (latest, earliest, highest, lowest)
     }
@@ -469,10 +470,6 @@ impl canvas::Program<Message> for FootprintChart {
         let (lowest, highest) = (chart.y_min_price, chart.y_max_price);
 
         let y_range: f32 = highest - lowest;
-
-        if y_range == 0.0 {
-            return vec![];
-        }
 
         let volume_area_height: f32 = bounds.height / 8.0; 
         let heatmap_area_height: f32 = bounds.height - volume_area_height;

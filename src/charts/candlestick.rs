@@ -12,7 +12,6 @@ pub struct CandlestickChart {
     chart: CommonChartData,
     data_points: BTreeMap<i64, (f32, f32, f32, f32, f32, f32)>,
     timeframe: u16,
-    mesh_cache: Cache,
 }
 
 impl Chart for CandlestickChart {
@@ -51,7 +50,6 @@ impl CandlestickChart {
             chart: CommonChartData::default(),
             data_points: klines_raw,
             timeframe,
-            mesh_cache: Cache::default(),
         }
     }
 
@@ -75,11 +73,11 @@ impl CandlestickChart {
             return;
         }
 
-        let chart_state = &mut self.chart;
+        let chart_state = self.get_common_data_mut();
 
         if earliest != chart_state.x_min_time || latest != chart_state.x_max_time || lowest != chart_state.y_min_price || highest != chart_state.y_max_price {
             chart_state.x_labels_cache.clear();
-            self.mesh_cache.clear();
+            chart_state.mesh_cache.clear();
         }
 
         chart_state.x_min_time = earliest;
@@ -396,36 +394,9 @@ impl canvas::Program<Message> for CandlestickChart {
     ) -> Vec<Geometry> {    
         let chart = self.get_common_data();
 
-        let latest: i64 = self.data_points.keys().last().map_or(0, |time| time - ((chart.translation.x*10000.0)*(self.timeframe as f32)) as i64);
-        let earliest: i64 = latest - ((6400000.0*self.timeframe as f32) / (chart.scaling / (bounds.width/800.0))) as i64;
+        let (latest, earliest) = (chart.x_max_time, chart.x_min_time);    
+        let (lowest, highest) = (chart.y_min_price, chart.y_max_price);
 
-        let (visible_klines, highest, lowest, avg_body_height, max_volume, _) = self.data_points.iter()
-            .filter(|(time, _)| {
-                **time >= earliest && **time <= latest
-            })
-            .fold((vec![], f32::MIN, f32::MAX, 0.0f32, 0.0f32, None), |(mut klines, highest, lowest, total_body_height, max_vol, latest_kline), (time, kline)| {
-                let body_height = (kline.0 - kline.3).abs();
-                klines.push((*time, *kline));
-                let total_body_height = match latest_kline {
-                    Some(_) => total_body_height + body_height,
-                    None => total_body_height,
-                };
-                (
-                    klines,
-                    highest.max(kline.1),
-                    lowest.min(kline.2),
-                    total_body_height,
-                    max_vol.max(kline.4.max(kline.5)),
-                    Some(kline)
-                )
-            });
-
-        if visible_klines.is_empty() || visible_klines.len() == 1 {
-            return vec![];
-        }
-
-        let avg_body_height = avg_body_height / (visible_klines.len() - 1) as f32;
-        let (highest, lowest) = (highest + avg_body_height, lowest - avg_body_height);
         let y_range = highest - lowest;
 
         let volume_area_height = bounds.height / 8.0; 
@@ -437,7 +408,7 @@ impl canvas::Program<Message> for CandlestickChart {
         let x_labels_can_fit = (bounds.width / 90.0) as i32;
         let (time_step, rounded_earliest) = calculate_time_step(earliest, latest, x_labels_can_fit, Some(self.timeframe));
 
-        let background = self.mesh_cache.draw(renderer, bounds.size(), |frame| {
+        let background = chart.mesh_cache.draw(renderer, bounds.size(), |frame| {
             frame.with_save(|frame| {
                 let mut time = rounded_earliest;
 
@@ -472,7 +443,13 @@ impl canvas::Program<Message> for CandlestickChart {
         });
 
         let candlesticks = chart.main_cache.draw(renderer, bounds.size(), |frame| {
-            for (time, (open, high, low, close, buy_volume, sell_volume)) in visible_klines {
+            let mut max_volume: f32 = 0.0;
+
+            for (_, kline) in self.data_points.range(earliest..=latest) {
+                max_volume = max_volume.max(kline.4.max(kline.5));
+            }
+
+            for (time, (open, high, low, close, buy_volume, sell_volume)) in self.data_points.range(earliest..=latest) {
                 let x_position: f64 = ((time - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
                 
                 let y_open = candlesticks_area_height - ((open - lowest) / y_range * candlesticks_area_height);
@@ -494,7 +471,7 @@ impl canvas::Program<Message> for CandlestickChart {
                 );
                 frame.stroke(&wick, Stroke::default().with_color(color).with_width(1.0));
 
-                if buy_volume != -1.0 {
+                if *buy_volume != -1.0 {
                     let buy_bar_height = (buy_volume / max_volume) * volume_area_height;
                     let sell_bar_height = (sell_volume / max_volume) * volume_area_height;
                     

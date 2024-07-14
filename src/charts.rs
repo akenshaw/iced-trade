@@ -23,6 +23,8 @@ pub enum Message {
 struct CommonChartData {
     main_cache: Cache,
 
+    mesh_cache: Cache,
+
     crosshair_cache: Cache,
     crosshair: bool,
     crosshair_position: Point,
@@ -47,6 +49,8 @@ impl Default for CommonChartData {
     fn default() -> Self {
         CommonChartData {
             main_cache: Cache::default(),
+
+            mesh_cache: Cache::default(),
 
             crosshair: false,
             crosshair_cache: Cache::default(),

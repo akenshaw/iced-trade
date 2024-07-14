@@ -76,26 +76,30 @@ impl HeatmapChart {
     pub fn render_start(&mut self) {  
         let (latest, earliest, highest, lowest) = self.calculate_range();
 
-        let chart = self.get_common_data_mut();
+        if latest == 0 || highest == 0.0 {
+            return;
+        }
 
-        if earliest != chart.x_min_time || latest != chart.x_max_time {         
-            chart.x_min_time = earliest;
-            chart.x_max_time = latest;
+        let chart_state = self.get_common_data_mut();
 
-            chart.x_labels_cache.clear();
-            chart.x_crosshair_cache.clear();
+        if earliest != chart_state.x_min_time || latest != chart_state.x_max_time {         
+            chart_state.x_min_time = earliest;
+            chart_state.x_max_time = latest;
+
+            chart_state.x_labels_cache.clear();
+            chart_state.x_crosshair_cache.clear();
         };
 
-        if lowest != chart.y_min_price || highest != chart.y_max_price {   
-            chart.y_min_price = lowest;
-            chart.y_max_price = highest;
+        if lowest != chart_state.y_min_price || highest != chart_state.y_max_price {   
+            chart_state.y_min_price = lowest;
+            chart_state.y_max_price = highest;
 
-            chart.y_labels_cache.clear();
-            chart.y_crosshair_cache.clear();
+            chart_state.y_labels_cache.clear();
+            chart_state.y_crosshair_cache.clear();
         };
         
-        chart.crosshair_cache.clear();     
-        chart.main_cache.clear();   
+        chart_state.crosshair_cache.clear();     
+        chart_state.main_cache.clear();   
     }
 
     fn calculate_range(&self) -> (i64, i64, f32, f32) {
@@ -121,10 +125,7 @@ impl HeatmapChart {
             };
         };
 
-        let lowest = min_bid_price - (min_bid_price * self.y_scaling);
-        let highest = max_ask_price + (max_ask_price * self.y_scaling);
-
-        (latest, earliest, highest, lowest)
+        (latest, earliest, max_ask_price, min_bid_price)
     }
 
     pub fn update(&mut self, message: &Message) {
@@ -176,10 +177,7 @@ impl HeatmapChart {
                     chart.x_crosshair_cache.clear();
                 }
             },
-            Message::YScaling(scaling) => {
-                self.y_scaling = *scaling;
-                self.render_start();
-            }
+            _ => {}
         }
     }
 
