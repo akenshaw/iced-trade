@@ -147,8 +147,8 @@ impl FootprintChart {
     }
 
     pub fn render_start(&mut self) {
-        let (latest, earliest, mut highest, mut lowest) = self.calculate_range();
-        if highest == 0.0 || lowest == std::f32::MAX || lowest == 0.0 {
+        let (latest, earliest, highest, lowest) = self.calculate_range();
+        if highest <= 0.0 || lowest <= 0.0 {
             return;
         }
 
