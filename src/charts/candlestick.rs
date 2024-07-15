@@ -93,38 +93,29 @@ impl CandlestickChart {
 
     fn calculate_range(&self) -> (i64, i64, f32, f32) {
         let chart = self.get_common_data();
-
+    
         let latest: i64 = self.data_points.keys().last().map_or(0, |time| time - ((chart.translation.x*10000.0)*(self.timeframe as f32)) as i64);
         let earliest: i64 = latest - ((6400000.0*self.timeframe as f32) / (chart.scaling / (chart.bounds.width/800.0))) as i64;
-
-        let (visible_klines, highest, lowest, avg_body_height, _, _) = self.data_points.iter()
-            .filter(|(time, _)| {
-                **time >= earliest && **time <= latest
-            })
-            .fold((vec![], f32::MIN, f32::MAX, 0.0f32, 0.0f32, None), |(mut klines, highest, lowest, total_body_height, max_vol, latest_kline), (time, kline)| {
-                let body_height = (kline.0 - kline.3).abs();
-                klines.push((*time, *kline));
-                let total_body_height = match latest_kline {
-                    Some(_) => total_body_height + body_height,
-                    None => total_body_height,
-                };
-                (
-                    klines,
-                    highest.max(kline.1),
-                    lowest.min(kline.2),
-                    total_body_height,
-                    max_vol.max(kline.4.max(kline.5)),
-                    Some(kline)
-                )
-            });
-
-        if visible_klines.is_empty() || visible_klines.len() == 1 {
+    
+        let visible_klines = self.data_points.range(earliest..=latest);
+    
+        let (highest, lowest, avg_body_height, count) = visible_klines.fold((f32::MIN, f32::MAX, 0.0f32, 0), |(highest, lowest, total_body_height, count), (_, kline)| {
+            let body_height = (kline.0 - kline.3).abs();
+            (
+                highest.max(kline.1),
+                lowest.min(kline.2),
+                total_body_height + body_height,
+                count + 1,
+            )
+        });
+    
+        if count <= 1 {
             return (0, 0, 0.0, 0.0);
         }
-
-        let avg_body_height = avg_body_height / (visible_klines.len() - 1) as f32;
+    
+        let avg_body_height = if count > 1 { avg_body_height / (count - 1) as f32 } else { 0.0 };
         let (highest, lowest) = (highest + avg_body_height, lowest - avg_body_height);
-
+    
         (latest, earliest, highest, lowest)
     }
 
