@@ -1,23 +1,21 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use iced::{
-    alignment, mouse, widget::{button, canvas::{self, event::{self, Event}, stroke::Stroke, Canvas, Geometry, Path}}, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme
+    alignment, mouse, widget::{button, canvas::{self, event::{self, Event}, stroke::Stroke, Cache, Canvas, Geometry, Path}}, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme
 };
 use iced::widget::{Column, Row, Container, Text};
-use crate::data_providers::binance::market_data::{Kline, Trade};
+use crate::{market_data::Kline, Timeframe};
 
 use super::{Chart, CommonChartData, Message, Interaction, AxisLabelXCanvas, AxisLabelYCanvas};
-use super::chart_button;
+use super::{chart_button, calculate_price_step, calculate_time_step};
 
-pub struct FootprintChart {
+pub struct CandlestickChart {
     chart: CommonChartData,
-    data_points: BTreeMap<i64, (HashMap<i64, (f32, f32)>, (f32, f32, f32, f32, f32, f32))>,
+    data_points: BTreeMap<i64, (f32, f32, f32, f32, f32, f32)>,
     timeframe: u16,
-    tick_size: f32,
-    raw_trades: Vec<Trade>,
 }
 
-impl Chart for FootprintChart {
-    type DataPoint = BTreeMap<i64, (HashMap<i64, (f32, f32)>, (f32, f32, f32, f32, f32, f32))>;
+impl Chart for CandlestickChart {
+    type DataPoint = BTreeMap<i64, (f32, f32, f32, f32, f32, f32)>;
 
     fn get_common_data(&self) -> &CommonChartData {
         &self.chart
@@ -27,176 +25,97 @@ impl Chart for FootprintChart {
     }
 }
 
-impl FootprintChart {
-    const MIN_SCALING: f32 = 0.4;
-    const MAX_SCALING: f32 = 3.6;
+impl CandlestickChart {
+    const MIN_SCALING: f32 = 0.1;
+    const MAX_SCALING: f32 = 2.0;
 
-    pub fn new(timeframe: u16, tick_size: f32, klines_raw: Vec<(i64, f32, f32, f32, f32, f32, f32)>, raw_trades: Vec<Trade>) -> Self {
-        let mut data_points = BTreeMap::new();
-        let aggregate_time = 1000 * 60 * timeframe as i64;
+    pub fn new(klines: Vec<Kline>, timeframe: Timeframe) -> CandlestickChart {
+        let mut klines_raw = BTreeMap::new();
 
-        for kline in klines_raw {
-            let kline_raw = (kline.1, kline.2, kline.3, kline.4, kline.5, kline.6);
-            data_points.entry(kline.0).or_insert((HashMap::new(), kline_raw));
-        };
-        for trade in &raw_trades {
-            let rounded_time = (trade.time / aggregate_time) * aggregate_time;
-            let price_level: i64 = (trade.price * (1.0 / tick_size)).round() as i64;
+        for kline in klines {
+            let buy_volume = kline.taker_buy_base_asset_volume;
+            let sell_volume = kline.volume - buy_volume;
+            klines_raw.insert(kline.time as i64, (kline.open, kline.high, kline.low, kline.close, buy_volume, sell_volume));
+        }
 
-            let entry: &mut (HashMap<i64, (f32, f32)>, (f32, f32, f32, f32, f32, f32)) = data_points
-                .entry(rounded_time)
-                .or_insert((HashMap::new(), (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)));
-
-            if let Some((buy_qty, sell_qty)) = entry.0.get_mut(&price_level) {
-                if trade.is_sell {
-                    *sell_qty += trade.qty;
-                } else {
-                    *buy_qty += trade.qty;
-                }
-            } else if trade.is_sell {
-                entry.0.insert(price_level, (0.0, trade.qty));
-            } else {
-                entry.0.insert(price_level, (trade.qty, 0.0));
-            }
+        let timeframe = match timeframe {
+            Timeframe::M1 => 1,
+            Timeframe::M3 => 3,
+            Timeframe::M5 => 5,
+            Timeframe::M15 => 15,
+            Timeframe::M30 => 30,
         };
 
-        FootprintChart {
+        CandlestickChart {
             chart: CommonChartData::default(),
-            data_points,
+            data_points: klines_raw,
             timeframe,
-            tick_size,
-            raw_trades,
         }
     }
 
-    pub fn insert_datapoint(&mut self, mut trades_buffer: Vec<Trade>, depth_update: i64) {
-        let aggregate_time = 1000 * 60 * self.timeframe as i64;
-        let rounded_depth_update = (depth_update / aggregate_time) * aggregate_time;
-    
-        self.data_points.entry(rounded_depth_update).or_insert((HashMap::new(), (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)));
-        
-        for trade in trades_buffer.drain(..) {
-            let price_level: i64 = (trade.price * (1.0 / self.tick_size)).round() as i64;
-            if let Some((trades, _)) = self.data_points.get_mut(&rounded_depth_update) {     
-                if let Some((buy_qty, sell_qty)) = trades.get_mut(&price_level) {
-                    if trade.is_sell {
-                        *sell_qty += trade.qty;
-                    } else {
-                        *buy_qty += trade.qty;
-                    }
-                } else if trade.is_sell {
-                    trades.insert(price_level, (0.0, trade.qty));
-                } else {
-                    trades.insert(price_level, (trade.qty, 0.0));
-                }
-            }
+    pub fn insert_datapoint(&mut self, kline: &Kline) {
+        let buy_volume: f32 = kline.taker_buy_base_asset_volume;
+        let sell_volume: f32 = if buy_volume != -1.0 {
+            kline.volume - buy_volume
+        } else {
+            kline.volume
+        };
 
-            self.raw_trades.push(trade);
-        }
-    }
-
-    pub fn update_latest_kline(&mut self, kline: &Kline) {
-        if let Some((_, kline_value)) = self.data_points.get_mut(&(kline.time as i64)) {
-            kline_value.0 = kline.open;
-            kline_value.1 = kline.high;
-            kline_value.2 = kline.low;
-            kline_value.3 = kline.close;
-            kline_value.4 = kline.taker_buy_base_asset_volume;
-            
-            if kline_value.4 != -1.0 {
-                kline_value.5 = kline.volume - kline.taker_buy_base_asset_volume;
-            } else {
-                kline_value.5 = kline.volume;
-            }
-        }
+        self.data_points.insert(kline.time as i64, (kline.open, kline.high, kline.low, kline.close, buy_volume, sell_volume));
 
         self.render_start();
-    }
-    
-    pub fn change_tick_size(&mut self, new_tick_size: f32) {
-        let mut new_data_points = BTreeMap::new();
-        let aggregate_time = 1000 * 60 * self.timeframe as i64;
-
-        for (time, (_, kline_values)) in &self.data_points {
-            new_data_points.entry(*time).or_insert((HashMap::new(), *kline_values));
-        }
-
-        for trade in self.raw_trades.iter() {
-            let rounded_time = (trade.time / aggregate_time) * aggregate_time;
-            let price_level: i64 = (trade.price * (1.0 / new_tick_size)).round() as i64;
-
-            let entry = new_data_points
-                .entry(rounded_time)
-                .or_insert((HashMap::new(), (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)));
-
-            if let Some((buy_qty, sell_qty)) = entry.0.get_mut(&price_level) {
-                if trade.is_sell {
-                    *sell_qty += trade.qty;
-                } else {
-                    *buy_qty += trade.qty;
-                }
-            } else if trade.is_sell {
-                    entry.0.insert(price_level, (0.0, trade.qty));
-            } else {
-                entry.0.insert(price_level, (trade.qty, 0.0));
-            }
-        }
-    
-        self.data_points = new_data_points;
-        self.tick_size = new_tick_size;
     }
 
     pub fn render_start(&mut self) {
         let (latest, earliest, highest, lowest) = self.calculate_range();
-        if highest <= 0.0 || lowest <= 0.0 {
+
+        if latest == 0 || highest == 0.0 {
             return;
         }
 
-        let chart_state = &mut self.chart;
+        let chart_state = self.get_common_data_mut();
 
-        if earliest != chart_state.x_min_time || latest != chart_state.x_max_time {
-            chart_state.x_min_time = earliest;
-            chart_state.x_max_time = latest;
-
+        if earliest != chart_state.x_min_time || latest != chart_state.x_max_time || lowest != chart_state.y_min_price || highest != chart_state.y_max_price {
             chart_state.x_labels_cache.clear();
-            chart_state.x_crosshair_cache.clear();
-        };
-    
-        if lowest != chart_state.y_min_price || highest != chart_state.y_max_price {
-            chart_state.y_min_price = lowest;
-            chart_state.y_max_price = highest;
+            chart_state.mesh_cache.clear();
+        }
 
-            chart_state.y_labels_cache.clear();
-            chart_state.y_crosshair_cache.clear();
-        };
-    
+        chart_state.x_min_time = earliest;
+        chart_state.x_max_time = latest;
+        chart_state.y_min_price = lowest;
+        chart_state.y_max_price = highest;
+
+        chart_state.y_labels_cache.clear();
         chart_state.crosshair_cache.clear();
+
         chart_state.main_cache.clear();
     }
 
     fn calculate_range(&self) -> (i64, i64, f32, f32) {
         let chart = self.get_common_data();
-
-        let timestamp_latest = self.data_points.keys().last().unwrap_or(&0);
-
-        let latest: i64 = *timestamp_latest - ((chart.translation.x*1000.0)*(self.timeframe as f32)) as i64;
-        let earliest: i64 = latest - ((640000.0*self.timeframe as f32) / (chart.scaling / (chart.bounds.width/800.0))) as i64;
     
-        let mut highest: f32 = 0.0;
-        let mut lowest: f32 = std::f32::MAX;
-
-        for (_, (_, kline)) in self.data_points.range(earliest..=latest) {
-            if kline.1 > highest {
-                highest = kline.1;
-            }
-            if kline.2 < lowest {
-                lowest = kline.2;
-            }
+        let latest: i64 = self.data_points.keys().last().map_or(0, |time| time - ((chart.translation.x*10000.0)*(self.timeframe as f32)) as i64);
+        let earliest: i64 = latest - ((6400000.0*self.timeframe as f32) / (chart.scaling / (chart.bounds.width/800.0))) as i64;
+    
+        let visible_klines = self.data_points.range(earliest..=latest);
+    
+        let (highest, lowest, avg_body_height, count) = visible_klines.fold((f32::MIN, f32::MAX, 0.0f32, 0), |(highest, lowest, total_body_height, count), (_, kline)| {
+            let body_height = (kline.0 - kline.3).abs();
+            (
+                highest.max(kline.1),
+                lowest.min(kline.2),
+                total_body_height + body_height,
+                count + 1,
+            )
+        });
+    
+        if count <= 1 {
+            return (0, 0, 0.0, 0.0);
         }
-
-        highest = highest + (highest - lowest) * 0.05;
-        lowest = lowest - (highest - lowest) * 0.05;
-
+    
+        let avg_body_height = if count > 1 { avg_body_height / (count - 1) as f32 } else { 0.0 };
+        let (highest, lowest) = (highest + avg_body_height, lowest - avg_body_height);
+    
         (latest, earliest, highest, lowest)
     }
 
@@ -259,7 +178,7 @@ impl FootprintChart {
             .height(Length::FillPortion(10));
 
         let chart_state = self.get_common_data();
-
+    
         let axis_labels_x = Canvas::new(
             AxisLabelXCanvas { 
                 labels_cache: &chart_state.x_labels_cache, 
@@ -272,7 +191,7 @@ impl FootprintChart {
             })
             .width(Length::FillPortion(10))
             .height(Length::Fixed(26.0));
-
+    
         let axis_labels_y = Canvas::new(
             AxisLabelYCanvas { 
                 labels_cache: &chart_state.y_labels_cache, 
@@ -330,7 +249,7 @@ impl FootprintChart {
     }
 }
 
-impl canvas::Program<Message> for FootprintChart {
+impl canvas::Program<Message> for CandlestickChart {
     type State = Interaction;
 
     fn update(
@@ -339,7 +258,7 @@ impl canvas::Program<Message> for FootprintChart {
         event: Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
-    ) -> (event::Status, Option<Message>) {       
+    ) -> (event::Status, Option<Message>) {  
         let chart_state = self.get_common_data();
 
         if bounds != chart_state.bounds {
@@ -469,115 +388,107 @@ impl canvas::Program<Message> for FootprintChart {
         let (latest, earliest) = (chart.x_max_time, chart.x_min_time);    
         let (lowest, highest) = (chart.y_min_price, chart.y_max_price);
 
-        let y_range: f32 = highest - lowest;
+        let y_range = highest - lowest;
 
-        let volume_area_height: f32 = bounds.height / 8.0; 
-        let heatmap_area_height: f32 = bounds.height - volume_area_height;
+        let volume_area_height = bounds.height / 8.0; 
+        let candlesticks_area_height = bounds.height - volume_area_height;
 
-        let heatmap = chart.main_cache.draw(renderer, bounds.size(), |frame| {
-            let mut max_trade_qty: f32 = 0.0;
+        let y_labels_can_fit = (bounds.height / 32.0) as i32;
+        let (step, rounded_lowest) = calculate_price_step(highest, lowest, y_labels_can_fit);
+
+        let x_labels_can_fit = (bounds.width / 90.0) as i32;
+        let (time_step, rounded_earliest) = calculate_time_step(earliest, latest, x_labels_can_fit, Some(self.timeframe));
+
+        let background = chart.mesh_cache.draw(renderer, bounds.size(), |frame| {
+            frame.with_save(|frame| {
+                let mut time = rounded_earliest;
+
+                while time <= latest {                    
+                    let x_position = ((time - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
+
+                    if x_position >= 0.0 && x_position <= bounds.width as f64 {
+                        let line = Path::line(
+                            Point::new(x_position as f32, 0.0), 
+                            Point::new(x_position as f32, bounds.height)
+                        );
+                        frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(27, 27, 27, 1.0)).with_width(1.0))
+                    };
+                    
+                    time += time_step;
+                }
+            });
+            
+            frame.with_save(|frame| {
+                let mut y = rounded_lowest;
+
+                while y <= highest {
+                    let y_position = candlesticks_area_height - ((y - lowest) / y_range * candlesticks_area_height);
+                    let line = Path::line(
+                        Point::new(0.0, y_position), 
+                        Point::new(bounds.width, y_position)
+                    );
+                    frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(27, 27, 27, 1.0)).with_width(1.0));
+                    y += step;
+                }
+            });
+        });
+
+        let candlesticks = chart.main_cache.draw(renderer, bounds.size(), |frame| {
             let mut max_volume: f32 = 0.0;
 
-            for (_, (trades, kline)) in self.data_points.range(earliest..=latest) {
-                for trade in trades {            
-                    max_trade_qty = max_trade_qty.max(trade.1.0.max(trade.1.1));
-                }
+            for (_, kline) in self.data_points.range(earliest..=latest) {
                 max_volume = max_volume.max(kline.4.max(kline.5));
             }
-            
-            for (time, (trades, kline)) in self.data_points.range(earliest..=latest) {
-                let x_position: f32 = ((time - earliest) as f32 / (latest - earliest) as f32) * bounds.width;
 
-                if x_position.is_nan() || x_position.is_infinite() {
-                    continue;
-                }
-
-                let y_open = heatmap_area_height - ((kline.0 - lowest) / y_range * heatmap_area_height);
-                let y_high = heatmap_area_height - ((kline.1 - lowest) / y_range * heatmap_area_height);
-                let y_low = heatmap_area_height - ((kline.2 - lowest) / y_range * heatmap_area_height);
-                let y_close = heatmap_area_height - ((kline.3 - lowest) / y_range * heatmap_area_height);
+            for (time, (open, high, low, close, buy_volume, sell_volume)) in self.data_points.range(earliest..=latest) {
+                let x_position: f64 = ((time - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
                 
-                let body_color = if kline.3 >= kline.0 { Color::from_rgba8(81, 205, 160, 0.8) } else { Color::from_rgba8(192, 80, 77, 0.8) };
-                let wick_color = if kline.3 >= kline.0 { Color::from_rgba8(81, 205, 160, 0.4) } else { Color::from_rgba8(192, 80, 77, 0.4) };
-
-                let wick = Path::line(
-                    Point::new(x_position, y_high), 
-                    Point::new(x_position, y_low)
-                );
-                frame.stroke(&wick, Stroke::default().with_color(wick_color).with_width(1.0));
+                let y_open = candlesticks_area_height - ((open - lowest) / y_range * candlesticks_area_height);
+                let y_high = candlesticks_area_height - ((high - lowest) / y_range * candlesticks_area_height);
+                let y_low = candlesticks_area_height - ((low - lowest) / y_range * candlesticks_area_height);
+                let y_close = candlesticks_area_height - ((close - lowest) / y_range * candlesticks_area_height);
+                
+                let color = if close >= open { Color::from_rgb8(81, 205, 160) } else { Color::from_rgb8(192, 80, 77) };
 
                 let body = Path::rectangle(
-                    Point::new(x_position - chart.scaling, y_open.min(y_close)), 
-                    Size::new(2.0 * chart.scaling, (y_open - y_close).abs())
+                    Point::new(x_position as f32 - (2.0 * chart.scaling), y_open.min(y_close)), 
+                    Size::new(4.0 * chart.scaling, (y_open - y_close).abs())
                 );                    
-                frame.fill(&body, body_color);
+                frame.fill(&body, color);
+                
+                let wick = Path::line(
+                    Point::new(x_position as f32, y_high), 
+                    Point::new(x_position as f32, y_low)
+                );
+                frame.stroke(&wick, Stroke::default().with_color(color).with_width(1.0));
 
-                for trade in trades {
-                    let price = (*trade.0 as f32) / (1.0 / self.tick_size);
-                    let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
+                if *buy_volume != -1.0 {
+                    let buy_bar_height = (buy_volume / max_volume) * volume_area_height;
+                    let sell_bar_height = (sell_volume / max_volume) * volume_area_height;
+                    
+                    let buy_bar = Path::rectangle(
+                        Point::new(x_position as f32, bounds.height - buy_bar_height), 
+                        Size::new(2.0 * chart.scaling, buy_bar_height)
+                    );
+                    frame.fill(&buy_bar, Color::from_rgb8(81, 205, 160)); 
+                    
+                    let sell_bar = Path::rectangle(
+                        Point::new(x_position as f32 - (2.0 * chart.scaling), bounds.height - sell_bar_height), 
+                        Size::new(2.0 * chart.scaling, sell_bar_height)
+                    );
+                    frame.fill(&sell_bar, Color::from_rgb8(192, 80, 77)); 
+                } else {
+                    let bar_height = ((sell_volume) / max_volume) * volume_area_height;
+                    
+                    let bar = Path::rectangle(
+                        Point::new(x_position as f32 - (2.0 * chart.scaling), bounds.height - bar_height), 
+                        Size::new(4.0 * chart.scaling, bar_height)
+                    );
+                    let color = if close >= open { Color::from_rgba8(81, 205, 160, 0.8) } else { Color::from_rgba8(192, 80, 77, 0.8) };
 
-                    if trade.1.0 > 0.0 {
-                        let bar_width = (trade.1.0 / max_trade_qty) * bounds.width / 28.0 * chart.scaling;
-                        let bar = Path::rectangle(
-                            Point::new(x_position + (3.0 * chart.scaling), y_position), 
-                            Size::new(bar_width, 1.0) 
-                        );
-                        frame.fill(&bar, Color::from_rgba8(81, 205, 160, 1.0));
-                    } 
-                    if trade.1.1 > 0.0 {
-                        let bar_width = -(trade.1.1 / max_trade_qty) * bounds.width / 28.0 * chart.scaling;
-                        let bar = Path::rectangle(
-                            Point::new(x_position - (3.0 * chart.scaling), y_position), 
-                            Size::new(bar_width, 1.0) 
-                        );
-                        frame.fill(&bar, Color::from_rgba8(192, 80, 77, 1.0));
-                    };  
+                    frame.fill(&bar, color);
                 }
-
-                if max_volume > 0.0 {
-                    if kline.4 != -1.0 {
-                        let buy_bar_height = (kline.4 / max_volume) * volume_area_height;
-                        let sell_bar_height = (kline.5 / max_volume) * volume_area_height;
-
-                        let sell_bar_width = 8.0 * chart.scaling;
-                        let sell_bar_x_position = x_position - (5.0*chart.scaling) - sell_bar_width;
-                        let sell_bar = Path::rectangle(
-                            Point::new(sell_bar_x_position, bounds.height - sell_bar_height), 
-                            Size::new(sell_bar_width, sell_bar_height)
-                        );
-                        frame.fill(&sell_bar, Color::from_rgb8(192, 80, 77)); 
-
-                        let buy_bar = Path::rectangle(
-                            Point::new(x_position + (5.0*chart.scaling), bounds.height - buy_bar_height), 
-                            Size::new(8.0 * chart.scaling, buy_bar_height)
-                        );
-                        frame.fill(&buy_bar, Color::from_rgb8(81, 205, 160));
-                    } else {
-                        let bar_height = (kline.5 / max_volume) * volume_area_height;
-                        let bar = Path::rectangle(
-                            Point::new(x_position - (3.0*chart.scaling), bounds.height - bar_height), 
-                            Size::new(6.0 * chart.scaling, bar_height)
-                        );
-                        let color = if kline.3 >= kline.0 { Color::from_rgba8(81, 205, 160, 0.8) } else { Color::from_rgba8(192, 80, 77, 0.8) };
-
-                        frame.fill(&bar, color);
-                    }
-                }
-            } 
-            
-            let text_size = 9.0;
-            let text_content = format!("{max_volume:.2}");
-            let text_width = (text_content.len() as f32 * text_size) / 1.5;
-
-            let text_position = Point::new(bounds.width - text_width, bounds.height - volume_area_height);
-            
-            frame.fill_text(canvas::Text {
-                content: text_content,
-                position: text_position,
-                size: iced::Pixels(text_size),
-                color: Color::from_rgba8(81, 81, 81, 1.0),
-                ..canvas::Text::default()
-            });
+            }
         });
 
         if chart.crosshair {
@@ -603,35 +514,36 @@ impl canvas::Program<Message> for FootprintChart {
                     frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(200, 200, 200, 0.6)).with_width(1.0));
 
                     if let Some((_, kline)) = self.data_points.iter()
-                        .find(|(time, _)| **time == rounded_timestamp) {
+                        .find(|(time, _)| **time == rounded_timestamp as i64) {
 
-                            let tooltip_text: String = if kline.1.4 != -1.0 {
-                                format!(
-                                    "O: {} H: {} L: {} C: {}\nBuyV: {:.0} SellV: {:.0}",
-                                    kline.1.0, kline.1.1, kline.1.2, kline.1.3, kline.1.4, kline.1.5
-                                )
-                            } else {
-                                format!(
-                                    "O: {} H: {} L: {} C: {}\nVolume: {:.0}",
-                                    kline.1.0, kline.1.1, kline.1.2, kline.1.3, kline.1.5
-                                )
-                            };
+                        
+                        let tooltip_text: String = if kline.4 != -1.0 {
+                            format!(
+                                "O: {} H: {} L: {} C: {}\nBuyV: {:.0} SellV: {:.0}",
+                                kline.0, kline.1, kline.2, kline.3, kline.4, kline.5
+                            )
+                        } else {
+                            format!(
+                                "O: {} H: {} L: {} C: {}\nVolume: {:.0}",
+                                kline.0, kline.1, kline.2, kline.3, kline.5
+                            )
+                        };
 
-                            let text = canvas::Text {
-                                content: tooltip_text,
-                                position: Point::new(10.0, 10.0),
-                                size: iced::Pixels(12.0),
-                                color: Color::from_rgba8(120, 120, 120, 1.0),
-                                ..canvas::Text::default()
-                            };
-                            frame.fill_text(text);
+                        let text = canvas::Text {
+                            content: tooltip_text,
+                            position: Point::new(10.0, 10.0),
+                            size: iced::Pixels(12.0),
+                            color: Color::from_rgba8(120, 120, 120, 1.0),
+                            ..canvas::Text::default()
+                        };
+                        frame.fill_text(text);
                     }
                 }
             });
 
-            vec![crosshair, heatmap]
+            vec![background, crosshair, candlesticks]
         }   else {
-            vec![heatmap]
+            vec![background, candlesticks]
         }
     }
 
