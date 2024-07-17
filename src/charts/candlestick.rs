@@ -3,7 +3,7 @@ use iced::{
     alignment, mouse, widget::{button, canvas::{self, event::{self, Event}, stroke::Stroke, Cache, Canvas, Geometry, Path}}, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme
 };
 use iced::widget::{Column, Row, Container, Text};
-use crate::{market_data::Kline, Timeframe};
+use crate::{data_providers::Kline, Timeframe};
 
 use super::{Chart, CommonChartData, Message, Interaction, AxisLabelXCanvas, AxisLabelYCanvas};
 use super::{chart_button, calculate_price_step, calculate_time_step};

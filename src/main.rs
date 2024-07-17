@@ -1,7 +1,6 @@
 #![windows_subsystem = "windows"]
 
 mod data_providers;
-use data_providers::binance::market_data::{self, FeedLatency};
 use data_providers::{binance, bybit};
 mod charts;
 use charts::footprint::{self, FootprintChart};
@@ -233,7 +232,7 @@ pub enum Message {
     ExchangeSelected(Exchange),
     MarketWsEvent(MarketEvents),
     WsToggle,
-    FetchEvent(Result<Vec<binance::market_data::Kline>, std::string::String>, PaneId, Timeframe),
+    FetchEvent(Result<Vec<data_providers::Kline>, std::string::String>, PaneId, Timeframe),
     
     // Pane grid
     Split(pane_grid::Axis, pane_grid::Pane, PaneId),
@@ -301,7 +300,7 @@ struct State {
 
     exchange_latency: Option<(u32, u32)>,
 
-    feed_latency_cache: VecDeque<FeedLatency>,
+    feed_latency_cache: VecDeque<data_providers::FeedLatency>,
     
     pane_state_cache: HashMap<PaneId, (Option<Ticker>, Option<Timeframe>, Option<f32>)>,
 
@@ -481,7 +480,7 @@ impl State {
                     match self.selected_exchange {
                         Some(Exchange::BinanceFutures) => {
                             let fetch_klines = Task::perform(
-                                market_data::fetch_klines(*selected_ticker, timeframe)
+                                binance::market_data::fetch_klines(*selected_ticker, timeframe)
                                     .map_err(|err| format!("{err}")), 
                                 move |klines| {
                                     Message::FetchEvent(klines, pane_id, timeframe)
@@ -498,8 +497,8 @@ impl State {
 
                                     match klines {
                                         Ok(klines) => {
-                                            let binance_klines: Vec<market_data::Kline> = klines.iter().map(|kline| {
-                                                market_data::Kline {
+                                            let binance_klines: Vec<data_providers::Kline> = klines.iter().map(|kline| {
+                                                data_providers::Kline {
                                                     time: kline.time,
                                                     open: kline.open,
                                                     high: kline.high,
@@ -560,7 +559,7 @@ impl State {
                 } else {
                     Task::none()
                 }
-            }
+            },
             Message::WsToggle => {
                 self.ws_running = !self.ws_running;
 
@@ -613,9 +612,9 @@ impl State {
                             match self.selected_exchange {
                                 Some(Exchange::BinanceFutures) => {
                                     let fetch_klines: Task<Message> = Task::perform(
-                                        market_data::fetch_klines(self.selected_ticker.unwrap_or(Ticker::BTCUSDT), selected_timeframe)
+                                        binance::market_data::fetch_klines(self.selected_ticker.unwrap_or(Ticker::BTCUSDT), selected_timeframe)
                                             .map_err(|err| format!("{err}")), 
-                                        move |klines: Result<Vec<market_data::Kline>, String>| {
+                                        move |klines: Result<Vec<data_providers::Kline>, String>| {
                                             Message::FetchEvent(klines, pane_id, selected_timeframe)
                                         }
                                     );
@@ -629,8 +628,8 @@ impl State {
 
                                             match klines {
                                                 Ok(klines) => {
-                                                    let binance_klines: Vec<market_data::Kline> = klines.iter().map(|kline| {
-                                                        market_data::Kline {
+                                                    let binance_klines: Vec<data_providers::Kline> = klines.iter().map(|kline| {
+                                                        data_providers::Kline {
                                                             time: kline.time,
                                                             open: kline.open,
                                                             high: kline.high,
@@ -688,7 +687,7 @@ impl State {
                             },
                             PaneId::FootprintChart => {
                                 if let Some(heatmap_chart) = &mut self.heatmap_chart {
-                                    let copied_trades: Vec<Trade> = heatmap_chart.get_raw_trades();
+                                    let copied_trades: Vec<data_providers::Trade> = heatmap_chart.get_raw_trades();
 
                                     let mut klines_raw: Vec<(i64, f32, f32, f32, f32, f32, f32)> = vec![];
                                     for kline in &klines {
@@ -771,40 +770,7 @@ impl State {
                                 }
                             }
 
-                            let mut depth_latency_sum: i64 = 0;
-                            let mut depth_latency_count: i64 = 0;
-                            let mut trade_latency_sum: i64 = 0;
-                            let mut trade_latency_count: i64 = 0;
-
-                            for feed_latency in self.feed_latency_cache.iter() {
-                                depth_latency_sum += feed_latency.depth_latency;
-                                depth_latency_count += 1;
-
-                                if let Some(trade_latency) = feed_latency.trade_latency {
-                                    trade_latency_sum += trade_latency;
-                                    trade_latency_count += 1;
-                                }
-                            }
-
-                            let average_depth_latency: Option<i64> = if depth_latency_count > 0 {
-                                Some(depth_latency_sum / depth_latency_count)
-                            } else {
-                                None
-                            };
-
-                            let average_trade_latency: Option<i64> = if trade_latency_count > 0 {
-                                Some(trade_latency_sum / trade_latency_count)
-                            } else {
-                                None
-                            };
-
-                            if let (Some(average_depth_latency), Some(average_trade_latency)) = (average_depth_latency, average_trade_latency) {
-                                self.exchange_latency = Some((average_depth_latency as u32, average_trade_latency as u32));
-                            }
-
-                            while self.feed_latency_cache.len() > 100 {
-                                self.feed_latency_cache.pop_front();
-                            }
+                            self.update_exchange_latency();
                         }
                     },
 
@@ -820,37 +786,17 @@ impl State {
                             println!("Bybit disconnected");
                         }
                         bybit::market_data::Event::DepthReceived(feed_latency, depth_update, depth, trades_buffer) => {
-
-                            // convert bybit trade to binance trade
-                            let mut binance_trades: Vec<binance::market_data::Trade> = vec![];
-                            
-                            for trade in trades_buffer.iter() {
-                                let binance_trade = binance::market_data::Trade {
-                                    price: trade.price,
-                                    qty: trade.qty,
-                                    time: trade.time,
-                                    is_sell: trade.is_sell,
-                                };
-                                binance_trades.push(binance_trade);
-                            }
-
-                            let local_depth = binance::market_data::LocalDepthCache {
-                                time: depth.time,
-                                bids: depth.bids.iter().map(|order| binance::market_data::Order { price: order.price, qty: order.qty }).collect(),
-                                asks: depth.asks.iter().map(|order| binance::market_data::Order { price: order.price, qty: order.qty }).collect(),
-                            };
-
-                            let trades_clone = binance_trades.clone();
-
                             if let Some(time_and_sales) = &mut self.time_and_sales {
-                                time_and_sales.update(&binance_trades);
+                                time_and_sales.update(&trades_buffer);
                             } 
+
+                            let trades_buffer_clone = trades_buffer.clone();
 
                             if let Some(chart) = &mut self.heatmap_chart {
-                                chart.insert_datapoint(binance_trades, depth_update, local_depth);
+                                chart.insert_datapoint(trades_buffer, depth_update, depth);
                             } 
                             if let Some(chart) = &mut self.footprint_chart {
-                                chart.insert_datapoint(trades_clone, depth_update);
+                                chart.insert_datapoint(trades_buffer_clone, depth_update);
                             }
 
                             self.feed_latency_cache.push_back(feed_latency);
@@ -859,7 +805,7 @@ impl State {
                             for (_, pane_state) in self.panes.iter() {
                                 if let Some(selected_timeframe) = pane_state.stream.1 {
                                     if selected_timeframe == timeframe {
-                                        let binance_kline = binance::market_data::Kline {
+                                        let binance_kline = data_providers::Kline {
                                             time: kline.time,
                                             open: kline.open,
                                             high: kline.high,
@@ -891,40 +837,7 @@ impl State {
                                 }
                             }
 
-                            let mut depth_latency_sum: i64 = 0;
-                            let mut depth_latency_count: i64 = 0;
-                            let mut trade_latency_sum: i64 = 0;
-                            let mut trade_latency_count: i64 = 0;
-
-                            for feed_latency in self.feed_latency_cache.iter() {
-                                depth_latency_sum += feed_latency.depth_latency;
-                                depth_latency_count += 1;
-
-                                if let Some(trade_latency) = feed_latency.trade_latency {
-                                    trade_latency_sum += trade_latency;
-                                    trade_latency_count += 1;
-                                }
-                            }
-
-                            let average_depth_latency = if depth_latency_count > 0 {
-                                Some(depth_latency_sum / depth_latency_count)
-                            } else {
-                                None
-                            };
-
-                            let average_trade_latency = if trade_latency_count > 0 {
-                                Some(trade_latency_sum / trade_latency_count)
-                            } else {
-                                None
-                            };
-
-                            if let (Some(average_depth_latency), Some(average_trade_latency)) = (average_depth_latency, average_trade_latency) {
-                                self.exchange_latency = Some((average_depth_latency as u32, average_trade_latency as u32));
-                            }
-
-                            while self.feed_latency_cache.len() > 100 {
-                                self.feed_latency_cache.pop_front();
-                            }
+                            self.update_exchange_latency();
                         }
                     }
                 };
@@ -1393,6 +1306,43 @@ impl State {
         
         Subscription::batch(subscriptions)
     }    
+
+    fn update_exchange_latency(&mut self) {
+        let mut depth_latency_sum: i64 = 0;
+        let mut depth_latency_count: i64 = 0;
+        let mut trade_latency_sum: i64 = 0;
+        let mut trade_latency_count: i64 = 0;
+
+        for feed_latency in self.feed_latency_cache.iter() {
+            depth_latency_sum += feed_latency.depth_latency;
+            depth_latency_count += 1;
+
+            if let Some(trade_latency) = feed_latency.trade_latency {
+                trade_latency_sum += trade_latency;
+                trade_latency_count += 1;
+            }
+        }
+
+        let average_depth_latency: Option<i64> = if depth_latency_count > 0 {
+            Some(depth_latency_sum / depth_latency_count)
+        } else {
+            None
+        };
+
+        let average_trade_latency: Option<i64> = if trade_latency_count > 0 {
+            Some(trade_latency_sum / trade_latency_count)
+        } else {
+            None
+        };
+
+        if let (Some(average_depth_latency), Some(average_trade_latency)) = (average_depth_latency, average_trade_latency) {
+            self.exchange_latency = Some((average_depth_latency as u32, average_trade_latency as u32));
+        }
+
+        while self.feed_latency_cache.len() > 100 {
+            self.feed_latency_cache.pop_front();
+        }
+    }
 }
 
 fn modal<'a, Message>(
@@ -1677,7 +1627,6 @@ impl TickMultiplier {
     }
 }
 
-use crate::market_data::Trade;
 struct ConvertedTrade {
     time: NaiveDateTime,
     price: f32,
@@ -1699,7 +1648,7 @@ impl TimeAndSales {
         self.size_filter = value;
     }
 
-    fn update(&mut self, trades_buffer: &Vec<Trade>) {
+    fn update(&mut self, trades_buffer: &Vec<data_providers::Trade>) {
         for trade in trades_buffer {
             let trade_time = NaiveDateTime::from_timestamp(trade.time / 1000, (trade.time % 1000) as u32 * 1_000_000);
             let converted_trade = ConvertedTrade {

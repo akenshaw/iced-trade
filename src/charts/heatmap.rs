@@ -4,20 +4,21 @@ use iced::{
     alignment, color, mouse, widget::{button, canvas::{self, event::{self, Event}, stroke::Stroke, Cache, Canvas, Geometry, Path}}, window, Border, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector
 };
 use iced::widget::{Column, Row, Container, Text};
-use crate::data_providers::binance::market_data::{LocalDepthCache, Trade};
+
+use crate::data_providers::{Depth, Trade};
 
 use super::{Chart, CommonChartData, Message, chart_button, Interaction, AxisLabelYCanvas, AxisLabelXCanvas};
 
 pub struct HeatmapChart {
     chart: CommonChartData,
-    data_points: BTreeMap<i64, (LocalDepthCache, Box<[Trade]>)>,
+    data_points: BTreeMap<i64, (Depth, Box<[Trade]>)>,
     tick_size: f32,
     y_scaling: f32,
     size_filter: f32,
 }
 
 impl Chart for HeatmapChart {
-    type DataPoint = BTreeMap<i64, (LocalDepthCache, Box<[Trade]>)>;
+    type DataPoint = BTreeMap<i64, (Depth, Box<[Trade]>)>;
 
     fn get_common_data(&self) -> &CommonChartData {
         &self.chart
@@ -55,7 +56,7 @@ impl HeatmapChart {
         trades_source
     }
 
-    pub fn insert_datapoint(&mut self, trades_buffer: Vec<Trade>, depth_update: i64, depth: LocalDepthCache) {
+    pub fn insert_datapoint(&mut self, trades_buffer: Vec<Trade>, depth_update: i64, depth: Depth) {
         let aggregate_time = 100; // 100 ms
         let rounded_depth_update = (depth_update / aggregate_time) * aggregate_time;
         

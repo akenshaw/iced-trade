@@ -25,6 +25,8 @@ use tokio::net::TcpStream;
 use tokio_rustls::rustls::{ClientConfig, OwnedTrustAnchor};
 use tokio_rustls::TlsConnector;
 
+use crate::data_providers::{LocalDepthCache, Trade, Depth, Order, FeedLatency, Kline};
+
 #[allow(clippy::large_enum_variant)]
 enum State {
     Disconnected,
@@ -33,18 +35,11 @@ enum State {
     ),
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct FeedLatency {
-    pub time: i64,
-    pub depth_latency: i64,
-    pub trade_latency: Option<i64>,
-}
-
 #[derive(Debug, Clone)]
 pub enum Event {
     Connected(Connection),
     Disconnected,
-    DepthReceived(FeedLatency, i64, LocalDepthCache, Vec<Trade>),
+    DepthReceived(FeedLatency, i64, Depth, Vec<Trade>),
     KlineReceived(Kline, Timeframe),
 }
 
@@ -72,120 +67,6 @@ pub struct FetchedDepth {
     bids: Vec<Order>,
     #[serde(rename = "asks")]
     asks: Vec<Order>,
-}
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Order {
-    pub price: f32,
-    pub qty: f32,
-}
-#[derive(Debug, Clone, Default)]
-pub struct LocalDepthCache {
-    pub time: i64,
-    pub bids: Box<[Order]>,
-    pub asks: Box<[Order]>,
-}
-
-pub struct Depth {
-    pub last_update_id: i64,
-    pub time: i64,
-    pub bids: Vec<Order>,
-    pub asks: Vec<Order>,
-}
-
-impl Depth {
-    pub fn new() -> Self {
-        Self {
-            last_update_id: 0,
-            time: 0,
-            bids: Vec::new(),
-            asks: Vec::new(),
-        }
-    }
-
-    pub fn fetched(&mut self, new_depth: Depth) {
-        self.last_update_id = new_depth.last_update_id;        
-        self.time = new_depth.time;
-
-        self.bids = new_depth.bids;
-        self.asks = new_depth.asks;
-    }
-
-    pub fn update_depth_cache(&mut self, new_bids: &[Order], new_asks: &[Order]) {
-        for order in new_bids {
-            if order.qty == 0.0 {
-                self.bids.retain(|x| x.price != order.price);
-            } else if let Some(existing_order) = self.bids.iter_mut().find(|x| x.price == order.price) {
-                    existing_order.qty = order.qty;
-            } else {
-                self.bids.push(*order);
-            }
-        }
-        for order in new_asks {
-            if order.qty == 0.0 {
-                self.asks.retain(|x| x.price != order.price);
-            } else if let Some(existing_order) = self.asks.iter_mut().find(|x| x.price == order.price) {
-                existing_order.qty = order.qty;
-            } else {
-                self.asks.push(*order);
-            }
-        }
-    }
-
-    pub fn update_levels(&mut self, new_depth: Depth) -> (Box<[Order]>, Box<[Order]>) {
-        self.last_update_id = new_depth.last_update_id;
-        self.time = new_depth.time;
-
-        let mut best_ask_price = f32::MAX;
-        let mut best_bid_price = 0.0f32;
-
-        self.bids.iter().for_each(|order| {
-            if order.price > best_bid_price {
-                best_bid_price = order.price;
-            }
-        });
-        self.asks.iter().for_each(|order| {
-            if order.price < best_ask_price {
-                best_ask_price = order.price;
-            }
-        });
-
-        let highest: f32 = best_ask_price * 1.001;
-        let lowest: f32 = best_bid_price * 0.999;
-
-        self.update_depth_cache(&new_depth.bids, &new_depth.asks);
-
-        let mut local_bids: Vec<Order> = Vec::new();
-        let mut local_asks: Vec<Order> = Vec::new();
-
-        for order in &self.bids {
-            if order.price >= lowest {
-                local_bids.push(*order);
-            }
-        }
-        for order in &self.asks {
-            if order.price <= highest {
-                local_asks.push(*order);
-            }
-        }
-
-        // first sort by price
-        local_bids.sort_by(|a, b| b.price.partial_cmp(&a.price).unwrap());
-        local_asks.sort_by(|a, b| a.price.partial_cmp(&b.price).unwrap());
-
-        (local_bids.into_boxed_slice(), local_asks.into_boxed_slice())
-    }
-
-    pub fn get_fetch_id(&self) -> i64 {
-        self.last_update_id
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct Trade {
-    pub time: i64,
-    pub is_sell: bool,
-    pub price: f32,
-    pub qty: f32,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -425,7 +306,7 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
             let stream_1 = format!("{symbol_str}@trade");
             let stream_2 = format!("{symbol_str}@depth@100ms");
 
-            let mut orderbook: Depth = Depth::new();
+            let mut orderbook: LocalDepthCache = LocalDepthCache::new();
 
             let mut already_fetching: bool = false;
 
@@ -448,9 +329,9 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
                             tokio::spawn(async move {
                                 let fetched_depth = fetch_depth(selected_ticker).await;
 
-                                let depth: Depth = match fetched_depth {
+                                let depth: LocalDepthCache = match fetched_depth {
                                     Ok(depth) => {
-                                        Depth {
+                                        LocalDepthCache {
                                             last_update_id: depth.update_id,
                                             time: depth.time,
                                             bids: depth.bids,
@@ -522,9 +403,9 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
                                                     tokio::spawn(async move {
                                                         let fetched_depth = fetch_depth(selected_ticker).await;
     
-                                                        let depth: Depth = match fetched_depth {
+                                                        let depth: LocalDepthCache = match fetched_depth {
                                                             Ok(depth) => {
-                                                                Depth {
+                                                                LocalDepthCache {
                                                                     last_update_id: depth.update_id,
                                                                     time: depth.time,
                                                                     bids: depth.bids,
@@ -553,7 +434,7 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
     
                                                     let depth_latency = chrono::Utc::now().timestamp_millis() - time;
     
-                                                    let depth_update = Depth {
+                                                    let depth_update = LocalDepthCache {
                                                         last_update_id: de_depth.final_id as i64,
                                                         time,
                                                         bids: de_depth.bids.iter().map(|x| Order { price: str_f32_parse(&x.price), qty: str_f32_parse(&x.qty) }).collect(),
@@ -562,7 +443,7 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
     
                                                     let (local_bids, local_asks) = orderbook.update_levels(depth_update);
     
-                                                    let local_depth_cache = LocalDepthCache {
+                                                    let current_depth = Depth {
                                                         time,
                                                         bids: local_bids,
                                                         asks: local_asks,
@@ -585,7 +466,7 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
                                                         Event::DepthReceived(
                                                             feed_latency,
                                                             time, 
-                                                            local_depth_cache,
+                                                            current_depth,
                                                             std::mem::take(&mut trades_buffer)
                                                         )
                                                     ).await;
@@ -720,16 +601,6 @@ mod string_to_f32 {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct Kline {
-    pub time: u64,
-    pub open: f32,
-    pub high: f32,
-    pub low: f32,
-    pub close: f32,
-    pub volume: f32,
-    pub taker_buy_base_asset_volume: f32,
-}
 #[derive(Deserialize, Debug, Clone)]
 struct FetchedKlines (
     u64,
