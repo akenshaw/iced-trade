@@ -6,6 +6,7 @@ mod charts;
 use charts::footprint::{self, FootprintChart};
 use charts::heatmap::{self, HeatmapChart};
 use charts::candlestick::{self, CandlestickChart};
+use charts::timeandsales::{self, TimeAndSales};
 
 use std::collections::{VecDeque, HashMap};
 use std::vec;
@@ -15,6 +16,8 @@ use iced::{
         button, center, checkbox, mouse_area, opaque, pick_list, stack, text_input, tooltip, Column, Container, Row, Slider, Space, Text
     }, Alignment, Color, Task, Element, Font, Length, Renderer, Settings, Size, Subscription, Theme
 };
+
+pub mod style;
 
 use iced::widget::pane_grid::{self, PaneGrid, Configuration};
 use iced::widget::{
@@ -199,12 +202,7 @@ fn main() -> iced::Result {
     .window_size(iced::Size::new(1600.0, 900.0))
     .centered()   
     .font(ICON_BYTES)
-    .run()
-}
-impl Default for State {
-    fn default() -> Self {
-        Self::new()
-    }
+    .run_with(move || State::new())
 }
 
 #[derive(Debug, Clone)]
@@ -216,8 +214,6 @@ pub enum MarketEvents {
 #[derive(Debug, Clone)]
 pub enum Message {
     Debug(String),
-
-    RestartStream(Option<pane_grid::Pane>, (Option<Ticker>, Option<Timeframe>, Option<f32>)),
 
     CandlestickA(charts::Message),
     CandlestickB(charts::Message),
@@ -233,6 +229,7 @@ pub enum Message {
     MarketWsEvent(MarketEvents),
     WsToggle,
     FetchEvent(Result<Vec<data_providers::Kline>, std::string::String>, PaneId, Timeframe),
+    RestartStream(Option<pane_grid::Pane>, (Option<Ticker>, Option<Timeframe>, Option<f32>)),
     
     // Pane grid
     Split(pane_grid::Axis, pane_grid::Pane, PaneId),
@@ -1000,15 +997,13 @@ impl State {
         let pane_grid = PaneGrid::new(&self.panes, |id, pane, is_maximized| {
             let is_focused = focus == Some(id);
     
-            let content: pane_grid::Content<'_, Message, _, Renderer> = pane_grid::Content::new(responsive(move |size| {
+            let content: pane_grid::Content<'_, Message, _, Renderer> = pane_grid::Content::new(responsive(move |_| {
                 view_content(
                     pane.id, 
                     pane.show_modal,
                     &self.size_filter_heatmap,
                     &self.size_filter_timesales,
                     self.sync_heatmap,
-                    total_panes, 
-                    size, 
                     &self.footprint_chart,
                     &self.heatmap_chart,
                     &self.time_and_sales,
@@ -1378,8 +1373,6 @@ fn view_content<'a, 'b: 'a>(
     size_filter_heatmap: &'a f32,
     size_filter_timesales: &'a f32,
     sync_heatmap: bool,
-    _total_panes: usize,
-    _size: Size,
     footprint_chart: &'a Option<FootprintChart>,
     heatmap_chart: &'a Option<HeatmapChart>,
     time_and_sales: &'a Option<TimeAndSales>,
@@ -1624,200 +1617,5 @@ impl std::fmt::Display for TickMultiplier {
 impl TickMultiplier {
     fn multiply_with_min_tick_size(&self, min_tick_size: f32) -> f32 {
         self.0 as f32 * min_tick_size
-    }
-}
-
-struct ConvertedTrade {
-    time: NaiveDateTime,
-    price: f32,
-    qty: f32,
-    is_sell: bool,
-}
-struct TimeAndSales {
-    recent_trades: Vec<ConvertedTrade>,
-    size_filter: f32,
-}
-impl TimeAndSales {
-    fn new() -> Self {
-        Self {
-            recent_trades: Vec::new(),
-            size_filter: 0.0,
-        }
-    }
-    fn set_size_filter(&mut self, value: f32) {
-        self.size_filter = value;
-    }
-
-    fn update(&mut self, trades_buffer: &Vec<data_providers::Trade>) {
-        for trade in trades_buffer {
-            let trade_time = NaiveDateTime::from_timestamp(trade.time / 1000, (trade.time % 1000) as u32 * 1_000_000);
-            let converted_trade = ConvertedTrade {
-                time: trade_time,
-                price: trade.price,
-                qty: trade.qty,
-                is_sell: trade.is_sell,
-            };
-            self.recent_trades.push(converted_trade);
-        }
-
-        if self.recent_trades.len() > 2000 {
-            let drain_to = self.recent_trades.len() - 2000;
-            self.recent_trades.drain(0..drain_to);
-        }
-    }
-    fn view(&self) -> Element<'_, Message> {
-        let mut trades_column = Column::new()
-            .height(Length::Fill)
-            .padding(10);
-
-        let filtered_trades: Vec<_> = self.recent_trades.iter().filter(|trade| (trade.qty*trade.price) >= self.size_filter).collect();
-
-        let max_qty = filtered_trades.iter().map(|trade| trade.qty).fold(0.0, f32::max);
-    
-        if filtered_trades.is_empty() {
-            trades_column = trades_column.push(
-                Text::new("No trades")
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .size(16)
-            );
-        } else {
-            for trade in filtered_trades.iter().rev().take(80) {
-                let trade: &ConvertedTrade = trade;
-
-                let trade_row = Row::new()
-                    .push(
-                        container(Text::new(format!("{}", trade.time.format("%M:%S.%3f"))).size(14))
-                            .width(Length::FillPortion(8)).align_x(alignment::Horizontal::Center)
-                    )
-                    .push(
-                        container(Text::new(format!("{}", trade.price)).size(14))
-                            .width(Length::FillPortion(6))
-                    )
-                    .push(
-                        container(Text::new(if trade.is_sell { "Sell" } else { "Buy" }).size(14))
-                            .width(Length::FillPortion(4)).align_x(alignment::Horizontal::Left)
-                    )
-                    .push(
-                        container(Text::new(format!("{}", trade.qty)).size(14))
-                            .width(Length::FillPortion(4))
-                    );
-
-                let color_alpha = trade.qty / max_qty;
-    
-                trades_column = trades_column.push(container(trade_row)
-                    .style( move |_| if trade.is_sell { style::sell_side_red(color_alpha) } else { style::buy_side_green(color_alpha) }));
-    
-                trades_column = trades_column.push(Container::new(Space::new(Length::Fixed(0.0), Length::Fixed(5.0))));
-            }
-        }
-    
-        trades_column.into()  
-    }    
-}
-
-mod style {
-    use iced::widget::container::Style;
-    use iced::{theme, Border, Color, Theme};
-
-    fn styled(pair: theme::palette::Pair) -> Style {
-        Style {
-            background: Some(pair.color.into()),
-            text_color: pair.text.into(),
-            ..Default::default()
-        }
-    }
-
-    pub fn primary(theme: &Theme) -> Style {
-        let palette = theme.extended_palette();
-
-        styled(palette.primary.weak)
-    }
-
-    pub fn tooltip(theme: &Theme) -> Style {
-        let palette = theme.extended_palette();
-
-        Style {
-            background: Some(palette.background.weak.color.into()),
-            border: Border {
-                width: 1.0,
-                color: palette.primary.weak.color,
-                radius: 4.0.into(),
-            },
-            ..Default::default()
-        }
-    }
-
-    pub fn title_bar_active(theme: &Theme) -> Style {
-        let palette = theme.extended_palette();
-
-        Style {
-            text_color: Some(palette.background.strong.text),
-            background: Some(palette.background.strong.color.into()),
-            border: Border {
-                width: 1.0,
-                color: palette.primary.strong.color,
-                radius: 4.0.into(), 
-            },
-            ..Default::default()
-        }
-    }
-    pub fn title_bar_focused(theme: &Theme) -> Style {
-        let palette = theme.extended_palette();
-
-        Style {
-            text_color: Some(palette.primary.strong.text),
-            background: Some(palette.primary.strong.color.into()),
-            ..Default::default()
-        }
-    }
-    pub fn pane_active(theme: &Theme) -> Style {
-        let palette = theme.extended_palette();
-
-        Style {
-            background: Some(Color::BLACK.into()),
-            border: Border {
-                width: 1.0,
-                color: palette.background.strong.color,
-                ..Border::default()
-            },
-            ..Default::default()
-        }
-    }
-    pub fn pane_focused(theme: &Theme) -> Style {
-        let palette = theme.extended_palette();
-
-        Style {
-            background: Some(Color::BLACK.into()),
-            border: Border {
-                width: 1.0,
-                color: palette.primary.strong.color,
-                ..Border::default()
-            },
-            ..Default::default()
-        }
-    }
-    pub fn sell_side_red(color_alpha: f32) -> Style {
-        Style {
-            text_color: Color::from_rgba(192.0 / 255.0, 80.0 / 255.0, 77.0 / 255.0, 1.0).into(),
-            border: Border {
-                width: 1.0,
-                color: Color::from_rgba(192.0 / 255.0, 80.0 / 255.0, 77.0 / 255.0, color_alpha),
-                ..Border::default()
-            },
-            ..Default::default()
-        }
-    }
-
-    pub fn buy_side_green(color_alpha: f32) -> Style {
-        Style {
-            text_color: Color::from_rgba(81.0 / 255.0, 205.0 / 255.0, 160.0 / 255.0, 1.0).into(),
-            border: Border {
-                width: 1.0,
-                color: Color::from_rgba(81.0 / 255.0, 205.0 / 255.0, 160.0 / 255.0, color_alpha),
-                ..Border::default()
-            },
-            ..Default::default()
-        }
     }
 }

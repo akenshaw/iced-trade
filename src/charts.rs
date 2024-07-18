@@ -9,6 +9,7 @@ use iced::{
 pub mod heatmap;
 pub mod footprint;
 pub mod candlestick;
+pub mod timeandsales;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Message {
