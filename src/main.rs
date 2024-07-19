@@ -259,13 +259,16 @@ pub enum Message {
 }
 
 struct State {
-    show_layout_modal: bool,
-
     candlestick_chart_a: Option<CandlestickChart>,
     time_and_sales: Option<TimeAndSales>,
     candlestick_chart_b: Option<CandlestickChart>,
     heatmap_chart: Option<HeatmapChart>,
     footprint_chart: Option<FootprintChart>,
+
+    exchange_latency: Option<(u32, u32)>,
+
+    tick_multiply: TickMultiplier,
+    min_tick_size: Option<f32>,
 
     // data streams
     listen_key: Option<String>,
@@ -276,7 +279,12 @@ struct State {
     bybit_ws_state: BybitWsState,
 
     user_ws_state: UserWsState,
+
     ws_running: bool,
+
+    kline_stream: bool,
+
+    feed_latency_cache: VecDeque<data_providers::FeedLatency>, 
 
     // pane grid
     panes: pane_grid::State<PaneSpec>,
@@ -284,22 +292,11 @@ struct State {
     first_pane: pane_grid::Pane,
     pane_lock: bool,
 
-    size_filter_timesales: f32,
-    size_filter_heatmap: f32,
-    sync_heatmap: bool,
-
-    kline_stream: bool,
-
-    tick_multiply: TickMultiplier,
-    min_tick_size: Option<f32>,
-
-    exchange_latency: Option<(u32, u32)>,
-
-    feed_latency_cache: VecDeque<data_providers::FeedLatency>,
-    
     pane_state_cache: HashMap<PaneId, (Option<Ticker>, Option<Timeframe>, Option<f32>)>,
 
-    last_axis_split: Option<pane_grid::Axis>,
+    last_axis_split: Option<pane_grid::Axis>,  
+
+    show_layout_modal: bool,  
 }
 
 impl State {
@@ -360,18 +357,12 @@ impl State {
         
         Self { 
             show_layout_modal: false,
-
-            size_filter_timesales: 0.0,
-            size_filter_heatmap: 0.0,
-            sync_heatmap: false,
             kline_stream: true,
-
             candlestick_chart_a: None,
             time_and_sales: None,
             candlestick_chart_b: None,
             heatmap_chart: None,
             footprint_chart: None,
-
             listen_key: None,
             selected_ticker: None,
             selected_exchange: Some(Exchange::BinanceFutures),
@@ -385,13 +376,9 @@ impl State {
             pane_lock: false,
             tick_multiply: TickMultiplier(10),
             min_tick_size: None, 
-
             exchange_latency: None,
-
             feed_latency_cache: VecDeque::new(),
-
             pane_state_cache: HashMap::new(),
-
             last_axis_split: None,
         }
     }
@@ -939,40 +926,42 @@ impl State {
 
             Message::SliderChanged(pane_id, value) => {
                 if pane_id == PaneId::TimeAndSales {
-                    self.size_filter_timesales = value;
-                    if self.sync_heatmap {
-                        self.size_filter_heatmap = value;
+                    if let Some(time_and_sales) = &mut self.time_and_sales {
+                        time_and_sales.set_size_filter(value);
+
+                        if let Some(heatmap_chart) = &mut self.heatmap_chart {
+                            let sync_filter_heatmap = time_and_sales.get_filter_sync_heatmap();
+
+                            if sync_filter_heatmap {
+                                heatmap_chart.set_size_filter(value);
+                            }
+                        }
                     }
                 } else if pane_id == PaneId::HeatmapChart {
-                    self.size_filter_heatmap = value;
-                    self.sync_heatmap = false;
+                    if let Some(heatmap_chart) = &mut self.heatmap_chart {
+                        heatmap_chart.set_size_filter(value);
 
-                    if let Some(time_and_sales) = &mut self.time_and_sales {
-                        time_and_sales.set_filter_sync_heatmap(false);
+                        if let Some(time_and_sales) = &mut self.time_and_sales {
+                            time_and_sales.set_filter_sync_heatmap(false)
+                        }
                     }
                 }
-
-                if let Some(heatmap_chart) = &mut self.heatmap_chart {
-                    heatmap_chart.set_size_filter(self.size_filter_heatmap);
-                }
-                if let Some(time_and_sales) = &mut self.time_and_sales {
-                    time_and_sales.set_size_filter(self.size_filter_timesales);
-                };
 
                 Task::none()
             },
-            Message::SyncWithHeatmap(sync) => {
-                self.sync_heatmap = sync;
-                
+            Message::SyncWithHeatmap(sync) => {                
                 if let Some(time_and_sales) = &mut self.time_and_sales {
                     time_and_sales.set_filter_sync_heatmap(sync);
                 }
     
                 if sync {
-                    self.size_filter_heatmap = self.size_filter_timesales;
-                    if let Some(heatmap_chart) = &mut self.heatmap_chart {
-                        heatmap_chart.set_size_filter(self.size_filter_heatmap);
-                    }   
+                    if let Some(time_and_sales) = &mut self.time_and_sales {
+                        let size_filter_time_and_sales = time_and_sales.get_size_filter();
+
+                        if let Some(heatmap_chart) = &mut self.heatmap_chart {
+                            heatmap_chart.set_size_filter(size_filter_time_and_sales);
+                        }
+                    }
                 }
             
                 Task::none()
