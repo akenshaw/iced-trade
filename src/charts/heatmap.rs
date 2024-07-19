@@ -45,6 +45,9 @@ impl HeatmapChart {
     pub fn set_size_filter(&mut self, size_filter: f32) {
         self.size_filter = size_filter;
     }
+    pub fn get_size_filter(&self) -> f32 {
+        self.size_filter
+    }
 
     pub fn get_raw_trades(&mut self) -> Vec<Trade> {
         let mut trades_source = vec![];

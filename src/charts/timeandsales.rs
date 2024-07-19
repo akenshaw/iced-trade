@@ -14,16 +14,29 @@ struct ConvertedTrade {
 pub struct TimeAndSales {
     recent_trades: Vec<ConvertedTrade>,
     size_filter: f32,
+    filter_sync_heatmap: bool,
 }
 impl TimeAndSales {
     pub fn new() -> Self {
         Self {
             recent_trades: Vec::new(),
             size_filter: 0.0,
+            filter_sync_heatmap: false,
         }
     }
+    
     pub fn set_size_filter(&mut self, value: f32) {
         self.size_filter = value;
+    }
+    pub fn get_size_filter(&self) -> f32 {
+        self.size_filter
+    }
+
+    pub fn set_filter_sync_heatmap(&mut self, value: bool) {
+        self.filter_sync_heatmap = value;
+    }
+    pub fn get_filter_sync_heatmap(&self) -> bool {
+        self.filter_sync_heatmap
     }
 
     pub fn update(&mut self, trades_buffer: &Vec<Trade>) {
