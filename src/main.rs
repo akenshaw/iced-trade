@@ -3,14 +3,13 @@
 mod data_providers;
 use data_providers::{binance, bybit};
 mod charts;
-use charts::footprint::{self, FootprintChart};
-use charts::heatmap::{self, HeatmapChart};
-use charts::candlestick::{self, CandlestickChart};
-use charts::timeandsales::{self, TimeAndSales};
+use charts::footprint::FootprintChart;
+use charts::heatmap::HeatmapChart;
+use charts::candlestick::CandlestickChart;
+use charts::timeandsales::TimeAndSales;
 
 use std::collections::{VecDeque, HashMap};
 use std::vec;
-use chrono::{NaiveDateTime, DateTime, Utc};
 use iced::{
     alignment, font, widget::{
         button, center, checkbox, mouse_area, opaque, pick_list, stack, text_input, tooltip, Column, Container, Row, Slider, Space, Text
@@ -215,8 +214,7 @@ pub enum MarketEvents {
 pub enum Message {
     Debug(String),
 
-    CandlestickA(charts::Message),
-    CandlestickB(charts::Message),
+    Candlestick(charts::Message, PaneId),
     Heatmap(charts::Message),
     Footprint(charts::Message),
 
@@ -243,7 +241,7 @@ pub enum Message {
 
     // Modal
     OpenModal(pane_grid::Pane),
-    CloseModal,
+    CloseModal(PaneId),
 
     // Slider
     SliderChanged(PaneId, f32),
@@ -400,15 +398,15 @@ impl State {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::CandlestickA(message) => {
-                if let Some(chart) = &mut self.candlestick_chart_a {
-                    chart.update(&message);
-                }
-                Task::none()
-            },
-            Message::CandlestickB(message) => {
-                if let Some(chart) = &mut self.candlestick_chart_b {
-                    chart.update(&message);
+            Message::Candlestick(message, pane_id) => {
+                if pane_id == PaneId::CandlestickChartA {
+                    if let Some(chart) = &mut self.candlestick_chart_a {
+                        chart.update(&message);
+                    }
+                } else if pane_id == PaneId::CandlestickChartB {
+                    if let Some(chart) = &mut self.candlestick_chart_b {
+                        chart.update(&message);
+                    }
                 }
                 Task::none()
             },
@@ -930,9 +928,11 @@ impl State {
                 };
                 Task::none()
             },
-            Message::CloseModal => {
+            Message::CloseModal(pane_id) => {
                 for pane in self.panes.panes.values_mut() {
-                    pane.show_modal = false;
+                    if pane.id == pane_id {
+                        pane.show_modal = false;
+                    }
                 }
                 Task::none()
             },
@@ -946,6 +946,10 @@ impl State {
                 } else if pane_id == PaneId::HeatmapChart {
                     self.size_filter_heatmap = value;
                     self.sync_heatmap = false;
+
+                    if let Some(time_and_sales) = &mut self.time_and_sales {
+                        time_and_sales.set_filter_sync_heatmap(false);
+                    }
                 }
 
                 if let Some(heatmap_chart) = &mut self.heatmap_chart {
@@ -959,12 +963,16 @@ impl State {
             },
             Message::SyncWithHeatmap(sync) => {
                 self.sync_heatmap = sync;
-            
+                
+                if let Some(time_and_sales) = &mut self.time_and_sales {
+                    time_and_sales.set_filter_sync_heatmap(sync);
+                }
+    
                 if sync {
                     self.size_filter_heatmap = self.size_filter_timesales;
                     if let Some(heatmap_chart) = &mut self.heatmap_chart {
                         heatmap_chart.set_size_filter(self.size_filter_heatmap);
-                    }
+                    }   
                 }
             
                 Task::none()
@@ -997,20 +1005,32 @@ impl State {
         let pane_grid = PaneGrid::new(&self.panes, |id, pane, is_maximized| {
             let is_focused = focus == Some(id);
     
-            let content: pane_grid::Content<'_, Message, _, Renderer> = pane_grid::Content::new(responsive(move |_| {
-                view_content(
-                    pane.id, 
-                    pane.show_modal,
-                    &self.size_filter_heatmap,
-                    &self.size_filter_timesales,
-                    self.sync_heatmap,
-                    &self.footprint_chart,
-                    &self.heatmap_chart,
-                    &self.time_and_sales,
-                    &self.candlestick_chart_a, 
-                    &self.candlestick_chart_b,
-                )
-            }));
+            let content: pane_grid::Content<'_, Message, _, Renderer> = 
+                pane_grid::Content::new(responsive(move |_| {
+                    match pane.id {
+                        PaneId::HeatmapChart => view_content(
+                            pane,
+                            self.heatmap_chart.as_ref()
+                        ),
+                        PaneId::FootprintChart => view_content(
+                            pane,
+                            self.footprint_chart.as_ref()
+                        ),
+                        PaneId::CandlestickChartA => view_content(
+                            pane,
+                            self.candlestick_chart_a.as_ref()
+                        ),
+                        PaneId::CandlestickChartB => view_content(
+                            pane,
+                            self.candlestick_chart_b.as_ref()
+                        ),
+                        PaneId::TimeAndSales => view_content(
+                            pane,
+                            self.time_and_sales.as_ref()
+                        ),
+                        _ => Column::new().into(),
+                    }
+                }));
     
             if self.pane_lock {
                 return content.style(style::pane_active);
@@ -1367,185 +1387,145 @@ where
     .into()
 }
 
-fn view_content<'a, 'b: 'a>(
-    pane_id: PaneId,
-    show_modal: bool,
-    size_filter_heatmap: &'a f32,
-    size_filter_timesales: &'a f32,
-    sync_heatmap: bool,
-    footprint_chart: &'a Option<FootprintChart>,
-    heatmap_chart: &'a Option<HeatmapChart>,
-    time_and_sales: &'a Option<TimeAndSales>,
-    candlestick_chart_a: &'a Option<CandlestickChart>,
-    candlestick_chart_b: &'a Option<CandlestickChart>,
+
+trait ChartView {
+    fn view(&self, id: &PaneSpec) -> Element<Message>;
+}
+
+impl ChartView for HeatmapChart {
+    fn view(&self, pane: &PaneSpec) -> Element<Message> {
+        let underlay;
+
+        underlay = self.view().map(Message::Heatmap);
+
+        if pane.show_modal {
+            let size_filter = &self.get_size_filter();
+
+            let signup: Container<Message, Theme, _> = container(
+                Column::new()
+                    .spacing(10)
+                    .align_items(Alignment::Center)
+                    .push(
+                        Text::new("Heatmap > Settings")
+                            .size(16)
+                    )
+                    .push(
+                        Column::new()
+                            .align_items(Alignment::Center)
+                            .push(Text::new("Size Filtering"))
+                            .push(
+                                Slider::new(0.0..=50000.0, *size_filter, move |value| Message::SliderChanged(PaneId::HeatmapChart, value))
+                                    .step(500.0)
+                            )
+                            .push(
+                                Text::new(format!("${size_filter}")).size(16)
+                            )
+                    )
+                    .push( 
+                        Row::new()
+                            .spacing(10)
+                            .push(
+                                button("Close")
+                                .on_press(Message::CloseModal(pane.id))
+                            )
+                    )
+            )
+            .width(Length::Shrink)
+            .padding(20)
+            .max_width(500)
+            .style(style::title_bar_active);
+
+            return modal(underlay, signup, Message::CloseModal(pane.id));
+        } else {
+            underlay
+        }
+    }
+}
+impl ChartView for FootprintChart {
+    fn view(&self, _paneid: &PaneSpec) -> Element<Message> {
+        self.view().map(Message::Footprint)
+    }
+}
+impl ChartView for TimeAndSales {
+    fn view(&self, pane: &PaneSpec) -> Element<Message> {
+        let underlay;
+
+        underlay = self.view();
+
+        if pane.show_modal {
+            let size_filter = &self.get_size_filter();
+
+            let filter_sync_heatmap = &self.get_filter_sync_heatmap();
+
+            let signup = container(
+                Column::new()
+                    .spacing(10)
+                    .align_items(Alignment::Center)
+                    .push(
+                        Text::new("Time&Sales > Settings")
+                            .size(16)
+                    )
+                    .push(
+                        Column::new()
+                            .align_items(Alignment::Center)
+                            .push(Text::new("Size Filtering"))
+                            .push(
+                                Slider::new(0.0..=50000.0, *size_filter, move |value| Message::SliderChanged(PaneId::TimeAndSales, value))
+                                    .step(500.0)
+                            )
+                            .push(
+                                Text::new(format!("${size_filter}")).size(16)
+                            )
+                            .push(
+                                checkbox("Sync Heatmap with", *filter_sync_heatmap)
+                                    .on_toggle(Message::SyncWithHeatmap)
+                            )
+                    )
+                    .push( 
+                        Row::new()
+                            .spacing(10)
+                            .push(
+                                button("Close")
+                                .on_press(Message::CloseModal(pane.id))
+                            )
+                    )
+            )
+            .width(Length::Shrink)
+            .padding(20)
+            .max_width(500)
+            .style(style::title_bar_active);
+
+            return modal(underlay, signup, Message::CloseModal(pane.id));
+        } else {
+            underlay
+        }
+    }
+}
+impl ChartView for CandlestickChart {
+    fn view(&self, pane: &PaneSpec) -> Element<Message> {
+        let pane_id = pane.id;
+
+        self.view().map(move |message| Message::Candlestick(message, pane_id))
+    }
+}
+
+fn view_content<'a, C: ChartView>(
+    pane: &'a PaneSpec,
+    chart: Option<&'a C>
 ) -> Element<'a, Message> {
-    let content: Element<Message, Theme, Renderer> = match pane_id {
-        PaneId::HeatmapChart => {
-            let underlay; 
-            if let Some(heatmap_chart) = heatmap_chart {
-                underlay =
-                    heatmap_chart
-                        .view()
-                        .map(Message::Heatmap);
-            } else {
-                underlay = Text::new("No data")
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .into();
-            }
-
-            if show_modal {
-                let signup: Container<Message, Theme, _> = container(
-                    Column::new()
-                        .spacing(10)
-                        .align_items(Alignment::Center)
-                        .push(
-                            Text::new("Heatmap > Settings")
-                                .size(16)
-                        )
-                        .push(
-                            Column::new()
-                                .align_items(Alignment::Center)
-                                .push(Text::new("Size Filtering"))
-                                .push(
-                                    Slider::new(0.0..=50000.0, *size_filter_heatmap, move |value| Message::SliderChanged(PaneId::HeatmapChart, value))
-                                        .step(500.0)
-                                )
-                                .push(
-                                    Text::new(format!("${size_filter_heatmap}")).size(16)
-                                )
-                        )
-                        .push( 
-                            Row::new()
-                                .spacing(10)
-                                .push(
-                                    button("Close")
-                                    .on_press(Message::CloseModal)
-                                )
-                        )
-                )
-                .width(Length::Shrink)
-                .padding(20)
-                .max_width(500)
-                .style(style::title_bar_active);
-
-                return modal(underlay, signup, Message::CloseModal);
-            } else {
-                underlay
-            }
-        }, 
-
-        PaneId::FootprintChart => { 
-            let underlay; 
-            if let Some(footprint_chart) = footprint_chart {
-                underlay =
-                    footprint_chart
-                        .view()
-                        .map(Message::Footprint);
-            } else {
-                underlay = Text::new("No data")
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .into();
-            }
-            underlay
-        },
-        
-        PaneId::CandlestickChartA => { 
-            let underlay; 
-            if let Some(chart) = candlestick_chart_a {
-                underlay =
-                    chart
-                        .view()
-                        .map(Message::CandlestickA);
-            } else {
-                underlay = Text::new("No data")
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .into();
-            }
-            underlay
-        },
-
-        PaneId::CandlestickChartB => { 
-            let underlay; 
-            if let Some(chart) = candlestick_chart_b {
-                underlay =
-                    chart
-                        .view()
-                        .map(Message::CandlestickB);
-            } else {
-                underlay = Text::new("No data")
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .into();
-            }
-            underlay
-        },
-        
-        PaneId::TimeAndSales => { 
-            let underlay = time_and_sales.as_ref().map_or_else(
-                || Text::new("No data")
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .into(),
-                TimeAndSales::view
-            );
-
-            if show_modal {
-                let signup = container(
-                    Column::new()
-                        .spacing(10)
-                        .align_items(Alignment::Center)
-                        .push(
-                            Text::new("Time&Sales > Settings")
-                                .size(16)
-                        )
-                        .push(
-                            Column::new()
-                                .align_items(Alignment::Center)
-                                .push(Text::new("Size Filtering"))
-                                .push(
-                                    Slider::new(0.0..=50000.0, *size_filter_timesales, move |value| Message::SliderChanged(PaneId::TimeAndSales, value))
-                                        .step(500.0)
-                                )
-                                .push(
-                                    Text::new(format!("${size_filter_timesales}")).size(16)
-                                )
-                                .push(
-                                    checkbox("Sync Heatmap with", sync_heatmap)
-                                        .on_toggle(Message::SyncWithHeatmap)
-                                )
-                        )
-                        .push( 
-                            Row::new()
-                                .spacing(10)
-                                .push(
-                                    button("Close")
-                                    .on_press(Message::CloseModal)
-                                )
-                        )
-                )
-                .width(Length::Shrink)
-                .padding(20)
-                .max_width(500)
-                .style(style::title_bar_active);
-
-                return modal(underlay, signup, Message::CloseModal);
-            } else {
-                underlay
-            }
-        },  
-        
-        PaneId::TradePanel => {
-            Text::new("No account info found").into()
-        },
+    let chart_view: Element<Message> = match chart {
+        Some(chart) => chart.view(pane),
+        None => Text::new("No data")
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into(),
     };
 
-    container(content)
+    let container = Container::new(chart_view)
         .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+        .height(Length::Fill);
+
+    container.into()
 }
 
 fn view_controls<'a>(
