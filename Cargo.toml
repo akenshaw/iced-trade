@@ -39,6 +39,7 @@ hyper = { version = "1", features = ["http1", "server", "client"] }
 hyper-util = { version = "0.1.0", features = ["tokio"] }
 tokio-rustls = "0.24.0"
 webpki-roots = "0.23.0"
+uuid = { version = "1.10.0", features = ["v4"] }
 [dependencies.async-tungstenite]
 version = "0.25"
 features = ["tokio-rustls-webpki-roots"]
