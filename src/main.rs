@@ -7,6 +7,7 @@ use charts::footprint::FootprintChart;
 use charts::heatmap::HeatmapChart;
 use charts::candlestick::CandlestickChart;
 use charts::timeandsales::TimeAndSales;
+use hmac::digest::typenum::Le;
 
 use std::collections::{VecDeque, HashMap};
 use std::vec;
@@ -23,7 +24,6 @@ use iced::widget::pane_grid::{self, PaneGrid, Configuration};
 use iced::widget::{
     container, row, scrollable, text, responsive
 };
-use futures::TryFutureExt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Exchange {
@@ -222,7 +222,7 @@ pub enum Message {
     UserKeyError,
     TickerSelected(Ticker, Uuid),
     TimeframeSelected(Timeframe, pane_grid::Pane),
-    ExchangeSelected(Exchange, pane_grid::Pane),
+    ExchangeSelected(Exchange, Uuid),
     MarketWsEvent(MarketEvents),
     WsToggle,
     FetchEvent(Result<Vec<data_providers::Kline>, std::string::String>, PaneId, Timeframe),
@@ -255,6 +255,8 @@ pub enum Message {
     SetMinTickSize(f32, Uuid),
     
     ErrorOccurred(String),
+
+    PaneContentSelected(String, Uuid),
 }
 
 struct State {
@@ -381,6 +383,17 @@ impl Dashboard {
         Err("No pane found")
     }
 
+    fn set_pane_content(&mut self, pane_id: Uuid, content: PaneContent) -> Result<(), &str> {
+        for (_, pane_state) in self.panes.iter_mut() {
+            if pane_state.id == pane_id {
+                pane_state.content = content;
+
+                return Ok(());
+            }
+        }
+        Err("No pane found")
+    }
+
     fn footprint_change_ticksize(&mut self, pane_id: Uuid, new_tick_size: f32) -> Result<(), &str> {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.id == pane_id {
@@ -401,6 +414,9 @@ impl Dashboard {
 
     fn get_mutable_pane_settings(&mut self, pane: pane_grid::Pane) -> Result<&mut PaneSettings, &str> {
         self.panes.get_mut(pane).map(|pane_state| &mut pane_state.settings).ok_or("No pane found")
+    }
+    fn get_mutable_pane_stream(&mut self, pane: pane_grid::Pane) -> Result<&mut (Option<Ticker>, Option<Timeframe>, Option<f32>), &str> {
+        self.panes.get_mut(pane).map(|pane_state| &mut pane_state.stream).ok_or("No pane found")
     }
 
     fn get_panes_iter(&self) -> impl Iterator<Item = (&pane_grid::Pane, &PaneState)> {
@@ -631,7 +647,7 @@ impl State {
                 }
             },
             Message::ExchangeSelected(exchange, pane) => {
-                match self.dashboard.get_mutable_pane_settings(pane) {
+                match self.dashboard.get_pane_settings_mut(pane) {
                     Ok(pane_settings) => {
                         pane_settings.selected_exchange = Some(exchange);
 
@@ -790,6 +806,42 @@ impl State {
                 eprintln!("{err}");
                 Task::none()
             },
+            Message::PaneContentSelected(content, pane) => {
+                match content.as_str() {
+                    "Heatmap chart" => {
+                        let heatmap_chart = HeatmapChart::new();
+                        let pane_content = PaneContent::Heatmap(heatmap_chart);
+
+                        match self.dashboard.get_pane_settings_mut(pane) {
+                            Ok(pane_settings) => {
+                                pane_settings.selected_ticker = Some(Ticker::BTCUSDT);
+                                pane_settings.selected_timeframe = Some(Timeframe::M1);
+                            },
+                            Err(err) => {
+                                dbg!("No pane found");
+                            }
+                        }
+
+                        match self.dashboard.get_pane_stream_mut(pane) {
+                            Ok(pane_stream) => {
+                                *pane_stream = (Some(Ticker::BTCUSDT), Some(Timeframe::M1), None);
+                            },
+                            Err(err) => {
+                                dbg!("No pane found");
+                            }
+                        }
+
+                        match self.dashboard.set_pane_content(pane, pane_content) {
+                            Ok(_) => dbg!("Pane content set"),
+                            Err(err) => dbg!("No pane found"),
+                        };
+                    },
+                    _ => {
+                        dbg!(content);
+                    }
+                }
+                Task::none()
+            }
         }
     }
 
@@ -805,25 +857,15 @@ impl State {
             let content: pane_grid::Content<'_, Message, _, Renderer> = 
                 pane_grid::Content::new(responsive(move |_| {
                     match chart_type {
-                        PaneContent::Heatmap(chart) => view_content(
-                            pane,
-                            chart
-                        ),
-                        PaneContent::Footprint(chart) => view_content(
-                            pane,
-                            chart
-                        ),
-                        PaneContent::Candlestick(chart) => view_content(
-                            pane,
-                            chart
-                        ),
-                        PaneContent::TimeAndSales(chart) => view_content(
-                            pane,
-                            chart
-                        ),
-                        PaneContent::Starter => Container::new(
-                            Text::new("No chart found").size(20)
-                        ).into(),
+                        PaneContent::Heatmap(chart) => view_chart(pane, chart),
+                        
+                        PaneContent::Footprint(chart) => view_chart(pane, chart),
+                        
+                        PaneContent::Candlestick(chart) => view_chart(pane, chart),
+
+                        PaneContent::TimeAndSales(chart) => view_chart(pane, chart),
+
+                        PaneContent::Starter => view_starter(pane),
                     }
                 }));
     
@@ -864,7 +906,7 @@ impl State {
         })
         .width(Length::Fill)
         .height(Length::Fill)
-        .spacing(10)
+        .spacing(6)
         .on_click(Message::Clicked)
         .on_drag(Message::Dragged)
         .on_resize(10, Message::Resized);
@@ -967,7 +1009,6 @@ impl State {
         let content = Column::new()
             .padding(10)
             .spacing(10)
-            .align_items(Alignment::Start)
             .width(Length::Fill)
             .height(Length::Fill)
             .push(
@@ -1019,7 +1060,8 @@ impl State {
             .style(style::title_bar_active);
             modal(content, signup, Message::HideLayoutModal)
         } else {
-            content.into()
+            content 
+                .into()
         }  
     }
 
@@ -1276,16 +1318,73 @@ impl ChartView for CandlestickChart {
     }
 }
 
-fn view_content<'a, C: ChartView>(
+fn view_chart<'a, C: ChartView>(
     pane: &'a PaneState,
     chart: &'a C,
 ) -> Element<'a, Message> {
-    let chart_view: Element<Message> = chart.view(&pane);
+    let chart_view: Element<Message> = chart.view(pane);
 
     let container = Container::new(chart_view)
         .width(Length::Fill)
         .height(Length::Fill);
 
+    container.into()
+}
+
+fn view_starter<'a>(
+    pane: &'a PaneState,
+) -> Element<'a, Message> {
+    let content_names = ["Heatmap chart", "Footprint chart", "Candlestick chart", "Time&Sales"];
+    
+    let content_selector = content_names.iter().fold(
+        Column::new()
+            .spacing(6)
+            .align_items(Alignment::Center), |column, &label| {
+                let mut btn = button(label).width(Length::Fill);
+                if pane.settings.selected_ticker.is_some() && pane.settings.selected_exchange.is_some() {
+                    btn = btn.on_press(Message::PaneContentSelected(label.to_string(), pane.id));
+                }
+                column.push(btn)
+            }
+    );
+
+    let symbol_selector = pick_list(
+        &Ticker::ALL[..],
+        pane.settings.selected_ticker,
+        move |ticker| Message::TickerSelected(ticker, pane.id),
+    ).placeholder("ticker...").text_size(13).width(Length::Fill);
+
+    let exchange_selector = pick_list(
+        &Exchange::ALL[..],
+        pane.settings.selected_exchange,
+        move |exchange| Message::ExchangeSelected(exchange, pane.id),
+    ).placeholder("exchange...").text_size(13).width(Length::Fill);
+
+    let picklists = Row::new()
+        .spacing(6)
+        .align_items(Alignment::Center)
+        .push(exchange_selector)
+        .push(symbol_selector);
+
+    let column = Column::new()
+        .padding(10)
+        .spacing(10)
+        .align_items(Alignment::Center)
+        .push(picklists)
+        .push(content_selector);
+        
+    let container = Container::new(
+        Column::new()
+            .spacing(10)
+            .padding(20)
+            .align_items(Alignment::Center)
+            .max_width(300)
+            .push(
+                Text::new("Initialize the pane").size(16)
+            )
+            .push(scrollable(column))
+        ).align_x(alignment::Horizontal::Center);
+    
     container.into()
 }
 
@@ -1307,22 +1406,8 @@ fn view_controls<'a>(
 
     match pane_type {
         PaneContent::Heatmap(_) => {
-            let size_filter = button(
-                container(
-                    text(char::from(Icon::Cog).to_string()).font(ICON).size(14)
-                ).width(25).center_x(iced::Pixels(25.0))
-            ).on_press(Message::OpenModal(pane));
-
-            row = row.push(size_filter);
         },
         PaneContent::TimeAndSales(_) => {
-            let size_filter = button(
-                container(
-                    text(char::from(Icon::Cog).to_string()).font(ICON).size(14)
-                ).width(25).center_x(iced::Pixels(25.0)
-            )).on_press(Message::OpenModal(pane));
-
-            row = row.push(size_filter);
         },
         PaneContent::Footprint(_) => {
             let timeframe_picker = pick_list(
@@ -1357,24 +1442,6 @@ fn view_controls<'a>(
             row = row.push(tooltip);
         },
         PaneContent::Starter => {
-            let text = Text::new("Select a chart type").size(14);
-
-            let symbol_pick_list = pick_list(
-                &Ticker::ALL[..],
-                settings.selected_ticker,
-                move |ticker| Message::TickerSelected(ticker, pane_id),
-            ).placeholder("Choose a ticker...");
-            
-            let exchange_selector = pick_list(
-                &Exchange::ALL[..],
-                settings.selected_exchange,
-                move |exchange| Message::ExchangeSelected(exchange, pane),
-            ).placeholder("Choose an exchange...");
-    
-            row = row
-                .push(text)
-                .push(exchange_selector)
-                .push(symbol_pick_list);
         },
     }
 
@@ -1397,6 +1464,7 @@ fn view_controls<'a>(
 
     row.into()
 }
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TickMultiplier(u16);
 
