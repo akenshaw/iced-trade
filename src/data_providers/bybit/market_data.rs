@@ -283,10 +283,8 @@ pub struct Kline {
 }
 
 pub fn connect_market_stream(stream: PaneStream) -> Subscription<Event> {
-    struct Connect;
-
     subscription::channel(
-        std::any::TypeId::of::<Connect>(),
+        stream,
         100,
         move |mut output| async move {
             let mut state: State = State::Disconnected;  
@@ -337,7 +335,7 @@ pub fn connect_market_stream(stream: PaneStream) -> Subscription<Event> {
 
                             let _ = output.send(Event::Disconnected).await;
                         }
-                    }
+                    },
                     State::Connected(websocket) => {
                         let feed_latency: FeedLatency;
 

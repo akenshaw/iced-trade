@@ -297,10 +297,8 @@ where
 }
 
 pub fn connect_market_stream(stream: PaneStream) -> Subscription<Event> {
-    struct Connect;
-
     subscription::channel(
-        std::any::TypeId::of::<Connect>(),
+        stream,
         100,
         move |mut output| async move {
             let mut state = State::Disconnected;     
