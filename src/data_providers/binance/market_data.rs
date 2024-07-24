@@ -5,7 +5,7 @@ use serde::{de, Deserializer};
 use futures::sink::SinkExt;
 
 use serde_json::Value;
-use crate::{Ticker, Timeframe};
+use crate::{PaneStream, Ticker, Timeframe};
 
 use bytes::Bytes;
 
@@ -39,8 +39,8 @@ enum State {
 pub enum Event {
     Connected(Connection),
     Disconnected,
-    DepthReceived(FeedLatency, i64, Depth, Vec<Trade>),
-    KlineReceived(Kline, Timeframe),
+    DepthReceived(Ticker, FeedLatency, i64, Depth, Vec<Trade>),
+    KlineReceived(Ticker, Kline, Timeframe),
 }
 
 #[derive(Debug, Clone)]
@@ -127,6 +127,8 @@ struct SonicKline {
 
 #[derive(Deserialize, Debug, Clone)]
 struct SonicKlineWrap {
+    #[serde(rename = "s")]
+    symbol: String,
     #[serde(rename = "k")]
     kline: SonicKline,
 }
@@ -135,7 +137,7 @@ struct SonicKlineWrap {
 enum StreamData {
 	Trade(SonicTrade),
 	Depth(SonicDepth),
-    Kline(SonicKline),
+    Kline(Ticker, SonicKline),
 }
 
 #[derive(Debug)]
@@ -207,7 +209,15 @@ fn feed_de(bytes: &Bytes, symbol: &str) -> Result<StreamData> {
                     let kline_wrap: SonicKlineWrap = sonic_rs::from_str(&v.as_raw_faststr())
                         .context("Error parsing kline")?;
 
-                    return Ok(StreamData::Kline(kline_wrap.kline));
+                    let ticker = match symbol {
+                        "BTCUSDT" => Ticker::BTCUSDT,
+                        "ETHUSDT" => Ticker::ETHUSDT,
+                        "SOLUSDT" => Ticker::SOLUSDT,
+                        "LTCUSDT" => Ticker::LTCUSDT,
+                        _ => Ticker::BTCUSDT,
+                    };
+
+                    return Ok(StreamData::Kline(ticker, kline_wrap.kline));
                 },
 				_ => {
 					eprintln!("Unknown stream type");
@@ -286,7 +296,7 @@ where
   }
 }
 
-pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
+pub fn connect_market_stream(stream: PaneStream) -> Subscription<Event> {
     struct Connect;
 
     subscription::channel(
@@ -295,6 +305,8 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
         move |mut output| async move {
             let mut state = State::Disconnected;     
             let mut trades_buffer: Vec<Trade> = Vec::new(); 
+
+            let selected_ticker = stream.ticker;
 
             let symbol_str = match selected_ticker {
                 Ticker::BTCUSDT => "btcusdt",
@@ -464,6 +476,7 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
     
                                                     let _ = output.send(
                                                         Event::DepthReceived(
+                                                            selected_ticker,
                                                             feed_latency,
                                                             time, 
                                                             current_depth,
@@ -551,7 +564,7 @@ pub fn connect_kline_stream(vec: Vec<(Ticker, Timeframe)>) -> Subscription<Event
                                 OpCode::Text => {                    
                                     let json_bytes: Bytes = Bytes::from(msg.payload.to_vec());
                     
-                                    if let Ok(StreamData::Kline(de_kline)) = feed_de(&json_bytes, symbol_str) {
+                                    if let Ok(StreamData::Kline(ticker, de_kline)) = feed_de(&json_bytes, symbol_str) {
                                         let kline = Kline {
                                             time: de_kline.time,
                                             open: str_f32_parse(&de_kline.open),
@@ -563,7 +576,7 @@ pub fn connect_kline_stream(vec: Vec<(Ticker, Timeframe)>) -> Subscription<Event
                                         };
 
                                         if let Some(timeframe) = vec.iter().find(|(_, tf)| tf.to_string() == de_kline.interval) {
-                                            let _ = output.send(Event::KlineReceived(kline, timeframe.1)).await;
+                                            let _ = output.send(Event::KlineReceived(ticker, kline, timeframe.1)).await;
                                         }
                                     } else {
                                         eprintln!("\nUnknown data: {:?}", &json_bytes);
