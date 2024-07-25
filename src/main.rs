@@ -729,6 +729,9 @@ impl State {
                                                     PaneContent::Footprint(ref mut chart) => {
                                                         chart.insert_datapoint(trades_buffer.clone(), depth_update);
                                                     },
+                                                    PaneContent::TimeAndSales(ref mut chart) => {
+                                                        chart.update(&trades_buffer)
+                                                    },
                                                     _ => {}
                                                 }
                                             }
@@ -761,6 +764,9 @@ impl State {
                                                     },
                                                     PaneContent::Footprint(ref mut chart) => {
                                                         chart.insert_datapoint(trades_buffer.clone(), depth_update);
+                                                    },
+                                                    PaneContent::TimeAndSales(ref mut chart) => {
+                                                        chart.update(&trades_buffer)
                                                     },
                                                     _ => {}
                                                 }
@@ -955,9 +961,24 @@ impl State {
                             Err(err) => dbg!("No pane found"),
                         };
                     },
-                    _ => {
-                        dbg!(content);
+                    "Time&Sales" => {
+                        let pane_content = PaneContent::TimeAndSales(TimeAndSales::new());
+
+                        match self.dashboard.get_pane_stream_mut(pane_id) {
+                            Ok(vec_streams) => {
+                                vec_streams.push(StreamType::DepthAndTrades(pane_stream));
+                            },
+                            Err(err) => {
+                                dbg!("No pane found");
+                            }
+                        }
+
+                        match self.dashboard.set_pane_content(pane_id, pane_content) {
+                            Ok(_) => dbg!("Pane content set"),
+                            Err(err) => dbg!("No pane found"),
+                        };
                     }
+                    _ => {}
                 }
 
                 let streams_iter: Vec<&Vec<StreamType>> = self.dashboard.get_streams_vec();
@@ -1018,17 +1039,20 @@ impl State {
             } else {
                 style::pane_active
             });
+
+            let stream_name = pane.stream.iter().map(|stream| {
+                match stream {
+                    StreamType::Kline(pane_stream) => {
+                        format!("{} {} {}", pane_stream.exchange, pane_stream.ticker, pane_stream.timeframe.unwrap_or_else(|| { dbg!("No timeframe found"); Timeframe::M1 }))
+                    },
+                    StreamType::DepthAndTrades(pane_stream) => {
+                        format!("{} {}", pane_stream.exchange, pane_stream.ticker)
+                    }
+                }
+            }).collect::<Vec<String>>().join(", ");
         
             if is_focused {
-                let title = match chart_type {
-                    PaneContent::Heatmap(_) => "Heatmap",
-                    PaneContent::Footprint(_) => "Footprint",
-                    PaneContent::Candlestick(_) => "Candlestick",
-                    PaneContent::TimeAndSales(_) => "Time&Sales",
-                    PaneContent::Starter => "New Pane",
-                };
-
-                let title_bar = pane_grid::TitleBar::new(title)
+                let title_bar = pane_grid::TitleBar::new(Text::new(stream_name))
                     .always_show_controls()
                     .controls(view_controls(
                         id,
@@ -1225,7 +1249,7 @@ impl State {
                                 StreamType::DepthAndTrades(pane_stream) => {
                                     binance_streams.push(
                                         binance::market_data::connect_market_stream(*pane_stream)
-                                            .map(|arg0: binance::market_data::Event| Message::MarketWsEvent(MarketEvents::Binance(arg0)))
+                                            .map(|event: binance::market_data::Event| Message::MarketWsEvent(MarketEvents::Binance(event)))
                                     );
                                 },
                             }
@@ -1245,7 +1269,7 @@ impl State {
                                 StreamType::DepthAndTrades(pane_stream) => {
                                     bybit_streams.push(
                                         bybit::market_data::connect_market_stream(*pane_stream)
-                                            .map(|arg0: bybit::market_data::Event| Message::MarketWsEvent(MarketEvents::Bybit(arg0)))
+                                            .map(|event: bybit::market_data::Event| Message::MarketWsEvent(MarketEvents::Bybit(event)))
                                     );
                                 },
                             }
