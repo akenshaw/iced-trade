@@ -39,7 +39,7 @@ impl TimeAndSales {
         self.filter_sync_heatmap
     }
 
-    pub fn update(&mut self, trades_buffer: &Vec<Trade>) {
+    pub fn update(&mut self, trades_buffer: &[Trade]) {
         for trade in trades_buffer {
             let trade_time = NaiveDateTime::from_timestamp(trade.time / 1000, (trade.time % 1000) as u32 * 1_000_000);
             let converted_trade = ConvertedTrade {
