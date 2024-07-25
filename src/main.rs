@@ -9,6 +9,7 @@ use charts::candlestick::CandlestickChart;
 use charts::timeandsales::TimeAndSales;
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::rc::Rc;
 use std::vec;
 use iced::{
     alignment, font, widget::{
@@ -706,7 +707,6 @@ impl State {
                 Task::none()
             },
 
-            // todo: what if we handle panes in the MarketWsEvent directly? 
             Message::MarketWsEvent(event) => {
                 match event {
                     MarketEvents::Binance(event) => match event {
@@ -717,6 +717,10 @@ impl State {
                             self.binance_ws_state = BinanceWsState::Disconnected;
                         }
                         binance::market_data::Event::DepthReceived(ticker, feed_latency, depth_update, depth, trades_buffer) => {
+                            let depth = Rc::new(depth);
+
+                            let trades_buffer = trades_buffer.into_boxed_slice();
+                            
                             for (_, pane_state) in self.dashboard.panes.iter_mut() {
                                 pane_state.stream.iter().for_each(|stream| {
                                     match stream {
@@ -724,10 +728,10 @@ impl State {
                                             if pane_stream.exchange == Exchange::BinanceFutures && pane_stream.ticker == ticker {
                                                 match pane_state.content {
                                                     PaneContent::Heatmap(ref mut chart) => {
-                                                        chart.insert_datapoint(trades_buffer.clone(), depth_update, depth.clone());
+                                                        chart.insert_datapoint(&trades_buffer, depth_update, Rc::clone(&depth));
                                                     },
                                                     PaneContent::Footprint(ref mut chart) => {
-                                                        chart.insert_datapoint(trades_buffer.clone(), depth_update);
+                                                        chart.insert_datapoint(&trades_buffer, depth_update);
                                                     },
                                                     PaneContent::TimeAndSales(ref mut chart) => {
                                                         chart.update(&trades_buffer)
@@ -753,6 +757,10 @@ impl State {
                             self.bybit_ws_state = BybitWsState::Disconnected;
                         }
                         bybit::market_data::Event::DepthReceived(ticker, feed_latency, depth_update, depth, trades_buffer) => {
+                            let depth = Rc::new(depth);
+
+                            let trades_buffer = trades_buffer.into_boxed_slice();
+
                             for (_, pane_state) in self.dashboard.panes.iter_mut() {
                                 pane_state.stream.iter().for_each(|stream| {
                                     match stream {
@@ -760,10 +768,10 @@ impl State {
                                             if pane_stream.exchange == Exchange::BybitLinear && pane_stream.ticker == ticker {
                                                 match pane_state.content {
                                                     PaneContent::Heatmap(ref mut chart) => {
-                                                        chart.insert_datapoint(trades_buffer.clone(), depth_update, depth.clone());
+                                                        chart.insert_datapoint(&trades_buffer, depth_update, Rc::clone(&depth));
                                                     },
                                                     PaneContent::Footprint(ref mut chart) => {
-                                                        chart.insert_datapoint(trades_buffer.clone(), depth_update);
+                                                        chart.insert_datapoint(&trades_buffer, depth_update);
                                                     },
                                                     PaneContent::TimeAndSales(ref mut chart) => {
                                                         chart.update(&trades_buffer)
