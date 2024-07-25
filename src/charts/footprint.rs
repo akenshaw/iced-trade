@@ -69,13 +69,13 @@ impl FootprintChart {
         }
     }
 
-    pub fn insert_datapoint(&mut self, mut trades_buffer: Vec<Trade>, depth_update: i64) {
+    pub fn insert_datapoint(&mut self, trades_buffer: &[Trade], depth_update: i64) {
         let aggregate_time = 1000 * 60 * self.timeframe as i64;
         let rounded_depth_update = (depth_update / aggregate_time) * aggregate_time;
     
         self.data_points.entry(rounded_depth_update).or_insert((HashMap::new(), (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)));
         
-        for trade in trades_buffer.drain(..) {
+        for trade in trades_buffer {
             let price_level: i64 = (trade.price * (1.0 / self.tick_size)).round() as i64;
             if let Some((trades, _)) = self.data_points.get_mut(&rounded_depth_update) {     
                 if let Some((buy_qty, sell_qty)) = trades.get_mut(&price_level) {
@@ -91,7 +91,7 @@ impl FootprintChart {
                 }
             }
 
-            self.raw_trades.push(trade);
+            self.raw_trades.push(*trade);
         }
     }
 
