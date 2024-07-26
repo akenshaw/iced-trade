@@ -5,7 +5,7 @@ use serde::{de, Deserializer};
 use futures::sink::SinkExt;
 
 use serde_json::Value;
-use crate::{PaneStream, Ticker, Timeframe};
+use crate::{Ticker, Timeframe};
 
 use bytes::Bytes;
 
@@ -148,12 +148,16 @@ enum StreamName {
     Unknown,
 }
 impl StreamName {
-    fn from_symbol_and_type(symbol: &str, stream_type: &str) -> Self {
-        match stream_type {
-            _ if stream_type == format!("{symbol}@depth@100ms") => StreamName::Depth,
-            _ if stream_type == format!("{symbol}@trade") => StreamName::Trade,
-            _ if stream_type.starts_with(&format!("{symbol}@kline_")) => StreamName::Kline,
-            _ => StreamName::Unknown,
+    fn from_stream_type(stream_type: &str) -> Self {
+        if let Some(after_at) = stream_type.split('@').nth(1) {
+            match after_at {
+                _ if after_at.starts_with("dep") => StreamName::Depth,
+                _ if after_at.starts_with("tra") => StreamName::Trade,
+                _ if after_at.starts_with("kli") => StreamName::Kline,
+                _ => StreamName::Unknown,
+            }
+        } else {
+            StreamName::Unknown
         }
     }
 }
@@ -165,7 +169,7 @@ enum StreamWrapper {
     Kline,
 }
 
-fn feed_de(bytes: &Bytes, symbol: &str) -> Result<StreamData> {
+fn feed_de(bytes: &Bytes) -> Result<StreamData> {
 	let mut stream_type: Option<StreamWrapper> = None;
 
 	let iter: sonic_rs::ObjectJsonIter = unsafe { to_object_iter_unchecked(bytes) };
@@ -176,7 +180,7 @@ fn feed_de(bytes: &Bytes, symbol: &str) -> Result<StreamData> {
 
 		if k == "stream" {
 			if let Some(val) = v.as_str() {
-                match StreamName::from_symbol_and_type(symbol, val) {
+                match StreamName::from_stream_type(val) {
 					StreamName::Depth => {
 						stream_type = Some(StreamWrapper::Depth);
 					},
@@ -209,7 +213,7 @@ fn feed_de(bytes: &Bytes, symbol: &str) -> Result<StreamData> {
                     let kline_wrap: SonicKlineWrap = sonic_rs::from_str(&v.as_raw_faststr())
                         .context("Error parsing kline")?;
 
-                    let ticker = match symbol {
+                    let ticker = match &kline_wrap.symbol[..] {
                         "BTCUSDT" => Ticker::BTCUSDT,
                         "ETHUSDT" => Ticker::ETHUSDT,
                         "SOLUSDT" => Ticker::SOLUSDT,
@@ -296,7 +300,7 @@ where
   }
 }
 
-pub fn connect_market_stream(stream: PaneStream) -> Subscription<Event> {
+pub fn connect_market_stream(stream: Ticker) -> Subscription<Event> {
     subscription::channel(
         stream,
         100,
@@ -304,7 +308,7 @@ pub fn connect_market_stream(stream: PaneStream) -> Subscription<Event> {
             let mut state = State::Disconnected;     
             let mut trades_buffer: Vec<Trade> = Vec::new(); 
 
-            let selected_ticker = stream.ticker;
+            let selected_ticker = stream;
 
             let symbol_str = match selected_ticker {
                 Ticker::BTCUSDT => "btcusdt",
@@ -375,7 +379,7 @@ pub fn connect_market_stream(stream: PaneStream) -> Subscription<Event> {
                                 OpCode::Text => {                    
                                     let json_bytes: Bytes = Bytes::from(msg.payload.to_vec());
                     
-                                    if let Ok(data) = feed_de(&json_bytes, symbol_str) {
+                                    if let Ok(data) = feed_de(&json_bytes) {
                                         match data {
                                             StreamData::Trade(de_trade) => {
                                                 let trade = Trade {
@@ -562,7 +566,7 @@ pub fn connect_kline_stream(vec: Vec<(Ticker, Timeframe)>) -> Subscription<Event
                                 OpCode::Text => {                    
                                     let json_bytes: Bytes = Bytes::from(msg.payload.to_vec());
                     
-                                    if let Ok(StreamData::Kline(ticker, de_kline)) = feed_de(&json_bytes, symbol_str) {
+                                    if let Ok(StreamData::Kline(ticker, de_kline)) = feed_de(&json_bytes) {
                                         let kline = Kline {
                                             time: de_kline.time,
                                             open: str_f32_parse(&de_kline.open),

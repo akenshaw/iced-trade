@@ -24,7 +24,7 @@ use tokio_rustls::rustls::{ClientConfig, OwnedTrustAnchor};
 use tokio_rustls::TlsConnector;
 
 use crate::data_providers::{LocalDepthCache, Trade, Depth, Order, FeedLatency};
-use crate::{PaneStream, Ticker, Timeframe};
+use crate::{Ticker, Timeframe};
 
 #[allow(clippy::large_enum_variant)]
 enum State {
@@ -282,7 +282,7 @@ pub struct Kline {
     pub volume: f32,
 }
 
-pub fn connect_market_stream(stream: PaneStream) -> Subscription<Event> {
+pub fn connect_market_stream(stream: Ticker) -> Subscription<Event> {
     subscription::channel(
         stream,
         100,
@@ -291,7 +291,7 @@ pub fn connect_market_stream(stream: PaneStream) -> Subscription<Event> {
 
             let mut trades_buffer: Vec<Trade> = Vec::new();    
 
-            let selected_ticker = stream.ticker;
+            let selected_ticker = stream;
 
             let symbol_str = match selected_ticker {
                 Ticker::BTCUSDT => "BTCUSDT",
