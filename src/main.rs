@@ -1,7 +1,7 @@
 #![windows_subsystem = "windows"]
 
 mod data_providers;
-use data_providers::{binance, bybit};
+use data_providers::{binance, bybit, Depth, Trade};
 mod charts;
 use charts::footprint::FootprintChart;
 use charts::heatmap::HeatmapChart;
@@ -339,7 +339,7 @@ impl Dashboard {
         }
     }
 
-    fn update_chart_content(&mut self, pane_id: Uuid, message: charts::Message) -> Result<(), &str> {
+    fn update_chart_state(&mut self, pane_id: Uuid, message: charts::Message) -> Result<(), &str> {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.id == pane_id {
                 match pane_state.content {
@@ -418,16 +418,31 @@ impl Dashboard {
         self.panes.get_mut(pane).map(|pane_state| &mut pane_state.settings).ok_or("No pane found")
     }
     
-    fn get_mutable_pane_stream(&mut self, pane: pane_grid::Pane) -> Result<&mut Vec<StreamType>, &str> {
-        self.panes.get_mut(pane).map(|pane_state| &mut pane_state.stream).ok_or("No pane found")
-    }
-
-    fn get_panes_iter(&self) -> impl Iterator<Item = (&pane_grid::Pane, &PaneState)> {
-        self.panes.iter()
-    }
-
     fn get_streams_vec(&self) -> Vec<&Vec<StreamType>> {
         self.panes.iter().map(|(_, pane_state)| &pane_state.stream).collect()
+    }
+
+    fn update_pane_data(&mut self, stream_type: StreamType, depth_update_t: i64, depth: Depth, trades_buffer: Vec<Trade>) {
+        let depth = Rc::new(depth);
+
+        let trades_buffer = trades_buffer.into_boxed_slice();
+
+        for (_, pane_state) in self.panes.iter_mut() {
+            if pane_state.matches_stream(&stream_type) {
+                match &mut pane_state.content {
+                    PaneContent::Heatmap(chart) => {
+                        chart.insert_datapoint(&trades_buffer, depth_update_t, Rc::clone(&depth));
+                    },
+                    PaneContent::Footprint(chart) => {
+                        chart.insert_datapoint(&trades_buffer, depth_update_t);
+                    },
+                    PaneContent::TimeAndSales(chart) => {
+                        chart.update(&trades_buffer);
+                    },
+                    _ => {}
+                }
+            }
+        }
     }
 }
 
@@ -448,6 +463,10 @@ impl PaneState {
             content: PaneContent::Starter,
             settings,
         }
+    }
+
+    fn matches_stream(&self, stream_type: &StreamType) -> bool {
+        self.stream.iter().any(|stream| stream == stream_type)
     }
 }
 
@@ -616,7 +635,7 @@ impl State {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::ChartUserUpdate(message, pane_id) => {
-                match self.dashboard.update_chart_content(pane_id, message) {
+                match self.dashboard.update_chart_state(pane_id, message) {
                     Ok(_) => Task::none(),
                     Err(err) => Task::none()
                 }
@@ -716,35 +735,14 @@ impl State {
                         binance::market_data::Event::Disconnected => {
                             self.binance_ws_state = BinanceWsState::Disconnected;
                         }
-                        binance::market_data::Event::DepthReceived(ticker, feed_latency, depth_update, depth, trades_buffer) => {
-                            let depth = Rc::new(depth);
-
-                            let trades_buffer = trades_buffer.into_boxed_slice();
+                        binance::market_data::Event::DepthReceived(ticker, feed_latency, depth_update_t, depth, trades_buffer) => {                            
+                            let stream_type = StreamType::DepthAndTrades(PaneStream {
+                                exchange: Exchange::BinanceFutures,
+                                ticker,
+                                timeframe: None,
+                            });
                             
-                            for (_, pane_state) in self.dashboard.panes.iter_mut() {
-                                pane_state.stream.iter().for_each(|stream| {
-                                    match stream {
-                                        StreamType::DepthAndTrades(pane_stream) => {
-                                            if pane_stream.exchange == Exchange::BinanceFutures && pane_stream.ticker == ticker {
-                                                match pane_state.content {
-                                                    PaneContent::Heatmap(ref mut chart) => {
-                                                        chart.insert_datapoint(&trades_buffer, depth_update, Rc::clone(&depth));
-                                                    },
-                                                    PaneContent::Footprint(ref mut chart) => {
-                                                        chart.insert_datapoint(&trades_buffer, depth_update);
-                                                    },
-                                                    PaneContent::TimeAndSales(ref mut chart) => {
-                                                        chart.update(&trades_buffer)
-                                                    },
-                                                    _ => {}
-                                                }
-                                            }
-                                        },
-                                        _ => {}
-                                    }
-                                });
-                            }
-                         
+                            self.dashboard.update_pane_data(stream_type, depth_update_t, depth, trades_buffer);
                         }
                         binance::market_data::Event::KlineReceived(ticker, kline, timeframe) => {
                         }
@@ -756,34 +754,14 @@ impl State {
                         bybit::market_data::Event::Disconnected => {
                             self.bybit_ws_state = BybitWsState::Disconnected;
                         }
-                        bybit::market_data::Event::DepthReceived(ticker, feed_latency, depth_update, depth, trades_buffer) => {
-                            let depth = Rc::new(depth);
-
-                            let trades_buffer = trades_buffer.into_boxed_slice();
-
-                            for (_, pane_state) in self.dashboard.panes.iter_mut() {
-                                pane_state.stream.iter().for_each(|stream| {
-                                    match stream {
-                                        StreamType::DepthAndTrades(pane_stream) => {
-                                            if pane_stream.exchange == Exchange::BybitLinear && pane_stream.ticker == ticker {
-                                                match pane_state.content {
-                                                    PaneContent::Heatmap(ref mut chart) => {
-                                                        chart.insert_datapoint(&trades_buffer, depth_update, Rc::clone(&depth));
-                                                    },
-                                                    PaneContent::Footprint(ref mut chart) => {
-                                                        chart.insert_datapoint(&trades_buffer, depth_update);
-                                                    },
-                                                    PaneContent::TimeAndSales(ref mut chart) => {
-                                                        chart.update(&trades_buffer)
-                                                    },
-                                                    _ => {}
-                                                }
-                                            }
-                                        },
-                                        _ => {}
-                                    }
-                                });
-                            }
+                        bybit::market_data::Event::DepthReceived(ticker, feed_latency, depth_update_t, depth, trades_buffer) => {
+                            let stream_type = StreamType::DepthAndTrades(PaneStream {
+                                exchange: Exchange::BybitLinear,
+                                ticker,
+                                timeframe: None,
+                            });
+                            
+                            self.dashboard.update_pane_data(stream_type, depth_update_t, depth, trades_buffer);
                         }
                         bybit::market_data::Event::KlineReceived(kline, timeframe) => {
                         }
