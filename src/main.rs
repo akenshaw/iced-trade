@@ -1,12 +1,13 @@
 #![windows_subsystem = "windows"]
 
 mod data_providers;
-use data_providers::{binance, bybit, Depth, Trade};
+use data_providers::{binance, bybit, Depth, Kline, Trade};
 mod charts;
 use charts::footprint::FootprintChart;
 use charts::heatmap::HeatmapChart;
 use charts::candlestick::CandlestickChart;
 use charts::timeandsales::TimeAndSales;
+use futures::TryFutureExt;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
@@ -225,7 +226,7 @@ pub enum Message {
     ExchangeSelected(Exchange, Uuid),
     MarketWsEvent(MarketEvents),
     WsToggle,
-    FetchEvent(Result<Vec<data_providers::Kline>, std::string::String>, PaneId, Timeframe),
+    FetchEvent(Result<Vec<data_providers::Kline>, std::string::String>, StreamType),
     RestartStream(Option<pane_grid::Pane>, (Option<Ticker>, Option<Timeframe>, Option<f32>)),
     
     // Pane grid
@@ -256,7 +257,7 @@ pub enum Message {
     
     ErrorOccurred(String),
 
-    PaneContentSelected(String, Uuid, PaneStream),
+    PaneContentSelected(String, Uuid, Vec<StreamType>),
 }
 
 struct State {
@@ -284,34 +285,6 @@ struct State {
     feed_latency_cache: VecDeque<data_providers::FeedLatency>,
 
     pane_streams: HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>,
-}
-
-struct ChartState {
-    candlestick_chart_a: Option<CandlestickChart>,
-    candlestick_chart_b: Option<CandlestickChart>,
-    heatmap_chart: Option<HeatmapChart>,
-    footprint_chart: Option<FootprintChart>,
-    time_and_sales: Option<TimeAndSales>,
-}
-impl Default for ChartState {
-    fn default() -> Self {
-        Self {
-            candlestick_chart_a: None,
-            candlestick_chart_b: None,
-            heatmap_chart: None,
-            footprint_chart: None,
-            time_and_sales: None,
-        }
-    }
-}
-
-struct NetworkState {
-    listen_key: Option<String>,
-    binance_ws_state: BinanceWsState,
-    bybit_ws_state: BybitWsState,
-    user_ws_state: UserWsState,
-    ws_running: bool,
-    kline_stream: bool,
 }
 
 struct Dashboard {
@@ -422,7 +395,7 @@ impl Dashboard {
         self.panes.iter().map(|(_, pane_state)| &pane_state.stream).collect()
     }
 
-    fn update_pane_data(&mut self, stream_type: StreamType, depth_update_t: i64, depth: Depth, trades_buffer: Vec<Trade>) {
+    fn update_depth_and_trades(&mut self, stream_type: StreamType, depth_update_t: i64, depth: Depth, trades_buffer: Vec<Trade>) {
         let depth = Rc::new(depth);
 
         let trades_buffer = trades_buffer.into_boxed_slice();
@@ -439,6 +412,18 @@ impl Dashboard {
                     PaneContent::TimeAndSales(chart) => {
                         chart.update(&trades_buffer);
                     },
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn update_kline(&mut self, stream_type: &StreamType, kline: &Kline) {
+        for (_, pane_state) in self.panes.iter_mut() {
+            if pane_state.matches_stream(&stream_type) {
+                match &mut pane_state.content {
+                    PaneContent::Candlestick(chart) => chart.insert_datapoint(kline),
+                    PaneContent::Footprint(chart) => chart.update_latest_kline(kline),
                     _ => {}
                 }
             }
@@ -495,22 +480,23 @@ impl Default for PaneSettings {
             tick_multiply: Some(TickMultiplier(10)),
             selected_ticker: None,
             selected_exchange: None,
-            selected_timeframe: None,
+            selected_timeframe: Some(Timeframe::M1),
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct PaneStream {
-    exchange: Exchange,
-    ticker: Ticker,
-    timeframe: Option<Timeframe>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum StreamType {
-    Kline(PaneStream),
-    DepthAndTrades(PaneStream),
+pub enum StreamType {
+    Kline {
+        exchange: Exchange,
+        ticker: Ticker,
+        timeframe: Timeframe,
+    },
+    DepthAndTrades {
+        exchange: Exchange,
+        ticker: Ticker,
+    },
+    None,
 }
 
 
@@ -531,14 +517,7 @@ impl State {
                             show_modal: false, 
                             stream: vec![],
                             content: PaneContent::Starter,
-                            settings: PaneSettings {
-                                min_tick_size: None,
-                                trade_size_filter: None,
-                                tick_multiply: None,
-                                selected_ticker: None,
-                                selected_exchange: None,
-                                selected_timeframe: None,
-                            },
+                            settings: PaneSettings::default(),
                         })
                     ),
                     b: Box::new(Configuration::Pane(
@@ -547,14 +526,7 @@ impl State {
                             show_modal: false, 
                             stream: vec![],
                             content: PaneContent::Starter,
-                            settings: PaneSettings {
-                                min_tick_size: None,
-                                trade_size_filter: None,
-                                tick_multiply: None,
-                                selected_ticker: None,
-                                selected_exchange: None,
-                                selected_timeframe: None,
-                            },
+                            settings: PaneSettings::default(),
                         })
                     ),
                 }),
@@ -567,14 +539,7 @@ impl State {
                             show_modal: false, 
                             stream: vec![],
                             content: PaneContent::Starter,
-                            settings: PaneSettings {
-                                min_tick_size: None,
-                                trade_size_filter: None,
-                                tick_multiply: None,
-                                selected_ticker: None,
-                                selected_exchange: None,
-                                selected_timeframe: None,
-                            },
+                            settings: PaneSettings::default(),
                         })                      
                     ),
                     b: Box::new(Configuration::Pane(
@@ -583,14 +548,7 @@ impl State {
                             show_modal: false, 
                             stream: vec![],
                             content: PaneContent::Starter,
-                            settings: PaneSettings {
-                                min_tick_size: None,
-                                trade_size_filter: None,
-                                tick_multiply: None,
-                                selected_ticker: None,
-                                selected_exchange: None,
-                                selected_timeframe: None,
-                            },
+                            settings: PaneSettings::default(),
                         })
                     ),
                 }),
@@ -601,14 +559,7 @@ impl State {
                     show_modal: false, 
                     stream: vec![],
                     content: PaneContent::Starter,
-                    settings: PaneSettings {
-                        min_tick_size: None,
-                        trade_size_filter: None,
-                        tick_multiply: None,
-                        selected_ticker: None,
-                        selected_exchange: None,
-                        selected_timeframe: None,
-                    },
+                    settings: PaneSettings::default(),
                 })
             ),
         };
@@ -722,8 +673,33 @@ impl State {
 
                 Task::none()
             },       
-            Message::FetchEvent(klines, target_pane, timeframe) => {
-                Task::none()
+            Message::FetchEvent(klines, pane_stream) => {
+                match klines {
+                    Ok(klines) => {
+                        match pane_stream {
+                            StreamType::Kline { exchange, ticker, timeframe } => {
+                                for kline in klines {
+                                    self.dashboard.update_kline(&StreamType::Kline {
+                                        exchange,
+                                        ticker,
+                                        timeframe,
+                                    }, &kline);
+                                }
+                            },
+                            _ => {}
+                        }
+                    },
+                    Err(err) => {
+                        eprintln!("{err}");
+                    }
+                }
+
+                Task::perform(
+                    async {
+                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                    },
+                    move |()| Message::CutTheKlineStream
+                )
             },
 
             Message::MarketWsEvent(event) => {
@@ -736,15 +712,21 @@ impl State {
                             self.binance_ws_state = BinanceWsState::Disconnected;
                         }
                         binance::market_data::Event::DepthReceived(ticker, feed_latency, depth_update_t, depth, trades_buffer) => {                            
-                            let stream_type = StreamType::DepthAndTrades(PaneStream {
+                            let stream_type = StreamType::DepthAndTrades {
                                 exchange: Exchange::BinanceFutures,
                                 ticker,
-                                timeframe: None,
-                            });
+                            };
                             
-                            self.dashboard.update_pane_data(stream_type, depth_update_t, depth, trades_buffer);
+                            self.dashboard.update_depth_and_trades(stream_type, depth_update_t, depth, trades_buffer);
                         }
                         binance::market_data::Event::KlineReceived(ticker, kline, timeframe) => {
+                            let stream_type = StreamType::Kline {
+                                exchange: Exchange::BinanceFutures,
+                                ticker,
+                                timeframe,
+                            };
+
+                            self.dashboard.update_kline(&stream_type, &kline);
                         }
                     },
                     MarketEvents::Bybit(event) => match event {
@@ -755,13 +737,12 @@ impl State {
                             self.bybit_ws_state = BybitWsState::Disconnected;
                         }
                         bybit::market_data::Event::DepthReceived(ticker, feed_latency, depth_update_t, depth, trades_buffer) => {
-                            let stream_type = StreamType::DepthAndTrades(PaneStream {
+                            let stream_type = StreamType::DepthAndTrades {
                                 exchange: Exchange::BybitLinear,
                                 ticker,
-                                timeframe: None,
-                            });
+                            };
                             
-                            self.dashboard.update_pane_data(stream_type, depth_update_t, depth, trades_buffer);
+                            self.dashboard.update_depth_and_trades(stream_type, depth_update_t, depth, trades_buffer);
                         }
                         bybit::market_data::Event::KlineReceived(kline, timeframe) => {
                         }
@@ -891,13 +872,15 @@ impl State {
                 Task::none()
             },
             Message::PaneContentSelected(content, pane_id, pane_stream) => {
+                let mut tasks = vec![];
+                
                 match content.as_str() {
                     "Heatmap chart" => {
                         let pane_content = PaneContent::Heatmap(HeatmapChart::new());
 
                         match self.dashboard.get_pane_stream_mut(pane_id) {
                             Ok(vec_streams) => {
-                                vec_streams.push(StreamType::DepthAndTrades(pane_stream));                        
+                                *vec_streams = pane_stream.to_vec();
                             },
                             Err(err) => {
                                 dbg!("No pane found");
@@ -915,9 +898,7 @@ impl State {
 
                         match self.dashboard.get_pane_stream_mut(pane_id) {
                             Ok(vec_streams) => {
-                                vec_streams.push(StreamType::DepthAndTrades(pane_stream));
-
-                                vec_streams.push(StreamType::Kline(pane_stream));                             
+                                *vec_streams = pane_stream.to_vec();                
                             },
                             Err(err) => {
                                 dbg!("No pane found");
@@ -935,7 +916,7 @@ impl State {
 
                         match self.dashboard.get_pane_stream_mut(pane_id) {
                             Ok(vec_streams) => {
-                                vec_streams.push(StreamType::Kline(pane_stream));
+                                *vec_streams = pane_stream.to_vec();
                             },
                             Err(err) => {
                                 dbg!("No pane found");
@@ -946,13 +927,32 @@ impl State {
                             Ok(_) => dbg!("Pane content set"),
                             Err(err) => dbg!("No pane found"),
                         };
+
+                        for stream in pane_stream {
+                            match stream {
+                                StreamType::Kline { exchange: _, ticker, timeframe } => {
+                                    let fetch_klines = Task::perform(
+                                        binance::market_data::fetch_klines(ticker, timeframe)
+                                            .map_err(|err| format!("{err}")), 
+                                        move |klines| {
+                                            Message::FetchEvent(klines, stream.clone())
+                                        }
+                                    );
+
+                                    tasks.push(fetch_klines);
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        self.kline_stream = false;
                     },
                     "Time&Sales" => {
                         let pane_content = PaneContent::TimeAndSales(TimeAndSales::new());
 
                         match self.dashboard.get_pane_stream_mut(pane_id) {
                             Ok(vec_streams) => {
-                                vec_streams.push(StreamType::DepthAndTrades(pane_stream));
+                                *vec_streams = pane_stream.to_vec();
                             },
                             Err(err) => {
                                 dbg!("No pane found");
@@ -972,22 +972,30 @@ impl State {
                 for stream_vec in streams_iter {
                     for stream in stream_vec {
                         match stream {
-                            StreamType::Kline(pane_stream) | 
-                            StreamType::DepthAndTrades(pane_stream) => {
+                            StreamType::Kline { exchange, ticker, timeframe } => {
                                 self.pane_streams
-                                    .entry(pane_stream.exchange)
+                                    .entry(*exchange)
                                     .or_insert_with(HashMap::new)
-                                    .entry(pane_stream.ticker)
+                                    .entry(*ticker)
                                     .or_insert_with(HashSet::new)
                                     .insert(stream.clone());
                             }
+                            StreamType::DepthAndTrades { exchange, ticker } => {
+                                self.pane_streams
+                                    .entry(*exchange)
+                                    .or_insert_with(HashMap::new)
+                                    .entry(*ticker)
+                                    .or_insert_with(HashSet::new)
+                                    .insert(stream.clone());
+                            }
+                            _ => {}
                         }
                     }
                 }
 
                 dbg!(&self.pane_streams);
 
-                Task::none()
+                Task::batch(tasks)
             }
         }
     }
@@ -1028,12 +1036,13 @@ impl State {
 
             let stream_name = pane.stream.iter().map(|stream| {
                 match stream {
-                    StreamType::Kline(pane_stream) => {
-                        format!("{} {} {}", pane_stream.exchange, pane_stream.ticker, pane_stream.timeframe.unwrap_or_else(|| { dbg!("No timeframe found"); Timeframe::M1 }))
-                    },
-                    StreamType::DepthAndTrades(pane_stream) => {
-                        format!("{} {}", pane_stream.exchange, pane_stream.ticker)
+                    StreamType::Kline { exchange, ticker, timeframe } => {
+                        format!("{} {} {}", exchange, ticker, timeframe)
                     }
+                    StreamType::DepthAndTrades { exchange, ticker } => {
+                        format!("{} {}", exchange, ticker)
+                    }
+                    _ => "Err stream type".to_string()
                 }
             }).collect::<Vec<String>>().join(", ");
         
@@ -1224,25 +1233,42 @@ impl State {
 
         for (exchange, stream) in &self.pane_streams {
             match exchange {
-                Exchange::BinanceFutures => {
-                    let mut binance_streams = Vec::new();
+                Exchange::BinanceFutures => {                    
+                    let mut depth_streams = Vec::new();
+
+                    let mut kline_streams = Vec::new();
 
                     for (_, stream_types) in stream {
                         for stream_type in stream_types {
                             match stream_type {
-                                StreamType::Kline(pane_stream) => {
+                                StreamType::Kline { exchange, ticker, timeframe } => {
+                                    kline_streams.push((ticker, timeframe));
                                 },
-                                StreamType::DepthAndTrades(pane_stream) => {
-                                    binance_streams.push(
-                                        binance::market_data::connect_market_stream(*pane_stream)
+                                StreamType::DepthAndTrades { exchange, ticker } => {
+                                    depth_streams.push(
+                                        binance::market_data::connect_market_stream(*ticker)
                                             .map(|event: binance::market_data::Event| Message::MarketWsEvent(MarketEvents::Binance(event)))
                                     );
                                 },
+                                _ => {}
                             }
                         }
                     }
 
-                    subscriptions.push(Subscription::batch(binance_streams));
+                    if kline_streams.len() > 0 && self.kline_stream {
+                        let mut streams: Vec<(Ticker, Timeframe)> = vec![];
+                            
+                        for (ticker, timeframe) in kline_streams {
+                            streams.push((*ticker, *timeframe));
+                        }
+
+                        subscriptions.push(
+                            binance::market_data::connect_kline_stream(streams)
+                                .map(move |event: binance::market_data::Event| Message::MarketWsEvent(MarketEvents::Binance(event)))
+                        );
+                    }
+
+                    subscriptions.push(Subscription::batch(depth_streams));
                 },
                 Exchange::BybitLinear => {
                     let mut bybit_streams = Vec::new();
@@ -1250,14 +1276,15 @@ impl State {
                     for (_, stream_types) in stream {
                         for stream_type in stream_types {
                             match stream_type {
-                                StreamType::Kline(pane_stream) => {
+                                StreamType::Kline { exchange, ticker, timeframe } => {
                                 },
-                                StreamType::DepthAndTrades(pane_stream) => {
+                                StreamType::DepthAndTrades { exchange, ticker } => {
                                     bybit_streams.push(
-                                        bybit::market_data::connect_market_stream(*pane_stream)
+                                        bybit::market_data::connect_market_stream(*ticker)
                                             .map(|event: bybit::market_data::Event| Message::MarketWsEvent(MarketEvents::Bybit(event)))
                                     );
                                 },
+                                _ => {}
                             }
                         }
                     }
@@ -1486,17 +1513,19 @@ fn view_starter<'a>(
             .spacing(6)
             .align_items(Alignment::Center), |column, &label| {
                 let mut btn = button(label).width(Length::Fill);
-                if pane.settings.selected_ticker.is_some() && pane.settings.selected_exchange.is_some() {
-                    let pane_stream = PaneStream {
-                        exchange: pane.settings.selected_exchange.unwrap(),
-                        ticker: pane.settings.selected_ticker.unwrap(),
-                        timeframe: pane.settings.selected_timeframe,
-                    };
+                if let (Some(exchange), Some(ticker)) = (pane.settings.selected_exchange, pane.settings.selected_ticker) {
+                    let timeframe = pane.settings.selected_timeframe.unwrap_or_else(|| { dbg!("No timeframe found"); Timeframe::M1 });
 
+                    let pane_stream: Vec<StreamType> = match label {
+                        "Heatmap chart" => vec![StreamType::DepthAndTrades { exchange, ticker }],
+                        "Footprint chart" => vec![StreamType::DepthAndTrades { exchange, ticker }, StreamType::Kline { exchange, ticker, timeframe }],
+                        "Candlestick chart" => vec![StreamType::Kline { exchange, ticker, timeframe }],
+                        "Time&Sales" => vec![StreamType::DepthAndTrades { exchange, ticker }],
+                        _ => vec![]
+                    };
+                
                     btn = btn.on_press(
-                        Message::PaneContentSelected(
-                            label.to_string(), pane.id, pane_stream
-                        )
+                        Message::PaneContentSelected(label.to_string(), pane.id, pane_stream)
                     );
                 }
                 column.push(btn)
