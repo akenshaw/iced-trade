@@ -109,7 +109,7 @@ impl LocalDepthCache {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Default, Debug, Clone, Copy)]
 pub struct Trade {
     pub time: i64,
     pub is_sell: bool,
@@ -117,7 +117,7 @@ pub struct Trade {
     pub qty: f32,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Default, Debug, Clone, Copy)]
 pub struct Kline {
     pub time: u64,
     pub open: f32,
@@ -125,10 +125,10 @@ pub struct Kline {
     pub low: f32,
     pub close: f32,
     pub volume: f32,
-    pub taker_buy_base_asset_volume: f32,
+    pub buy_volume: f32,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Default, Debug, Clone, Copy)]
 pub struct FeedLatency {
     pub time: i64,
     pub depth_latency: i64,
