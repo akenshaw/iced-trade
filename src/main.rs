@@ -265,13 +265,8 @@ struct State {
 
     exchange_latency: Option<(u32, u32)>,
 
-    tick_multiply: TickMultiplier,
-    min_tick_size: Option<f32>,
-
     // data streams
     listen_key: Option<String>,
-    selected_ticker: Option<Ticker>,
-    selected_exchange: Option<Exchange>,
 
     binance_ws_state: BinanceWsState,
     bybit_ws_state: BybitWsState,
@@ -569,14 +564,10 @@ impl State {
             dashboard,
             kline_stream: true,
             listen_key: None,
-            selected_ticker: None,
-            selected_exchange: Some(Exchange::BinanceFutures),
             binance_ws_state: BinanceWsState::Disconnected,
             bybit_ws_state: BybitWsState::Disconnected,
             user_ws_state: UserWsState::Disconnected,
             ws_running: false,
-            tick_multiply: TickMultiplier(10),
-            min_tick_size: None, 
             exchange_latency: None,
             feed_latency_cache: VecDeque::new(),
             pane_streams: HashMap::new(),
@@ -967,12 +958,10 @@ impl State {
                     _ => {}
                 }
 
-                let streams_iter: Vec<&Vec<StreamType>> = self.dashboard.get_streams_vec();
-
-                for stream_vec in streams_iter {
+                for stream_vec in self.dashboard.get_streams_vec() {
                     for stream in stream_vec {
                         match stream {
-                            StreamType::Kline { exchange, ticker, timeframe } => {
+                            StreamType::Kline { exchange, ticker, timeframe: _ } => {
                                 self.pane_streams
                                     .entry(*exchange)
                                     .or_insert_with(HashMap::new)
@@ -1099,19 +1088,11 @@ impl State {
                 tooltip(layout_lock_button, "Layout Lock", tooltip::Position::Bottom).style(style::tooltip)
             );
 
-        let ws_button = if self.selected_ticker.is_some() {
-            button(if self.ws_running { "Disconnect" } else { "Connect" })
-                .on_press(Message::WsToggle)
-        } else {
-            button(if self.ws_running { "Disconnect" } else { "Connect" })
-        };
-
         let debug_button = button("Debug").on_press(Message::Debug("Debug".to_string()));
 
         let mut ws_controls = Row::new()
             .spacing(10)
             .align_items(Alignment::Center)
-            .push(ws_button)
             .push(debug_button);
 
         if self.ws_running {
@@ -1151,9 +1132,6 @@ impl State {
                     Column::new()
                         .align_items(Alignment::Start)
                         .push(
-                            Text::new(self.selected_exchange.unwrap_or_else(|| { dbg!("No exchange found"); Exchange::BinanceFutures }).to_string()).size(10)
-                        )
-                        .push(
                             Text::new(format!("{} ms", highest_latency)).size(10)
                         )
                 );
@@ -1163,9 +1141,6 @@ impl State {
                     .spacing(10)
                     .align_items(Alignment::Center)
                     .push(tooltip(exchange_info, exchange_latency_tooltip, tooltip::Position::Bottom).style(style::tooltip))
-                    .push(
-                        Text::new(self.selected_ticker.unwrap_or_else(|| { dbg!("No ticker found"); Ticker::BTCUSDT }).to_string()).size(20)
-                    )
             );
         }
 
