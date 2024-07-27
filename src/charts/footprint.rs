@@ -95,20 +95,26 @@ impl FootprintChart {
         }
     }
 
+    pub fn insert_klines(&mut self, klines: Vec<Kline>) {
+        for kline in klines {
+            self.data_points.insert(kline.time as i64, (HashMap::new(), (kline.open, kline.high, kline.low, kline.close, kline.buy_volume, kline.volume)));
+        }
+    }
+
     pub fn update_latest_kline(&mut self, kline: &Kline) {
         if let Some((_, kline_value)) = self.data_points.get_mut(&(kline.time as i64)) {
             kline_value.0 = kline.open;
             kline_value.1 = kline.high;
             kline_value.2 = kline.low;
             kline_value.3 = kline.close;
-            kline_value.4 = kline.taker_buy_base_asset_volume;
+            kline_value.4 = kline.buy_volume;
             
             if kline_value.4 != -1.0 {
-                kline_value.5 = kline.volume - kline.taker_buy_base_asset_volume;
+                kline_value.5 = kline.volume - kline.buy_volume;
             } else {
                 kline_value.5 = kline.volume;
             }
-        }
+        } 
 
         self.render_start();
     }

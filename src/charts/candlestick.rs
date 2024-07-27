@@ -33,7 +33,7 @@ impl CandlestickChart {
         let mut klines_raw = BTreeMap::new();
 
         for kline in klines {
-            let buy_volume = kline.taker_buy_base_asset_volume;
+            let buy_volume = kline.buy_volume;
             let sell_volume = kline.volume - buy_volume;
             klines_raw.insert(kline.time as i64, (kline.open, kline.high, kline.low, kline.close, buy_volume, sell_volume));
         }
@@ -53,8 +53,8 @@ impl CandlestickChart {
         }
     }
 
-    pub fn insert_datapoint(&mut self, kline: &Kline) {
-        let buy_volume: f32 = kline.taker_buy_base_asset_volume;
+    pub fn update_latest_kline(&mut self, kline: &Kline) {
+        let buy_volume: f32 = kline.buy_volume;
         let sell_volume: f32 = if buy_volume != -1.0 {
             kline.volume - buy_volume
         } else {
@@ -64,6 +64,19 @@ impl CandlestickChart {
         self.data_points.insert(kline.time as i64, (kline.open, kline.high, kline.low, kline.close, buy_volume, sell_volume));
 
         self.render_start();
+    }
+
+    pub fn insert_klines(&mut self, klines: Vec<Kline>) {
+        for kline in klines {
+            let buy_volume: f32 = kline.buy_volume;
+            let sell_volume: f32 = if buy_volume != -1.0 {
+                kline.volume - buy_volume
+            } else {
+                kline.volume
+            };
+
+            self.data_points.insert(kline.time as i64, (kline.open, kline.high, kline.low, kline.close, buy_volume, sell_volume));
+        }
     }
 
     pub fn render_start(&mut self) {

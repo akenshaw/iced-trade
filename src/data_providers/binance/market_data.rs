@@ -574,7 +574,7 @@ pub fn connect_kline_stream(vec: Vec<(Ticker, Timeframe)>) -> Subscription<Event
                                             low: str_f32_parse(&de_kline.low),
                                             close: str_f32_parse(&de_kline.close),
                                             volume: str_f32_parse(&de_kline.volume),
-                                            taker_buy_base_asset_volume: str_f32_parse(&de_kline.taker_buy_base_asset_volume),
+                                            buy_volume: str_f32_parse(&de_kline.taker_buy_base_asset_volume),
                                         };
 
                                         if let Some(timeframe) = vec.iter().find(|(_, tf)| tf.to_string() == de_kline.interval) {
@@ -640,7 +640,7 @@ impl From<FetchedKlines> for Kline {
             low: fetched.3,
             close: fetched.4,
             volume: fetched.5,
-            taker_buy_base_asset_volume: fetched.9,
+            buy_volume: fetched.9,
         }
     }
 }
