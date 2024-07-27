@@ -1,17 +1,22 @@
 #![windows_subsystem = "windows"]
 
 mod data_providers;
-use data_providers::{binance, bybit, Depth, Kline, Trade};
 mod charts;
+mod style;
+mod screen;
+
+use screen::dashboard::{Dashboard, PaneContent, PaneSettings, PaneState};
+use data_providers::{binance, bybit, BinanceWsState, BybitWsState, Depth, Exchange, Kline, MarketEvents, TickMultiplier, Ticker, Timeframe, Trade, UserWsState};
+
 use charts::footprint::FootprintChart;
 use charts::heatmap::HeatmapChart;
 use charts::candlestick::CandlestickChart;
 use charts::timeandsales::TimeAndSales;
+
 use futures::TryFutureExt;
 
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::rc::Rc;
-use std::vec;
+use std::{collections::{HashMap, HashSet, VecDeque}, rc::Rc, vec};
+
 use iced::{
     alignment, font, widget::{
         button, center, checkbox, mouse_area, opaque, pick_list, stack, text_input, tooltip, Column, Container, Row, Slider, Space, Text
@@ -19,90 +24,10 @@ use iced::{
 };
 use uuid::Uuid;
 
-pub mod style;
-
 use iced::widget::pane_grid::{self, PaneGrid, Configuration};
 use iced::widget::{
     container, row, scrollable, text, responsive
 };
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Exchange {
-    BinanceFutures,
-    BybitLinear,
-}
-
-impl std::fmt::Display for Exchange {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Exchange::BinanceFutures => "Binance Futures",
-                Exchange::BybitLinear => "Bybit Linear",
-            }
-        )
-    }
-}
-impl Exchange {
-    const ALL: [Exchange; 2] = [Exchange::BinanceFutures, Exchange::BybitLinear];
-}
-
-impl std::fmt::Display for Ticker {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Ticker::BTCUSDT => "BTCUSDT",
-                Ticker::ETHUSDT => "ETHUSDT",
-                Ticker::SOLUSDT => "SOLUSDT",
-                Ticker::LTCUSDT => "LTCUSDT",
-            }
-        )
-    }
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Ticker {
-    BTCUSDT,
-    ETHUSDT,
-    SOLUSDT,
-    LTCUSDT,
-}
-impl Ticker {
-    const ALL: [Ticker; 4] = [Ticker::BTCUSDT, Ticker::ETHUSDT, Ticker::SOLUSDT, Ticker::LTCUSDT];
-}
-
-impl std::fmt::Display for Timeframe {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Timeframe::M1 => "1m",
-                Timeframe::M3 => "3m",
-                Timeframe::M5 => "5m",
-                Timeframe::M15 => "15m",
-                Timeframe::M30 => "30m",
-            }
-        )
-    }
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Timeframe {
-    M1,
-    M3,
-    M5,
-    M15,
-    M30,
-}
-impl Timeframe {
-    const ALL: [Timeframe; 5] = [Timeframe::M1, Timeframe::M3, Timeframe::M5, Timeframe::M15, Timeframe::M30];
-}
-
-// binance testnet api keys
-const API_KEY: &str = "";
-const SECRET_KEY: &str = "";
 
 const ICON_BYTES: &[u8] = include_bytes!("fonts/icons.ttf");
 const ICON: Font = Font::with_name("icons");
@@ -131,38 +56,6 @@ impl From<Icon> for char {
     }
 }
 
-#[derive(Debug)]
-enum BinanceWsState {
-    Connected(binance::market_data::Connection),
-    Disconnected,
-}
-impl Default for BinanceWsState {
-    fn default() -> Self {
-        Self::Disconnected
-    }
-}
-
-#[derive(Debug)]
-enum BybitWsState {
-    Connected(bybit::market_data::Connection),
-    Disconnected,
-}
-impl Default for BybitWsState {
-    fn default() -> Self {
-        Self::Disconnected
-    }
-}
-
-enum UserWsState {
-    Connected(binance::user_data::Connection),
-    Disconnected,
-}
-impl Default for UserWsState {
-    fn default() -> Self {
-        Self::Disconnected
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 #[derive(Eq, Hash, PartialEq)]
 pub enum PaneId {
@@ -172,23 +65,6 @@ pub enum PaneId {
     CandlestickChartB,
     TimeAndSales,
     TradePanel,
-}
-
-#[derive(Debug, Clone)]
-struct PaneSpec {
-    id: PaneId,
-    show_modal: bool,
-    stream: (Option<Ticker>, Option<Timeframe>, Option<f32>),
-}
-
-impl PaneSpec {
-    fn new(id: PaneId, from_cache: (Option<Ticker>, Option<Timeframe>, Option<f32>)) -> Self {
-        Self { 
-            id,
-            show_modal: false,
-            stream: from_cache,
-        }
-    }
 }
 
 fn main() -> iced::Result {
@@ -206,10 +82,18 @@ fn main() -> iced::Result {
     .run_with(move || State::new())
 }
 
-#[derive(Debug, Clone)]
-pub enum MarketEvents {
-    Binance(binance::market_data::Event),
-    Bybit(bybit::market_data::Event),
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum StreamType {
+    Kline {
+        exchange: Exchange,
+        ticker: Ticker,
+        timeframe: Timeframe,
+    },
+    DepthAndTrades {
+        exchange: Exchange,
+        ticker: Ticker,
+    },
+    None,
 }
 
 #[derive(Debug, Clone)]
@@ -265,247 +149,19 @@ struct State {
 
     exchange_latency: Option<(u32, u32)>,
 
-    // data streams
     listen_key: Option<String>,
 
     binance_ws_state: BinanceWsState,
     bybit_ws_state: BybitWsState,
-
     user_ws_state: UserWsState,
 
-    ws_running: bool,
-
     kline_stream: bool,
+    ws_running: bool,
 
     feed_latency_cache: VecDeque<data_providers::FeedLatency>,
 
     pane_streams: HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>,
 }
-
-struct Dashboard {
-    panes: pane_grid::State<PaneState>,
-    show_layout_modal: bool,
-    focus: Option<pane_grid::Pane>,
-    first_pane: pane_grid::Pane,
-    pane_lock: bool,
-    pane_state_cache: HashMap<Uuid, (Option<Ticker>, Option<Timeframe>, Option<f32>)>,
-    last_axis_split: Option<pane_grid::Axis>,
-}
-impl Dashboard {
-    fn empty(pane_config: Configuration<PaneState>) -> Self {
-        let panes: pane_grid::State<PaneState> = pane_grid::State::with_configuration(pane_config);
-        let first_pane: pane_grid::Pane = *panes.panes.iter().next().unwrap().0;
-        
-        Self { 
-            show_layout_modal: false,
-            panes,
-            focus: None,
-            first_pane,
-            pane_lock: false,
-            pane_state_cache: HashMap::new(),
-            last_axis_split: None,
-        }
-    }
-
-    fn update_chart_state(&mut self, pane_id: Uuid, message: charts::Message) -> Result<(), &str> {
-        for (_, pane_state) in self.panes.iter_mut() {
-            if pane_state.id == pane_id {
-                match pane_state.content {
-                    PaneContent::Heatmap(ref mut chart) => {
-                        chart.update(&message);
-
-                        return Ok(());
-                    },
-                    PaneContent::Footprint(ref mut chart) => {
-                        chart.update(&message);
-
-                        return Ok(());
-                    },
-                    PaneContent::Candlestick(ref mut chart) => {
-                        chart.update(&message);
-
-                        return Ok(());
-                    },
-                    _ => {
-                        return Err("No chart found");
-                    }
-                }
-            }
-        }
-        Err("No pane found")
-    }
-
-    fn get_pane_stream_mut(&mut self, pane_id: Uuid) -> Result<&mut Vec<StreamType>, &str> {
-        for (_, pane_state) in self.panes.iter_mut() {
-            if pane_state.id == pane_id {
-                return Ok(&mut pane_state.stream);
-            }
-        }
-        Err("No pane found")
-    }
-
-    fn get_pane_settings_mut(&mut self, pane_id: Uuid) -> Result<&mut PaneSettings, &str> {
-        for (_, pane_state) in self.panes.iter_mut() {
-            if pane_state.id == pane_id {
-                return Ok(&mut pane_state.settings);
-            }
-        }
-        Err("No pane found")
-    }
-
-    fn set_pane_content(&mut self, pane_id: Uuid, content: PaneContent) -> Result<(), &str> {
-        for (_, pane_state) in self.panes.iter_mut() {
-            if pane_state.id == pane_id {
-                pane_state.content = content;
-
-                return Ok(());
-            }
-        }
-        Err("No pane found")
-    }
-
-    fn footprint_change_ticksize(&mut self, pane_id: Uuid, new_tick_size: f32) -> Result<(), &str> {
-        for (_, pane_state) in self.panes.iter_mut() {
-            if pane_state.id == pane_id {
-                match pane_state.content {
-                    PaneContent::Footprint(ref mut chart) => {
-                        chart.change_tick_size(new_tick_size);
-                        
-                        return Ok(());
-                    },
-                    _ => {
-                        return Err("No footprint chart found");
-                    }
-                }
-            }
-        }
-        Err("No pane found")
-    }
-
-    fn get_mutable_pane_settings(&mut self, pane: pane_grid::Pane) -> Result<&mut PaneSettings, &str> {
-        self.panes.get_mut(pane).map(|pane_state| &mut pane_state.settings).ok_or("No pane found")
-    }
-    
-    fn get_streams_vec(&self) -> Vec<&Vec<StreamType>> {
-        self.panes.iter().map(|(_, pane_state)| &pane_state.stream).collect()
-    }
-
-    fn update_depth_and_trades(&mut self, stream_type: StreamType, depth_update_t: i64, depth: Depth, trades_buffer: Vec<Trade>) {
-        let depth = Rc::new(depth);
-
-        let trades_buffer = trades_buffer.into_boxed_slice();
-
-        for (_, pane_state) in self.panes.iter_mut() {
-            if pane_state.matches_stream(&stream_type) {
-                match &mut pane_state.content {
-                    PaneContent::Heatmap(chart) => {
-                        chart.insert_datapoint(&trades_buffer, depth_update_t, Rc::clone(&depth));
-                    },
-                    PaneContent::Footprint(chart) => {
-                        chart.insert_datapoint(&trades_buffer, depth_update_t);
-                    },
-                    PaneContent::TimeAndSales(chart) => {
-                        chart.update(&trades_buffer);
-                    },
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    fn insert_klines_vec(&mut self, stream_type: &StreamType, klines: &Vec<Kline>) {
-        for (_, pane_state) in self.panes.iter_mut() {
-            if pane_state.matches_stream(&stream_type) {
-                match &mut pane_state.content {
-                    PaneContent::Candlestick(chart) => chart.insert_klines(klines.to_vec()),
-                    PaneContent::Footprint(chart) => chart.insert_klines(klines.to_vec()),
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    fn update_latest_klines(&mut self, stream_type: &StreamType, kline: &Kline) {
-        for (_, pane_state) in self.panes.iter_mut() {
-            if pane_state.matches_stream(&stream_type) {
-                match &mut pane_state.content {
-                    PaneContent::Candlestick(chart) => chart.update_latest_kline(kline),
-                    PaneContent::Footprint(chart) => chart.update_latest_kline(kline),
-                    _ => {}
-                }
-            }
-        }
-    }
-}
-
-struct PaneState {
-    id: Uuid,
-    show_modal: bool,
-    stream: Vec<StreamType>,
-    content: PaneContent,
-    settings: PaneSettings,
-}
-
-impl PaneState {
-    fn new(id: Uuid, stream: Vec<StreamType>, settings: PaneSettings) -> Self {
-        Self {
-            id,
-            show_modal: false,
-            stream,
-            content: PaneContent::Starter,
-            settings,
-        }
-    }
-
-    fn matches_stream(&self, stream_type: &StreamType) -> bool {
-        self.stream.iter().any(|stream| stream == stream_type)
-    }
-}
-
-enum PaneContent {
-    Heatmap(HeatmapChart),
-    Footprint(FootprintChart),
-    Candlestick(CandlestickChart),
-    TimeAndSales(TimeAndSales),
-    Starter,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct PaneSettings {
-    min_tick_size: Option<f32>,
-    trade_size_filter: Option<f32>,
-    tick_multiply: Option<TickMultiplier>,
-    selected_ticker: Option<Ticker>,
-    selected_exchange: Option<Exchange>,
-    selected_timeframe: Option<Timeframe>,
-}
-impl Default for PaneSettings {
-    fn default() -> Self {
-        Self {
-            min_tick_size: None,
-            trade_size_filter: Some(0.0),
-            tick_multiply: Some(TickMultiplier(10)),
-            selected_ticker: None,
-            selected_exchange: None,
-            selected_timeframe: Some(Timeframe::M1),
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub enum StreamType {
-    Kline {
-        exchange: Exchange,
-        ticker: Ticker,
-        timeframe: Timeframe,
-    },
-    DepthAndTrades {
-        exchange: Exchange,
-        ticker: Ticker,
-    },
-    None,
-}
-
 
 impl State {
     fn new() -> Self {
@@ -1284,7 +940,6 @@ where
     .into()
 }
 
-
 trait ChartView {
     fn view(&self, id: &PaneState) -> Element<Message>;
 }
@@ -1569,19 +1224,4 @@ fn view_controls<'a>(
     } 
 
     row.into()
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TickMultiplier(u16);
-
-impl std::fmt::Display for TickMultiplier {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}x", self.0)
-    }
-}
-
-impl TickMultiplier {
-    fn multiply_with_min_tick_size(&self, min_tick_size: f32) -> f32 {
-        self.0 as f32 * min_tick_size
-    }
 }
