@@ -413,11 +413,23 @@ impl Dashboard {
         }
     }
 
-    fn update_kline(&mut self, stream_type: &StreamType, kline: &Kline) {
+    fn insert_klines_vec(&mut self, stream_type: &StreamType, klines: &Vec<Kline>) {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.matches_stream(&stream_type) {
                 match &mut pane_state.content {
-                    PaneContent::Candlestick(chart) => chart.insert_datapoint(kline),
+                    PaneContent::Candlestick(chart) => chart.insert_klines(klines.to_vec()),
+                    PaneContent::Footprint(chart) => chart.insert_klines(klines.to_vec()),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn update_latest_klines(&mut self, stream_type: &StreamType, kline: &Kline) {
+        for (_, pane_state) in self.panes.iter_mut() {
+            if pane_state.matches_stream(&stream_type) {
+                match &mut pane_state.content {
+                    PaneContent::Candlestick(chart) => chart.update_latest_kline(kline),
                     PaneContent::Footprint(chart) => chart.update_latest_kline(kline),
                     _ => {}
                 }
@@ -480,7 +492,7 @@ impl Default for PaneSettings {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum StreamType {
     Kline {
         exchange: Exchange,
@@ -669,13 +681,11 @@ impl State {
                     Ok(klines) => {
                         match pane_stream {
                             StreamType::Kline { exchange, ticker, timeframe } => {
-                                for kline in klines {
-                                    self.dashboard.update_kline(&StreamType::Kline {
-                                        exchange,
-                                        ticker,
-                                        timeframe,
-                                    }, &kline);
-                                }
+                                self.dashboard.insert_klines_vec(&StreamType::Kline {
+                                    exchange,
+                                    ticker,
+                                    timeframe,
+                                }, &klines);
                             },
                             _ => {}
                         }
@@ -692,7 +702,6 @@ impl State {
                     move |()| Message::CutTheKlineStream
                 )
             },
-
             Message::MarketWsEvent(event) => {
                 match event {
                     MarketEvents::Binance(event) => match event {
@@ -717,7 +726,7 @@ impl State {
                                 timeframe,
                             };
 
-                            self.dashboard.update_kline(&stream_type, &kline);
+                            self.dashboard.update_latest_klines(&stream_type, &kline);
                         }
                     },
                     MarketEvents::Bybit(event) => match event {
@@ -865,127 +874,65 @@ impl State {
             Message::PaneContentSelected(content, pane_id, pane_stream) => {
                 let mut tasks = vec![];
                 
-                match content.as_str() {
-                    "Heatmap chart" => {
-                        let pane_content = PaneContent::Heatmap(HeatmapChart::new());
-
-                        match self.dashboard.get_pane_stream_mut(pane_id) {
-                            Ok(vec_streams) => {
-                                *vec_streams = pane_stream.to_vec();
-                            },
-                            Err(err) => {
-                                dbg!("No pane found");
-                            }
-                        }
-
-                        match self.dashboard.set_pane_content(pane_id, pane_content) {
-                            Ok(_) => dbg!("Pane content set"),
-                            Err(err) => dbg!("No pane found"),
-                        };
-                    },
+                let pane_content = match content.as_str() {
+                    "Heatmap chart" => PaneContent::Heatmap(HeatmapChart::new()),
                     "Footprint chart" => {
-                        let footprint_chart = FootprintChart::new(1, 20.0, vec![], vec![]);
-                        let pane_content = PaneContent::Footprint(footprint_chart);
-
-                        match self.dashboard.get_pane_stream_mut(pane_id) {
-                            Ok(vec_streams) => {
-                                *vec_streams = pane_stream.to_vec();                
-                            },
-                            Err(err) => {
-                                dbg!("No pane found");
-                            }
-                        }
-
-                        match self.dashboard.set_pane_content(pane_id, pane_content) {
-                            Ok(_) => dbg!("Pane content set"),
-                            Err(err) => dbg!("No pane found"),
-                        };
+                        let footprint_chart = FootprintChart::new(1, 1.0, vec![], vec![]);
+                        PaneContent::Footprint(footprint_chart)
                     },
                     "Candlestick chart" => {
                         let candlestick_chart = CandlestickChart::new(vec![], Timeframe::M1);
-                        let pane_content = PaneContent::Candlestick(candlestick_chart);
-
-                        match self.dashboard.get_pane_stream_mut(pane_id) {
-                            Ok(vec_streams) => {
-                                *vec_streams = pane_stream.to_vec();
-                            },
-                            Err(err) => {
-                                dbg!("No pane found");
-                            }
-                        }
-
-                        match self.dashboard.set_pane_content(pane_id, pane_content) {
-                            Ok(_) => dbg!("Pane content set"),
-                            Err(err) => dbg!("No pane found"),
-                        };
-
-                        for stream in pane_stream {
-                            match stream {
-                                StreamType::Kline { exchange: _, ticker, timeframe } => {
-                                    let fetch_klines = Task::perform(
-                                        binance::market_data::fetch_klines(ticker, timeframe)
-                                            .map_err(|err| format!("{err}")), 
-                                        move |klines| {
-                                            Message::FetchEvent(klines, stream.clone())
-                                        }
-                                    );
-
-                                    tasks.push(fetch_klines);
-                                }
-                                _ => {}
-                            }
-                        }
-
-                        self.kline_stream = false;
+                        PaneContent::Candlestick(candlestick_chart)
                     },
-                    "Time&Sales" => {
-                        let pane_content = PaneContent::TimeAndSales(TimeAndSales::new());
-
-                        match self.dashboard.get_pane_stream_mut(pane_id) {
-                            Ok(vec_streams) => {
-                                *vec_streams = pane_stream.to_vec();
-                            },
-                            Err(err) => {
-                                dbg!("No pane found");
-                            }
-                        }
-
-                        match self.dashboard.set_pane_content(pane_id, pane_content) {
-                            Ok(_) => dbg!("Pane content set"),
-                            Err(err) => dbg!("No pane found"),
-                        };
-                    }
-                    _ => {}
+                    "Time&Sales" => PaneContent::TimeAndSales(TimeAndSales::new()),
+                    _ => return Task::none(),
+                };
+                
+                if let Ok(vec_streams) = self.dashboard.get_pane_stream_mut(pane_id) {
+                    *vec_streams = pane_stream.to_vec();
+                } else {
+                    dbg!("No pane found for stream update");
                 }
-
-                for stream_vec in self.dashboard.get_streams_vec() {
-                    for stream in stream_vec {
-                        match stream {
-                            StreamType::Kline { exchange, ticker, timeframe: _ } => {
-                                self.pane_streams
-                                    .entry(*exchange)
-                                    .or_insert_with(HashMap::new)
-                                    .entry(*ticker)
-                                    .or_insert_with(HashSet::new)
-                                    .insert(stream.clone());
-                            }
-                            StreamType::DepthAndTrades { exchange, ticker } => {
-                                self.pane_streams
-                                    .entry(*exchange)
-                                    .or_insert_with(HashMap::new)
-                                    .entry(*ticker)
-                                    .or_insert_with(HashSet::new)
-                                    .insert(stream.clone());
-                            }
-                            _ => {}
+            
+                if let Err(err) = self.dashboard.set_pane_content(pane_id, pane_content) {
+                    dbg!("Failed to set pane content: {}", err);
+                } else {
+                    dbg!("Pane content set");
+                }
+            
+                if content == "Footprint chart" || content == "Candlestick chart" {
+                    self.kline_stream = false;
+                    for stream in pane_stream.iter() {
+                        if let StreamType::Kline { ticker, timeframe, .. } = stream {
+                            let stream_clone = stream.clone();
+                            let fetch_klines = Task::perform(
+                                binance::market_data::fetch_klines(*ticker, *timeframe)
+                                    .map_err(|err| format!("{err}")),
+                                move |klines| Message::FetchEvent(klines, stream_clone)
+                            );
+                            tasks.push(fetch_klines);
                         }
                     }
                 }
-
+            
+                for stream in pane_stream.iter() {
+                    match stream {
+                        StreamType::Kline { exchange, ticker, .. } | StreamType::DepthAndTrades { exchange, ticker } => {
+                            self.pane_streams
+                                .entry(*exchange)
+                                .or_insert_with(HashMap::new)
+                                .entry(*ticker)
+                                .or_insert_with(HashSet::new)
+                                .insert(stream.clone());
+                        }
+                        _ => {}
+                    }
+                }
+            
                 dbg!(&self.pane_streams);
-
+            
                 Task::batch(tasks)
-            }
+            }            
         }
     }
 
