@@ -1,12 +1,17 @@
 pub mod pane;
 
+pub use pane::{Uuid, PaneState, PaneContent, PaneSettings};
+
+use crate::{
+    charts::Message, 
+    data_providers::{
+        Depth, Kline, Ticker, Timeframe, Trade
+    }, 
+    StreamType
+};
+
 use std::{collections::HashMap, rc::Rc};
-
 use iced::widget::pane_grid::{self, Configuration};
-pub use pane::{PaneState, PaneContent, PaneSettings};
-use uuid::Uuid;
-
-use crate::{charts, data_providers::{Depth, Kline, Ticker, Timeframe, Trade}, StreamType};
 
 pub struct Dashboard {
     pub panes: pane_grid::State<PaneState>,
@@ -33,7 +38,7 @@ impl Dashboard {
         }
     }
 
-    pub fn update_chart_state(&mut self, pane_id: Uuid, message: charts::Message) -> Result<(), &str> {
+    pub fn update_chart_state(&mut self, pane_id: Uuid, message: Message) -> Result<(), &str> {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.id == pane_id {
                 match pane_state.content {

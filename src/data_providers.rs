@@ -1,6 +1,20 @@
 pub mod binance;
 pub mod bybit;
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum StreamType {
+    Kline {
+        exchange: Exchange,
+        ticker: Ticker,
+        timeframe: Timeframe,
+    },
+    DepthAndTrades {
+        exchange: Exchange,
+        ticker: Ticker,
+    },
+    None,
+}
+
 // data types
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Order {

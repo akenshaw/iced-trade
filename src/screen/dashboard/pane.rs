@@ -1,4 +1,4 @@
-use uuid::Uuid;
+pub use uuid::Uuid;
 
 use crate::{
     charts::{

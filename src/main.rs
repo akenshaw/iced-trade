@@ -5,8 +5,9 @@ mod charts;
 mod style;
 mod screen;
 
-use screen::dashboard::{Dashboard, PaneContent, PaneSettings, PaneState};
-use data_providers::{binance, bybit, BinanceWsState, BybitWsState, Depth, Exchange, Kline, MarketEvents, TickMultiplier, Ticker, Timeframe, Trade, UserWsState};
+use style::{ICON_FONT, ICON_BYTES, Icon};
+use screen::dashboard::{Dashboard, PaneContent, PaneSettings, PaneState, Uuid};
+use data_providers::{binance, bybit, BinanceWsState, BybitWsState, UserWsState, Exchange, MarketEvents, TickMultiplier, Ticker, Timeframe, StreamType};
 
 use charts::footprint::FootprintChart;
 use charts::heatmap::HeatmapChart;
@@ -15,46 +16,17 @@ use charts::timeandsales::TimeAndSales;
 
 use futures::TryFutureExt;
 
-use std::{collections::{HashMap, HashSet, VecDeque}, rc::Rc, vec};
+use std::{collections::{HashMap, HashSet, VecDeque}, vec};
 
 use iced::{
     alignment, font, widget::{
-        button, center, checkbox, mouse_area, opaque, pick_list, stack, text_input, tooltip, Column, Container, Row, Slider, Space, Text
+        button, center, checkbox, mouse_area, opaque, pick_list, stack, tooltip, Column, Container, Row, Slider, Space, Text
     }, Alignment, Color, Task, Element, Font, Length, Renderer, Settings, Size, Subscription, Theme
 };
-use uuid::Uuid;
-
 use iced::widget::pane_grid::{self, PaneGrid, Configuration};
 use iced::widget::{
     container, row, scrollable, text, responsive
 };
-
-const ICON_BYTES: &[u8] = include_bytes!("fonts/icons.ttf");
-const ICON: Font = Font::with_name("icons");
-
-enum Icon {
-    Locked,
-    Unlocked,
-    ResizeFull,
-    ResizeSmall,
-    Close,
-    Layout,
-    Cog,
-}
-
-impl From<Icon> for char {
-    fn from(icon: Icon) -> Self {
-        match icon {
-            Icon::Unlocked => '\u{E800}',
-            Icon::Locked => '\u{E801}',
-            Icon::ResizeFull => '\u{E802}',
-            Icon::ResizeSmall => '\u{E803}',
-            Icon::Close => '\u{E804}',
-            Icon::Layout => '\u{E805}',
-            Icon::Cog => '\u{E806}',
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy)]
 #[derive(Eq, Hash, PartialEq)]
@@ -82,25 +54,14 @@ fn main() -> iced::Result {
     .run_with(move || State::new())
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub enum StreamType {
-    Kline {
-        exchange: Exchange,
-        ticker: Ticker,
-        timeframe: Timeframe,
-    },
-    DepthAndTrades {
-        exchange: Exchange,
-        ticker: Ticker,
-    },
-    None,
-}
-
 #[derive(Debug, Clone)]
 pub enum Message {
     Debug(String),
+    ErrorOccurred(String),
 
     ChartUserUpdate(charts::Message, Uuid),
+    ShowLayoutModal,
+    HideLayoutModal,
 
     // Market&User data stream
     UserKeySucceed(String),
@@ -112,6 +73,7 @@ pub enum Message {
     WsToggle,
     FetchEvent(Result<Vec<data_providers::Kline>, std::string::String>, StreamType),
     RestartStream(Option<pane_grid::Pane>, (Option<Ticker>, Option<Timeframe>, Option<f32>)),
+    CutTheKlineStream,
     
     // Pane grid
     Split(pane_grid::Axis, pane_grid::Pane, Uuid),
@@ -122,6 +84,7 @@ pub enum Message {
     Restore,
     Close(pane_grid::Pane),
     ToggleLayoutLock,
+    PaneContentSelected(String, Uuid, Vec<StreamType>),
 
     // Modal
     OpenModal(pane_grid::Pane),
@@ -131,17 +94,9 @@ pub enum Message {
     SliderChanged(PaneId, f32),
     SyncWithHeatmap(bool),
 
-    CutTheKlineStream,
-
-    ShowLayoutModal,
-    HideLayoutModal,
-
+    // Chart settings
     TicksizeSelected(TickMultiplier, Uuid),
-    SetMinTickSize(f32, Uuid),
-    
-    ErrorOccurred(String),
-
-    PaneContentSelected(String, Uuid, Vec<StreamType>),
+    SetMinTickSize(f32, Uuid),   
 }
 
 struct State {
@@ -665,9 +620,9 @@ impl State {
         let layout_lock_button = button(
             container(
                 if self.dashboard.pane_lock { 
-                    text(char::from(Icon::Locked).to_string()).font(ICON) 
+                    text(char::from(Icon::Locked).to_string()).font(ICON_FONT) 
                 } else { 
-                    text(char::from(Icon::Unlocked).to_string()).font(ICON) 
+                    text(char::from(Icon::Unlocked).to_string()).font(ICON_FONT) 
                 })
                 .width(25)
                 .center_x(iced::Pixels(20.0))
@@ -676,7 +631,7 @@ impl State {
 
         let add_pane_button = button(
             container(
-                text(char::from(Icon::Layout).to_string()).font(ICON))
+                text(char::from(Icon::Layout).to_string()).font(ICON_FONT))
                 .width(25)
                 .center_x(iced::Pixels(20.0))
             )
@@ -1207,12 +1162,12 @@ fn view_controls<'a>(
     }
 
     let mut buttons = vec![
-        (container(text(char::from(Icon::Cog).to_string()).font(ICON).size(14)).width(25).center_x(iced::Pixels(25.0)), Message::OpenModal(pane)),
-        (container(text(char::from(icon).to_string()).font(ICON).size(14)).width(25).center_x(iced::Pixels(25.0)), message),
+        (container(text(char::from(Icon::Cog).to_string()).font(ICON_FONT).size(14)).width(25).center_x(iced::Pixels(25.0)), Message::OpenModal(pane)),
+        (container(text(char::from(icon).to_string()).font(ICON_FONT).size(14)).width(25).center_x(iced::Pixels(25.0)), message),
     ];
 
     if total_panes > 1 {
-        buttons.push((container(text(char::from(Icon::Close).to_string()).font(ICON).size(14)).width(25).center_x(iced::Pixels(25.0)), Message::Close(pane)));
+        buttons.push((container(text(char::from(Icon::Close).to_string()).font(ICON_FONT).size(14)).width(25).center_x(iced::Pixels(25.0)), Message::Close(pane)));
     }
 
     for (content, message) in buttons {        

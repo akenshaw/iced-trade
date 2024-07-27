@@ -1,5 +1,32 @@
 use iced::widget::container::Style;
-use iced::{theme, Border, Color, Theme};
+use iced::{theme, Border, Color, Font, Theme};
+
+pub const ICON_BYTES: &[u8] = include_bytes!("fonts/icons.ttf");
+pub const ICON_FONT: Font = Font::with_name("icons");
+
+pub enum Icon {
+    Locked,
+    Unlocked,
+    ResizeFull,
+    ResizeSmall,
+    Close,
+    Layout,
+    Cog,
+}
+
+impl From<Icon> for char {
+    fn from(icon: Icon) -> Self {
+        match icon {
+            Icon::Unlocked => '\u{E800}',
+            Icon::Locked => '\u{E801}',
+            Icon::ResizeFull => '\u{E802}',
+            Icon::ResizeSmall => '\u{E803}',
+            Icon::Close => '\u{E804}',
+            Icon::Layout => '\u{E805}',
+            Icon::Cog => '\u{E806}',
+        }
+    }
+}
 
 fn styled(pair: theme::palette::Pair) -> Style {
     Style {
