@@ -5,7 +5,7 @@ pub use pane::{Uuid, PaneState, PaneContent, PaneSettings};
 use crate::{
     charts::Message, 
     data_providers::{
-        Depth, Kline, Ticker, Timeframe, Trade
+        Depth, Kline, TickMultiplier, Ticker, Timeframe, Trade
     }, 
     StreamType
 };
@@ -95,18 +95,26 @@ impl Dashboard {
         Err("No pane found")
     }
 
-    pub fn footprint_change_ticksize(&mut self, pane_id: Uuid, new_tick_size: f32) -> Result<(), &str> {
+    pub fn pane_change_ticksize(&mut self, pane_id: Uuid, new_tick_multiply: TickMultiplier) -> Result<(), &str> {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.id == pane_id {
-                match pane_state.content {
-                    PaneContent::Footprint(ref mut chart) => {
-                        chart.change_tick_size(new_tick_size);
-                        
-                        return Ok(());
-                    },
-                    _ => {
-                        return Err("No footprint chart found");
+                pane_state.settings.tick_multiply = Some(new_tick_multiply);
+
+                if let Some(min_tick_size) = pane_state.settings.min_tick_size {
+                    match pane_state.content {
+                        PaneContent::Footprint(ref mut chart) => {
+                            chart.change_tick_size(
+                                new_tick_multiply.multiply_with_min_tick_size(min_tick_size)
+                            );
+                            
+                            return Ok(());
+                        },
+                        _ => {
+                            return Err("No footprint chart found");
+                        }
                     }
+                } else {
+                    return Err("No min tick size found");
                 }
             }
         }
