@@ -209,10 +209,15 @@ impl State {
                 match self.dashboard.get_pane_settings_mut(pane_id) {
                     Ok(pane_settings) => {
                         pane_settings.min_tick_size = Some(min_tick_size);
-                        Task::none()
+                        
+                        dbg!("Min tick size set");
                     },
-                    Err(err) => Task::none()
+                    Err(err) => {
+                        dbg!("Failed to set min tick size: {}", err);
+                    }
                 }
+
+                Task::none()
             },
             Message::TickerSelected(ticker, pane_id) => {
                 let dashboard = &mut self.dashboard;
@@ -227,21 +232,16 @@ impl State {
                 }
             },
             Message::TicksizeSelected(tick_multiply, pane_id) => {
-                match self.dashboard.get_pane_settings_mut(pane_id) {
-                    Ok(pane_settings) => {
-                        pane_settings.tick_multiply = Some(tick_multiply);
-
-                        if let Some(min_tick_size) = pane_settings.min_tick_size {
-                            match self.dashboard.footprint_change_ticksize(pane_id, tick_multiply.multiply_with_min_tick_size(min_tick_size)) {
-                                Ok(_) => Task::none(),
-                                Err(err) => Task::none()
-                            }
-                        } else {
-                            Task::none()
-                        }
+                match self.dashboard.pane_change_ticksize(pane_id, tick_multiply) {
+                    Ok(_) => {
+                        dbg!("Ticksize changed");
                     },
-                    Err(err) => Task::none()
-                }
+                    Err(err) => {
+                        dbg!("Failed to change ticksize:, {}", err);
+                    }
+                };
+
+                Task::none()
             },
             Message::TimeframeSelected(timeframe, pane) => {                
                 match self.dashboard.get_mutable_pane_settings(pane) {
@@ -516,12 +516,28 @@ impl State {
                     for stream in pane_stream.iter() {
                         if let StreamType::Kline { ticker, timeframe, .. } = stream {
                             let stream_clone = stream.clone();
+
                             let fetch_klines = Task::perform(
                                 binance::market_data::fetch_klines(*ticker, *timeframe)
                                     .map_err(|err| format!("{err}")),
                                 move |klines| Message::FetchEvent(klines, stream_clone)
                             );
+
                             tasks.push(fetch_klines);
+                            
+                            if content == "Footprint chart" {
+                                let fetch_ticksize: Task<Message> = Task::perform(
+                                    binance::market_data::fetch_ticksize(*ticker),
+                                    move |result| match result {
+                                        Ok(ticksize) => Message::SetMinTickSize(ticksize, pane_id),
+                                        Err(err) => {
+                                            Message::ErrorOccurred(err.to_string())
+                                        }
+                                    }
+                                );
+
+                                tasks.push(fetch_ticksize);
+                            }    
                         }
                     }
                 }
