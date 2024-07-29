@@ -514,19 +514,15 @@ pub fn connect_market_stream(stream: Ticker) -> Subscription<Event> {
     )
 }
 
-pub fn connect_kline_stream(vec: Vec<(Ticker, Timeframe)>) -> Subscription<Event> {
-    struct Connect;
-
+pub fn connect_kline_stream(streams: Vec<(Ticker, Timeframe)>) -> Subscription<Event> {
     subscription::channel(
-        std::any::TypeId::of::<Connect>(),
+        streams.clone(),
         100,
         move |mut output| async move {
             let mut state = State::Disconnected;    
 
-            let mut symbol_str: &str = "";
-
-            let stream_str = vec.iter().map(|(ticker, timeframe)| {
-                symbol_str = match ticker {
+            let stream_str = streams.iter().map(|(ticker, timeframe)| {
+                let symbol_str = match ticker {
                     Ticker::BTCUSDT => "btcusdt",
                     Ticker::ETHUSDT => "ethusdt",
                     Ticker::SOLUSDT => "solusdt",
@@ -579,7 +575,7 @@ pub fn connect_kline_stream(vec: Vec<(Ticker, Timeframe)>) -> Subscription<Event
                                             volume: (buy_volume, sell_volume),
                                         };
 
-                                        if let Some(timeframe) = vec.iter().find(|(_, tf)| tf.to_string() == de_kline.interval) {
+                                        if let Some(timeframe) = streams.iter().find(|(_, tf)| tf.to_string() == de_kline.interval) {
                                             let _ = output.send(Event::KlineReceived(ticker, kline, timeframe.1)).await;
                                         }
                                     } else {
