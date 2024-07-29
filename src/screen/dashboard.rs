@@ -121,6 +121,29 @@ impl Dashboard {
         Err("No pane found")
     }
     
+    pub fn pane_set_size_filter(&mut self, pane_id: Uuid, new_size_filter: f32) -> Result<(), &str> {
+        for (_, pane_state) in self.panes.iter_mut() {
+            if pane_state.id == pane_id {
+                match pane_state.content {
+                    PaneContent::Heatmap(ref mut chart) => {
+                        chart.set_size_filter(new_size_filter);
+                        
+                        return Ok(());
+                    },
+                    PaneContent::TimeAndSales(ref mut chart) => {
+                        chart.set_size_filter(new_size_filter);
+                        
+                        return Ok(());
+                    },
+                    _ => {
+                        return Err("No footprint chart found");
+                    }
+                }
+            }
+        }
+        Err("No pane found")
+    }
+
     pub fn update_depth_and_trades(&mut self, stream_type: StreamType, depth_update_t: i64, depth: Depth, trades_buffer: Vec<Trade>) {
         let depth = Rc::new(depth);
 

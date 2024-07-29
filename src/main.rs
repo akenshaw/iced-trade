@@ -28,17 +28,6 @@ use iced::widget::{
     container, row, scrollable, text, responsive
 };
 
-#[derive(Debug, Clone, Copy)]
-#[derive(Eq, Hash, PartialEq)]
-pub enum PaneId {
-    HeatmapChart,
-    FootprintChart,
-    CandlestickChartA,
-    CandlestickChartB,
-    TimeAndSales,
-    TradePanel,
-}
-
 fn main() -> iced::Result {
     iced::application(
         "Iced Trade",
@@ -87,7 +76,7 @@ pub enum Message {
     CloseModal(Uuid),
 
     // Slider
-    SliderChanged(PaneId, f32),
+    SliderChanged(Uuid, f32),
     SyncWithHeatmap(bool),
 
     // Chart settings
@@ -356,7 +345,6 @@ impl State {
                 Task::none()
             },
 
-            // Pane grid
             Message::Split(axis, pane) => {
                 let focus_pane = if let Some((new_pane, _)) = 
                     self.dashboard.panes.split(axis, pane, PaneState::new(Uuid::new_v4(), vec![], PaneSettings::default())) {
@@ -414,7 +402,9 @@ impl State {
                 Task::none()
             },
 
-            Message::Debug(_msg) => {
+            Message::Debug(msg) => {
+                dbg!(msg);
+
                 Task::none()
             },
 
@@ -434,8 +424,26 @@ impl State {
             },
 
             Message::SliderChanged(pane_id, value) => {
-
-                Task::none()
+                match self.dashboard.pane_set_size_filter(pane_id, value) {
+                    Ok(_) => {
+                        match self.dashboard.get_pane_settings_mut(pane_id) {
+                            Ok(pane_settings) => {
+                                pane_settings.trade_size_filter = Some(value);
+        
+                                Task::none()
+                            },
+                            Err(err) => {
+                                eprintln!("Failed to set size filter: {err}");
+        
+                                Task::none()
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("{err}");
+                        Task::none()
+                    }
+                }
             },
             Message::SyncWithHeatmap(sync) => {   
             
@@ -910,7 +918,7 @@ impl ChartView for HeatmapChart {
                             .align_items(Alignment::Center)
                             .push(Text::new("Size Filtering"))
                             .push(
-                                Slider::new(0.0..=50000.0, *size_filter, move |value| Message::SliderChanged(PaneId::HeatmapChart, value))
+                                Slider::new(0.0..=50000.0, *size_filter, move |value| Message::SliderChanged(pane_id, value))
                                     .step(500.0)
                             )
                             .push(
@@ -970,7 +978,7 @@ impl ChartView for TimeAndSales {
                             .align_items(Alignment::Center)
                             .push(Text::new("Size Filtering"))
                             .push(
-                                Slider::new(0.0..=50000.0, *size_filter, move |value| Message::SliderChanged(PaneId::TimeAndSales, value))
+                                Slider::new(0.0..=50000.0, *size_filter, move |value| Message::SliderChanged(pane_id, value))
                                     .step(500.0)
                             )
                             .push(
