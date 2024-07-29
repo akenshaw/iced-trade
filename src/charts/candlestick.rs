@@ -10,12 +10,12 @@ use super::{chart_button, calculate_price_step, calculate_time_step};
 
 pub struct CandlestickChart {
     chart: CommonChartData,
-    data_points: BTreeMap<i64, (f32, f32, f32, f32, f32, f32)>,
+    data_points: BTreeMap<i64, Kline>,
     timeframe: u16,
 }
 
 impl Chart for CandlestickChart {
-    type DataPoint = BTreeMap<i64, (f32, f32, f32, f32, f32, f32)>;
+    type DataPoint = BTreeMap<i64, Kline>;
 
     fn get_common_data(&self) -> &CommonChartData {
         &self.chart
@@ -33,9 +33,7 @@ impl CandlestickChart {
         let mut klines_raw = BTreeMap::new();
 
         for kline in klines {
-            let buy_volume = kline.buy_volume;
-            let sell_volume = kline.volume - buy_volume;
-            klines_raw.insert(kline.time as i64, (kline.open, kline.high, kline.low, kline.close, buy_volume, sell_volume));
+            klines_raw.insert(kline.time as i64, kline);
         }
 
         let timeframe = match timeframe {
@@ -54,28 +52,14 @@ impl CandlestickChart {
     }
 
     pub fn update_latest_kline(&mut self, kline: &Kline) {
-        let buy_volume: f32 = kline.buy_volume;
-        let sell_volume: f32 = if buy_volume != -1.0 {
-            kline.volume - buy_volume
-        } else {
-            kline.volume
-        };
-
-        self.data_points.insert(kline.time as i64, (kline.open, kline.high, kline.low, kline.close, buy_volume, sell_volume));
+        self.data_points.insert(kline.time as i64, *kline);
 
         self.render_start();
     }
 
     pub fn insert_klines(&mut self, klines: Vec<Kline>) {
         for kline in klines {
-            let buy_volume: f32 = kline.buy_volume;
-            let sell_volume: f32 = if buy_volume != -1.0 {
-                kline.volume - buy_volume
-            } else {
-                kline.volume
-            };
-
-            self.data_points.insert(kline.time as i64, (kline.open, kline.high, kline.low, kline.close, buy_volume, sell_volume));
+            self.data_points.insert(kline.time as i64, kline);
         }
     }
 
@@ -113,10 +97,10 @@ impl CandlestickChart {
         let visible_klines = self.data_points.range(earliest..=latest);
     
         let (highest, lowest, avg_body_height, count) = visible_klines.fold((f32::MIN, f32::MAX, 0.0f32, 0), |(highest, lowest, total_body_height, count), (_, kline)| {
-            let body_height = (kline.0 - kline.3).abs();
+            let body_height = (kline.open - kline.close).abs();
             (
-                highest.max(kline.1),
-                lowest.min(kline.2),
+                highest.max(kline.high),
+                lowest.min(kline.low),
                 total_body_height + body_height,
                 count + 1,
             )
@@ -450,18 +434,18 @@ impl canvas::Program<Message> for CandlestickChart {
             let mut max_volume: f32 = 0.0;
 
             for (_, kline) in self.data_points.range(earliest..=latest) {
-                max_volume = max_volume.max(kline.4.max(kline.5));
+                max_volume = max_volume.max(kline.volume.0.max(kline.volume.1));
             }
 
-            for (time, (open, high, low, close, buy_volume, sell_volume)) in self.data_points.range(earliest..=latest) {
+            for (time, kline) in self.data_points.range(earliest..=latest) {
                 let x_position: f64 = ((time - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
                 
-                let y_open = candlesticks_area_height - ((open - lowest) / y_range * candlesticks_area_height);
-                let y_high = candlesticks_area_height - ((high - lowest) / y_range * candlesticks_area_height);
-                let y_low = candlesticks_area_height - ((low - lowest) / y_range * candlesticks_area_height);
-                let y_close = candlesticks_area_height - ((close - lowest) / y_range * candlesticks_area_height);
+                let y_open = candlesticks_area_height - ((kline.open - lowest) / y_range * candlesticks_area_height);
+                let y_high = candlesticks_area_height - ((kline.high - lowest) / y_range * candlesticks_area_height);
+                let y_low = candlesticks_area_height - ((kline.low - lowest) / y_range * candlesticks_area_height);
+                let y_close = candlesticks_area_height - ((kline.close - lowest) / y_range * candlesticks_area_height);
                 
-                let color = if close >= open { Color::from_rgb8(81, 205, 160) } else { Color::from_rgb8(192, 80, 77) };
+                let color = if kline.close >= kline.open { Color::from_rgb8(81, 205, 160) } else { Color::from_rgb8(192, 80, 77) };
 
                 let body = Path::rectangle(
                     Point::new(x_position as f32 - (2.0 * chart.scaling), y_open.min(y_close)), 
@@ -475,9 +459,9 @@ impl canvas::Program<Message> for CandlestickChart {
                 );
                 frame.stroke(&wick, Stroke::default().with_color(color).with_width(1.0));
 
-                if *buy_volume != -1.0 {
-                    let buy_bar_height = (buy_volume / max_volume) * volume_area_height;
-                    let sell_bar_height = (sell_volume / max_volume) * volume_area_height;
+                if kline.volume.0 != -1.0 {
+                    let buy_bar_height = (kline.volume.0 / max_volume) * volume_area_height;
+                    let sell_bar_height = (kline.volume.1 / max_volume) * volume_area_height;
                     
                     let buy_bar = Path::rectangle(
                         Point::new(x_position as f32, bounds.height - buy_bar_height), 
@@ -491,13 +475,13 @@ impl canvas::Program<Message> for CandlestickChart {
                     );
                     frame.fill(&sell_bar, Color::from_rgb8(192, 80, 77)); 
                 } else {
-                    let bar_height = ((sell_volume) / max_volume) * volume_area_height;
+                    let bar_height = ((kline.volume.1) / max_volume) * volume_area_height;
                     
                     let bar = Path::rectangle(
                         Point::new(x_position as f32 - (2.0 * chart.scaling), bounds.height - bar_height), 
                         Size::new(4.0 * chart.scaling, bar_height)
                     );
-                    let color = if close >= open { Color::from_rgba8(81, 205, 160, 0.8) } else { Color::from_rgba8(192, 80, 77, 0.8) };
+                    let color = if kline.close >= kline.open { Color::from_rgba8(81, 205, 160, 0.8) } else { Color::from_rgba8(192, 80, 77, 0.8) };
 
                     frame.fill(&bar, color);
                 }
@@ -530,15 +514,15 @@ impl canvas::Program<Message> for CandlestickChart {
                         .find(|(time, _)| **time == rounded_timestamp as i64) {
 
                         
-                        let tooltip_text: String = if kline.4 != -1.0 {
+                        let tooltip_text: String = if kline.volume.0 != -1.0 {
                             format!(
                                 "O: {} H: {} L: {} C: {}\nBuyV: {:.0} SellV: {:.0}",
-                                kline.0, kline.1, kline.2, kline.3, kline.4, kline.5
+                                kline.open, kline.high, kline.low, kline.close, kline.volume.0, kline.volume.1
                             )
                         } else {
                             format!(
                                 "O: {} H: {} L: {} C: {}\nVolume: {:.0}",
-                                kline.0, kline.1, kline.2, kline.3, kline.5
+                                kline.open, kline.high, kline.low, kline.close, kline.volume.1
                             )
                         };
 

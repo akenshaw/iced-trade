@@ -139,8 +139,7 @@ pub struct Kline {
     pub high: f32,
     pub low: f32,
     pub close: f32,
-    pub volume: f32,
-    pub buy_volume: f32,
+    pub volume: (f32, f32),
 }
 
 #[derive(Default, Debug, Clone, Copy)]

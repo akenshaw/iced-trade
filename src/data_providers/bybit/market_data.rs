@@ -23,7 +23,7 @@ use tokio::net::TcpStream;
 use tokio_rustls::rustls::{ClientConfig, OwnedTrustAnchor};
 use tokio_rustls::TlsConnector;
 
-use crate::data_providers::{LocalDepthCache, Trade, Depth, Order, FeedLatency};
+use crate::data_providers::{Depth, FeedLatency, Kline, LocalDepthCache, Order, Trade};
 use crate::{Ticker, Timeframe};
 
 #[allow(clippy::large_enum_variant)]
@@ -272,16 +272,6 @@ fn string_to_timeframe(interval: &str) -> Option<Timeframe> {
     Timeframe::ALL.iter().find(|&tf| tf.to_string() == format!("{}m", interval)).copied()
 }
 
-#[derive(Deserialize, Debug, Clone, Copy)]
-pub struct Kline {
-    pub time: u64,
-    pub open: f32,
-    pub high: f32,
-    pub low: f32,
-    pub close: f32,
-    pub volume: f32,
-}
-
 pub fn connect_market_stream(stream: Ticker) -> Subscription<Event> {
     subscription::channel(
         stream,
@@ -503,7 +493,7 @@ pub fn connect_kline_stream(vec: Vec<(Ticker, Timeframe)>) -> Subscription<Event
                                                 high: str_f32_parse(&de_kline.high),
                                                 low: str_f32_parse(&de_kline.low),
                                                 close: str_f32_parse(&de_kline.close),
-                                                volume: str_f32_parse(&de_kline.volume),
+                                                volume: (-1.0, str_f32_parse(&de_kline.volume)),
                                             };
 
                                             if let Some(timeframe) = string_to_timeframe(&de_kline.interval) {
@@ -597,7 +587,7 @@ pub async fn fetch_klines(ticker: Ticker, timeframe: Timeframe) -> Result<Vec<Kl
             high: high?,
             low: low?,
             close: close?,
-            volume: volume?,
+            volume: (-1.0, volume?),
         })
     }).collect();
 

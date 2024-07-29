@@ -10,14 +10,14 @@ use super::chart_button;
 
 pub struct FootprintChart {
     chart: CommonChartData,
-    data_points: BTreeMap<i64, (HashMap<i64, (f32, f32)>, (f32, f32, f32, f32, f32, f32))>,
+    data_points: BTreeMap<i64, (HashMap<i64, (f32, f32)>, Kline)>,
     timeframe: u16,
     tick_size: f32,
     raw_trades: Vec<Trade>,
 }
 
 impl Chart for FootprintChart {
-    type DataPoint = BTreeMap<i64, (HashMap<i64, (f32, f32)>, (f32, f32, f32, f32, f32, f32))>;
+    type DataPoint = BTreeMap<i64, (HashMap<i64, (f32, f32)>, Kline)>;
 
     fn get_common_data(&self) -> &CommonChartData {
         &self.chart
@@ -31,21 +31,20 @@ impl FootprintChart {
     const MIN_SCALING: f32 = 0.4;
     const MAX_SCALING: f32 = 3.6;
 
-    pub fn new(timeframe: u16, tick_size: f32, klines_raw: Vec<(i64, f32, f32, f32, f32, f32, f32)>, raw_trades: Vec<Trade>) -> Self {
+    pub fn new(timeframe: u16, tick_size: f32, klines_raw: Vec<Kline>, raw_trades: Vec<Trade>) -> Self {
         let mut data_points = BTreeMap::new();
         let aggregate_time = 1000 * 60 * timeframe as i64;
 
         for kline in klines_raw {
-            let kline_raw = (kline.1, kline.2, kline.3, kline.4, kline.5, kline.6);
-            data_points.entry(kline.0).or_insert((HashMap::new(), kline_raw));
+            data_points.entry(kline.time as i64).or_insert((HashMap::new(), kline));
         };
         for trade in &raw_trades {
             let rounded_time = (trade.time / aggregate_time) * aggregate_time;
             let price_level: i64 = (trade.price * (1.0 / tick_size)).round() as i64;
 
-            let entry: &mut (HashMap<i64, (f32, f32)>, (f32, f32, f32, f32, f32, f32)) = data_points
+            let entry = data_points
                 .entry(rounded_time)
-                .or_insert((HashMap::new(), (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)));
+                .or_insert((HashMap::new(), Kline::default()));
 
             if let Some((buy_qty, sell_qty)) = entry.0.get_mut(&price_level) {
                 if trade.is_sell {
@@ -73,7 +72,7 @@ impl FootprintChart {
         let aggregate_time = 1000 * 60 * self.timeframe as i64;
         let rounded_depth_update = (depth_update / aggregate_time) * aggregate_time;
     
-        self.data_points.entry(rounded_depth_update).or_insert((HashMap::new(), (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)));
+        self.data_points.entry(rounded_depth_update).or_insert((HashMap::new(), Kline::default()));
         
         for trade in trades_buffer {
             let price_level: i64 = (trade.price * (1.0 / self.tick_size)).round() as i64;
@@ -97,23 +96,17 @@ impl FootprintChart {
 
     pub fn insert_klines(&mut self, klines: Vec<Kline>) {
         for kline in klines {
-            self.data_points.insert(kline.time as i64, (HashMap::new(), (kline.open, kline.high, kline.low, kline.close, kline.buy_volume, kline.volume)));
+            self.data_points.insert(kline.time as i64, (HashMap::new(), kline));
         }
     }
 
     pub fn update_latest_kline(&mut self, kline: &Kline) {
         if let Some((_, kline_value)) = self.data_points.get_mut(&(kline.time as i64)) {
-            kline_value.0 = kline.open;
-            kline_value.1 = kline.high;
-            kline_value.2 = kline.low;
-            kline_value.3 = kline.close;
-            kline_value.4 = kline.buy_volume;
-            
-            if kline_value.4 != -1.0 {
-                kline_value.5 = kline.volume - kline.buy_volume;
-            } else {
-                kline_value.5 = kline.volume;
-            }
+            kline_value.open = kline.open;
+            kline_value.high = kline.high;
+            kline_value.low = kline.low;
+            kline_value.close = kline.close;
+            kline_value.volume = kline.volume;
         } 
 
         self.render_start();
@@ -133,7 +126,7 @@ impl FootprintChart {
 
             let entry = new_data_points
                 .entry(rounded_time)
-                .or_insert((HashMap::new(), (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)));
+                .or_insert((HashMap::new(), Kline::default()));
 
             if let Some((buy_qty, sell_qty)) = entry.0.get_mut(&price_level) {
                 if trade.is_sell {
@@ -192,11 +185,11 @@ impl FootprintChart {
         let mut lowest: f32 = std::f32::MAX;
 
         for (_, (_, kline)) in self.data_points.range(earliest..=latest) {
-            if kline.1 > highest {
-                highest = kline.1;
+            if kline.high > highest {
+                highest = kline.high;
             }
-            if kline.2 < lowest {
-                lowest = kline.2;
+            if kline.low < lowest {
+                lowest = kline.low;
             }
         }
 
@@ -488,7 +481,7 @@ impl canvas::Program<Message> for FootprintChart {
                 for trade in trades {            
                     max_trade_qty = max_trade_qty.max(trade.1.0.max(trade.1.1));
                 }
-                max_volume = max_volume.max(kline.4.max(kline.5));
+                max_volume = max_volume.max(kline.volume.0.max(kline.volume.1));
             }
             
             for (time, (trades, kline)) in self.data_points.range(earliest..=latest) {
@@ -498,13 +491,13 @@ impl canvas::Program<Message> for FootprintChart {
                     continue;
                 }
 
-                let y_open = heatmap_area_height - ((kline.0 - lowest) / y_range * heatmap_area_height);
-                let y_high = heatmap_area_height - ((kline.1 - lowest) / y_range * heatmap_area_height);
-                let y_low = heatmap_area_height - ((kline.2 - lowest) / y_range * heatmap_area_height);
-                let y_close = heatmap_area_height - ((kline.3 - lowest) / y_range * heatmap_area_height);
+                let y_open = heatmap_area_height - ((kline.open - lowest) / y_range * heatmap_area_height);
+                let y_high = heatmap_area_height - ((kline.high - lowest) / y_range * heatmap_area_height);
+                let y_low = heatmap_area_height - ((kline.low - lowest) / y_range * heatmap_area_height);
+                let y_close = heatmap_area_height - ((kline.close - lowest) / y_range * heatmap_area_height);
                 
-                let body_color = if kline.3 >= kline.0 { Color::from_rgba8(81, 205, 160, 0.8) } else { Color::from_rgba8(192, 80, 77, 0.8) };
-                let wick_color = if kline.3 >= kline.0 { Color::from_rgba8(81, 205, 160, 0.4) } else { Color::from_rgba8(192, 80, 77, 0.4) };
+                let body_color = if kline.close >= kline.open { Color::from_rgba8(81, 205, 160, 0.8) } else { Color::from_rgba8(192, 80, 77, 0.8) };
+                let wick_color = if kline.close >= kline.open { Color::from_rgba8(81, 205, 160, 0.4) } else { Color::from_rgba8(192, 80, 77, 0.4) };
 
                 let wick = Path::line(
                     Point::new(x_position, y_high), 
@@ -541,9 +534,9 @@ impl canvas::Program<Message> for FootprintChart {
                 }
 
                 if max_volume > 0.0 {
-                    if kline.4 != -1.0 {
-                        let buy_bar_height = (kline.4 / max_volume) * volume_area_height;
-                        let sell_bar_height = (kline.5 / max_volume) * volume_area_height;
+                    if kline.volume.0 != -1.0 {
+                        let buy_bar_height = (kline.volume.0 / max_volume) * volume_area_height;
+                        let sell_bar_height = (kline.volume.1 / max_volume) * volume_area_height;
 
                         let sell_bar_width = 8.0 * chart.scaling;
                         let sell_bar_x_position = x_position - (5.0*chart.scaling) - sell_bar_width;
@@ -559,12 +552,12 @@ impl canvas::Program<Message> for FootprintChart {
                         );
                         frame.fill(&buy_bar, Color::from_rgb8(81, 205, 160));
                     } else {
-                        let bar_height = (kline.5 / max_volume) * volume_area_height;
+                        let bar_height = (kline.volume.1 / max_volume) * volume_area_height;
                         let bar = Path::rectangle(
                             Point::new(x_position - (3.0*chart.scaling), bounds.height - bar_height), 
                             Size::new(6.0 * chart.scaling, bar_height)
                         );
-                        let color = if kline.3 >= kline.0 { Color::from_rgba8(81, 205, 160, 0.8) } else { Color::from_rgba8(192, 80, 77, 0.8) };
+                        let color = if kline.close >= kline.open { Color::from_rgba8(81, 205, 160, 0.8) } else { Color::from_rgba8(192, 80, 77, 0.8) };
 
                         frame.fill(&bar, color);
                     }
@@ -611,15 +604,15 @@ impl canvas::Program<Message> for FootprintChart {
                     if let Some((_, kline)) = self.data_points.iter()
                         .find(|(time, _)| **time == rounded_timestamp) {
 
-                            let tooltip_text: String = if kline.1.4 != -1.0 {
+                            let tooltip_text: String = if kline.1.volume.0 != -1.0 {
                                 format!(
                                     "O: {} H: {} L: {} C: {}\nBuyV: {:.0} SellV: {:.0}",
-                                    kline.1.0, kline.1.1, kline.1.2, kline.1.3, kline.1.4, kline.1.5
+                                    kline.1.open, kline.1.high, kline.1.low, kline.1.close, kline.1.volume.0, kline.1.volume.1
                                 )
                             } else {
                                 format!(
                                     "O: {} H: {} L: {} C: {}\nVolume: {:.0}",
-                                    kline.1.0, kline.1.1, kline.1.2, kline.1.3, kline.1.5
+                                    kline.1.open, kline.1.high, kline.1.low, kline.1.close, kline.1.volume.1
                                 )
                             };
 
