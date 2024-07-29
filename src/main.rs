@@ -67,15 +67,12 @@ pub enum Message {
     UserKeySucceed(String),
     UserKeyError,
     TickerSelected(Ticker, Uuid),
-    TimeframeSelected(Timeframe, pane_grid::Pane),
     ExchangeSelected(Exchange, Uuid),
     MarketWsEvent(MarketEvents),
-    WsToggle,
     FetchEvent(Result<Vec<data_providers::Kline>, std::string::String>, StreamType),
-    RestartStream(Option<pane_grid::Pane>, (Option<Ticker>, Option<Timeframe>, Option<f32>)),
     
     // Pane grid
-    Split(pane_grid::Axis, pane_grid::Pane, Uuid),
+    Split(pane_grid::Axis, pane_grid::Pane),
     Clicked(pane_grid::Pane),
     Dragged(pane_grid::DragEvent),
     Resized(pane_grid::ResizeEvent),
@@ -95,6 +92,7 @@ pub enum Message {
 
     // Chart settings
     TicksizeSelected(TickMultiplier, Uuid),
+    TimeframeSelected(Timeframe, Uuid),
     SetMinTickSize(f32, Uuid),   
 }
 
@@ -207,83 +205,71 @@ impl State {
                     Ok(pane_settings) => {
                         pane_settings.min_tick_size = Some(min_tick_size);
                         
-                        dbg!("Min tick size set");
+                        Task::none()
                     },
                     Err(err) => {
-                        dbg!("Failed to set min tick size: {}", err);
+                        eprintln!("Failed to set min tick size: {err}");
+
+                        Task::none()
                     }
                 }
-
-                Task::none()
             },
             Message::TickerSelected(ticker, pane_id) => {
-                let dashboard = &mut self.dashboard;
-
-                match dashboard.get_pane_settings_mut(pane_id) {
+                match self.dashboard.get_pane_settings_mut(pane_id) {
                     Ok(pane_settings) => {
                         pane_settings.selected_ticker = Some(ticker);
                         
                         Task::none()
                     },
-                    Err(err) => Task::none()
+                    Err(err) => {
+                        eprintln!("{err}");
+
+                        Task::none()
+                    }
+                }
+            },
+            Message::TimeframeSelected(timeframe, pane_id) => {                
+                match self.dashboard.get_pane_settings_mut(pane_id) {
+                    Ok(pane_settings) => {
+                        pane_settings.selected_timeframe = Some(timeframe);
+
+                        Task::none()
+                    },
+                    Err(err) => {
+                        eprintln!("Failed to change timeframe: {err}");
+
+                        Task::none()
+                    }
+                }
+            },
+            Message::ExchangeSelected(exchange, pane_id) => {
+                match self.dashboard.get_pane_settings_mut(pane_id) {
+                    Ok(pane_settings) => {
+                        pane_settings.selected_exchange = Some(exchange);
+
+                        Task::none()
+                    },
+                    Err(err) => {
+                        eprintln!("{err}");
+
+                        Task::none()
+                    }
                 }
             },
             Message::TicksizeSelected(tick_multiply, pane_id) => {
                 match self.dashboard.pane_change_ticksize(pane_id, tick_multiply) {
                     Ok(_) => {
                         dbg!("Ticksize changed");
+
+                        Task::none()
                     },
                     Err(err) => {
-                        dbg!("Failed to change ticksize:, {}", err);
-                    }
-                };
-
-                Task::none()
-            },
-            Message::TimeframeSelected(timeframe, pane) => {                
-                match self.dashboard.get_mutable_pane_settings(pane) {
-                    Ok(pane_settings) => {
-                        pane_settings.selected_timeframe = Some(timeframe);
+                        eprintln!("Failed to change ticksize: {err}");
 
                         Task::none()
-                    },
-                    Err(err) => Task::none()
-                }
-            },
-            Message::ExchangeSelected(exchange, pane) => {
-                match self.dashboard.get_pane_settings_mut(pane) {
-                    Ok(pane_settings) => {
-                        pane_settings.selected_exchange = Some(exchange);
-
-                        Task::none()
-                    },
-                    Err(err) => Task::none()
-                }
-            },
-            Message::RestartStream(pane, cached_state) => {
-                if let Some(pane) = pane {
-                    if let Some(timeframe) = cached_state.1 {
-                        Task::perform(
-                            async {
-                            },
-                            move |()| Message::TimeframeSelected(timeframe, pane)
-                        )
-                    } else {
-                        Task::perform(
-                            async {
-                            },
-                            move |()| Message::ErrorOccurred(format!("No timeframe found in pane state to stream"))
-                        )
                     }
-                } else {
-                    Task::none()
                 }
-            },
-            Message::WsToggle => {
-                self.ws_running = !self.ws_running;
-
-                Task::none()
-            },       
+            },  
             Message::FetchEvent(klines, pane_stream) => {
                 match klines {
                     Ok(klines) => {
@@ -366,16 +352,12 @@ impl State {
                 Task::none()
             },
             Message::UserKeyError => {
-                eprintln!("Check API keys");
+                dbg!("Check API keys");
                 Task::none()
             },
 
             // Pane grid
-            Message::Split(axis, pane, pane_id) => {
-                let cached_pane_state: (Option<Ticker>, Option<Timeframe>, Option<f32>) = *self.dashboard.pane_state_cache.get(&pane_id).unwrap_or(&(None, None, None));
-
-                let new_pane = None;
-
+            Message::Split(axis, pane) => {
                 let focus_pane = if let Some((new_pane, _)) = 
                     self.dashboard.panes.split(axis, pane, PaneState::new(Uuid::new_v4(), vec![], PaneSettings::default())) {
                             Some(new_pane)
@@ -389,11 +371,7 @@ impl State {
 
                 self.dashboard.last_axis_split = Some(axis);
 
-                Task::perform(
-                    async {
-                    },
-                    move |()| Message::RestartStream(new_pane, cached_pane_state)
-                )
+                Task::none()
             },
             Message::Clicked(pane) => {
                 self.dashboard.focus = Some(pane);
@@ -755,7 +733,7 @@ impl State {
             } 
 
             let add_pane_button = button("add new pane").width(iced::Pixels(200.0)).on_press(
-                Message::Split(axis_to_split, pane_to_split, Uuid::new_v4())
+                Message::Split(axis_to_split, pane_to_split)
             );
 
             let signup = container(
@@ -1138,7 +1116,7 @@ fn view_controls<'a>(
             let timeframe_picker = pick_list(
                 &Timeframe::ALL[..],
                 settings.selected_timeframe,
-                move |timeframe| Message::TimeframeSelected(timeframe, pane),
+                move |timeframe| Message::TimeframeSelected(timeframe, pane_id),
             ).placeholder("Choose a timeframe...").text_size(11).width(iced::Pixels(80.0));
     
             let tf_tooltip = tooltip(timeframe_picker, "Timeframe", tooltip::Position::Top).style(style::tooltip);
@@ -1159,7 +1137,7 @@ fn view_controls<'a>(
             let timeframe_picker = pick_list(
                 &Timeframe::ALL[..],
                 settings.selected_timeframe,
-                move |timeframe| Message::TimeframeSelected(timeframe, pane),
+                move |timeframe| Message::TimeframeSelected(timeframe, pane_id),
             ).placeholder("Choose a timeframe...").text_size(11).width(iced::Pixels(80.0));
     
             let tooltip = tooltip(timeframe_picker, "Timeframe", tooltip::Position::Top).style(style::tooltip);
