@@ -120,10 +120,6 @@ impl Dashboard {
         }
         Err("No pane found")
     }
-
-    pub fn get_mutable_pane_settings(&mut self, pane: pane_grid::Pane) -> Result<&mut PaneSettings, &str> {
-        self.panes.get_mut(pane).map(|pane_state| &mut pane_state.settings).ok_or("No pane found")
-    }
     
     pub fn update_depth_and_trades(&mut self, stream_type: StreamType, depth_update_t: i64, depth: Depth, trades_buffer: Vec<Trade>) {
         let depth = Rc::new(depth);
