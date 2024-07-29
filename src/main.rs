@@ -73,7 +73,6 @@ pub enum Message {
     WsToggle,
     FetchEvent(Result<Vec<data_providers::Kline>, std::string::String>, StreamType),
     RestartStream(Option<pane_grid::Pane>, (Option<Ticker>, Option<Timeframe>, Option<f32>)),
-    CutTheKlineStream,
     
     // Pane grid
     Split(pane_grid::Axis, pane_grid::Pane, Uuid),
@@ -110,7 +109,6 @@ struct State {
     bybit_ws_state: BybitWsState,
     user_ws_state: UserWsState,
 
-    kline_stream: bool,
     ws_running: bool,
 
     feed_latency_cache: VecDeque<data_providers::FeedLatency>,
@@ -185,7 +183,6 @@ impl State {
         
         Self { 
             dashboard,
-            kline_stream: true,
             listen_key: None,
             binance_ws_state: BinanceWsState::Disconnected,
             bybit_ws_state: BybitWsState::Disconnected,
@@ -306,12 +303,7 @@ impl State {
                     }
                 }
 
-                Task::perform(
-                    async {
-                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                    },
-                    move |()| Message::CutTheKlineStream
-                )
+                Task::none()
             },
             Message::MarketWsEvent(event) => {
                 match event {
@@ -355,7 +347,14 @@ impl State {
                             
                             self.dashboard.update_depth_and_trades(stream_type, depth_update_t, depth, trades_buffer);
                         }
-                        bybit::market_data::Event::KlineReceived(kline, timeframe) => {
+                        bybit::market_data::Event::KlineReceived(ticker, kline, timeframe) => {
+                            let stream_type = StreamType::Kline {
+                                exchange: Exchange::BybitLinear,
+                                ticker,
+                                timeframe,
+                            };
+
+                            self.dashboard.update_latest_klines(&stream_type, &kline);
                         }
                     },
                 }
@@ -464,10 +463,6 @@ impl State {
             
                 Task::none()
             },
-            Message::CutTheKlineStream => {
-                self.kline_stream = true;
-                Task::none()
-            },
 
             Message::ShowLayoutModal => {
                 self.dashboard.show_layout_modal = true;
@@ -512,7 +507,6 @@ impl State {
                 }
             
                 if content == "Footprint chart" || content == "Candlestick chart" {
-                    self.kline_stream = false;
                     for stream in pane_stream.iter() {
                         if let StreamType::Kline { exchange, ticker, timeframe } = stream {
                             let stream_clone = stream.clone();
@@ -819,7 +813,7 @@ impl State {
                         }
                     }
 
-                    if kline_streams.len() > 0 && self.kline_stream {
+                    if kline_streams.len() > 0 {
                         let mut streams: Vec<(Ticker, Timeframe)> = vec![];
                             
                         for (ticker, timeframe) in kline_streams {
@@ -835,15 +829,18 @@ impl State {
                     subscriptions.push(Subscription::batch(depth_streams));
                 },
                 Exchange::BybitLinear => {
-                    let mut bybit_streams = Vec::new();
+                    let mut depth_streams = Vec::new();
+
+                    let mut kline_streams = Vec::new();
 
                     for (_, stream_types) in stream {
                         for stream_type in stream_types {
                             match stream_type {
                                 StreamType::Kline { exchange, ticker, timeframe } => {
-                                },
+                                    kline_streams.push((ticker, timeframe));
+                                }
                                 StreamType::DepthAndTrades { exchange, ticker } => {
-                                    bybit_streams.push(
+                                    depth_streams.push(
                                         bybit::market_data::connect_market_stream(*ticker)
                                             .map(|event: bybit::market_data::Event| Message::MarketWsEvent(MarketEvents::Bybit(event)))
                                     );
@@ -853,7 +850,20 @@ impl State {
                         }
                     }
 
-                    subscriptions.push(Subscription::batch(bybit_streams));
+                    if kline_streams.len() > 0 {
+                        let mut streams: Vec<(Ticker, Timeframe)> = vec![];
+                            
+                        for (ticker, timeframe) in kline_streams {
+                            streams.push((*ticker, *timeframe));
+                        }
+
+                        subscriptions.push(
+                            bybit::market_data::connect_kline_stream(streams)
+                                .map(move |event: bybit::market_data::Event| Message::MarketWsEvent(MarketEvents::Bybit(event)))
+                        );
+                    }
+
+                    subscriptions.push(Subscription::batch(depth_streams));
                 },
             }
         }
