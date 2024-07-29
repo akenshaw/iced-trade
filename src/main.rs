@@ -514,30 +514,45 @@ impl State {
                 if content == "Footprint chart" || content == "Candlestick chart" {
                     self.kline_stream = false;
                     for stream in pane_stream.iter() {
-                        if let StreamType::Kline { ticker, timeframe, .. } = stream {
+                        if let StreamType::Kline { exchange, ticker, timeframe } = stream {
                             let stream_clone = stream.clone();
-
-                            let fetch_klines = Task::perform(
-                                binance::market_data::fetch_klines(*ticker, *timeframe)
-                                    .map_err(|err| format!("{err}")),
-                                move |klines| Message::FetchEvent(klines, stream_clone)
-                            );
-
+                            let fetch_klines = match exchange {
+                                Exchange::BinanceFutures => Task::perform(
+                                    binance::market_data::fetch_klines(*ticker, *timeframe)
+                                        .map_err(|err| format!("{err}")),
+                                    move |klines| Message::FetchEvent(klines, stream_clone)
+                                ),
+                                Exchange::BybitLinear => Task::perform(
+                                    bybit::market_data::fetch_klines(*ticker, *timeframe)
+                                        .map_err(|err| format!("{err}")),
+                                    move |klines| Message::FetchEvent(klines, stream_clone)
+                                ),
+                                _ => continue,
+                            };
+                
                             tasks.push(fetch_klines);
-                            
+                
                             if content == "Footprint chart" {
-                                let fetch_ticksize: Task<Message> = Task::perform(
-                                    binance::market_data::fetch_ticksize(*ticker),
-                                    move |result| match result {
-                                        Ok(ticksize) => Message::SetMinTickSize(ticksize, pane_id),
-                                        Err(err) => {
-                                            Message::ErrorOccurred(err.to_string())
+                                let fetch_ticksize: Task<Message> = match exchange {
+                                    Exchange::BinanceFutures => Task::perform(
+                                        binance::market_data::fetch_ticksize(*ticker),
+                                        move |result| match result {
+                                            Ok(ticksize) => Message::SetMinTickSize(ticksize, pane_id),
+                                            Err(err) => Message::ErrorOccurred(err.to_string()),
                                         }
-                                    }
-                                );
-
+                                    ),
+                                    Exchange::BybitLinear => Task::perform(
+                                        bybit::market_data::fetch_ticksize(*ticker),
+                                        move |result| match result {
+                                            Ok(ticksize) => Message::SetMinTickSize(ticksize, pane_id),
+                                            Err(err) => Message::ErrorOccurred(err.to_string()),
+                                        }
+                                    ),
+                                    _ => continue,
+                                };
+                
                                 tasks.push(fetch_ticksize);
-                            }    
+                            }
                         }
                     }
                 }
