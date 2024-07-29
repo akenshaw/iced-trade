@@ -787,88 +787,56 @@ impl State {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let mut subscriptions = Vec::new();
-
+        let mut all_subscriptions = Vec::new();
+    
         for (exchange, stream) in &self.pane_streams {
-            match exchange {
-                Exchange::BinanceFutures => {                    
-                    let mut depth_streams = Vec::new();
-
-                    let mut kline_streams = Vec::new();
-
-                    for (_, stream_types) in stream {
-                        for stream_type in stream_types {
-                            match stream_type {
-                                StreamType::Kline { exchange, ticker, timeframe } => {
-                                    kline_streams.push((ticker, timeframe));
+            let mut depth_streams = Vec::new();
+            let mut kline_streams = Vec::new();
+    
+            for stream_types in stream.values() {
+                for stream_type in stream_types {
+                    match stream_type {
+                        StreamType::Kline { ticker, timeframe, .. } => {
+                            kline_streams.push((*ticker, *timeframe));
+                        },
+                        StreamType::DepthAndTrades { ticker, .. } => {
+                            let depth_stream = match exchange {
+                                Exchange::BinanceFutures => {
+                                    binance::market_data::connect_market_stream(*ticker)
+                                        .map(|event| Message::MarketWsEvent(MarketEvents::Binance(event)))
                                 },
-                                StreamType::DepthAndTrades { exchange, ticker } => {
-                                    depth_streams.push(
-                                        binance::market_data::connect_market_stream(*ticker)
-                                            .map(|event: binance::market_data::Event| Message::MarketWsEvent(MarketEvents::Binance(event)))
-                                    );
+                                Exchange::BybitLinear => {
+                                    bybit::market_data::connect_market_stream(*ticker)
+                                        .map(|event| Message::MarketWsEvent(MarketEvents::Bybit(event)))
                                 },
-                                _ => {}
-                            }
-                        }
+                            };
+                            depth_streams.push(depth_stream);
+                        },
+                        _ => {}
                     }
-
-                    if kline_streams.len() > 0 {
-                        let mut streams: Vec<(Ticker, Timeframe)> = vec![];
-                            
-                        for (ticker, timeframe) in kline_streams {
-                            streams.push((*ticker, *timeframe));
-                        }
-
-                        subscriptions.push(
-                            binance::market_data::connect_kline_stream(streams)
-                                .map(move |event: binance::market_data::Event| Message::MarketWsEvent(MarketEvents::Binance(event)))
-                        );
-                    }
-
-                    subscriptions.push(Subscription::batch(depth_streams));
-                },
-                Exchange::BybitLinear => {
-                    let mut depth_streams = Vec::new();
-
-                    let mut kline_streams = Vec::new();
-
-                    for (_, stream_types) in stream {
-                        for stream_type in stream_types {
-                            match stream_type {
-                                StreamType::Kline { exchange, ticker, timeframe } => {
-                                    kline_streams.push((ticker, timeframe));
-                                }
-                                StreamType::DepthAndTrades { exchange, ticker } => {
-                                    depth_streams.push(
-                                        bybit::market_data::connect_market_stream(*ticker)
-                                            .map(|event: bybit::market_data::Event| Message::MarketWsEvent(MarketEvents::Bybit(event)))
-                                    );
-                                },
-                                _ => {}
-                            }
-                        }
-                    }
-
-                    if kline_streams.len() > 0 {
-                        let mut streams: Vec<(Ticker, Timeframe)> = vec![];
-                            
-                        for (ticker, timeframe) in kline_streams {
-                            streams.push((*ticker, *timeframe));
-                        }
-
-                        subscriptions.push(
-                            bybit::market_data::connect_kline_stream(streams)
-                                .map(move |event: bybit::market_data::Event| Message::MarketWsEvent(MarketEvents::Bybit(event)))
-                        );
-                    }
-
-                    subscriptions.push(Subscription::batch(depth_streams));
-                },
+                }
+            }
+    
+            if !kline_streams.is_empty() {
+                let kline_subscription = match exchange {
+                    Exchange::BinanceFutures => {
+                        binance::market_data::connect_kline_stream(kline_streams)
+                            .map(|event| Message::MarketWsEvent(MarketEvents::Binance(event)))
+                    },
+                    Exchange::BybitLinear => {
+                        bybit::market_data::connect_kline_stream(kline_streams)
+                            .map(|event| Message::MarketWsEvent(MarketEvents::Bybit(event)))
+                    },
+                };
+                all_subscriptions.push(kline_subscription);
+            }
+    
+            if !depth_streams.is_empty() {
+                all_subscriptions.push(Subscription::batch(depth_streams));
             }
         }
-
-        Subscription::batch(subscriptions)
+    
+        Subscription::batch(all_subscriptions)
     }    
 
     fn update_exchange_latency(&mut self) {
