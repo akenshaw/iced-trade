@@ -1,6 +1,7 @@
 use iced::widget::button::Status;
 use iced::widget::container::Style;
-use iced::{theme, Border, Color, Font, Shadow, Theme, Vector};
+use iced::{theme, Border, Color, Font, Theme, overlay};
+use iced::widget::pick_list;
 
 pub const ICON_BYTES: &[u8] = include_bytes!("fonts/icons.ttf");
 pub const ICON_FONT: Font = Font::with_name("icons");
@@ -27,20 +28,6 @@ impl From<Icon> for char {
             Icon::Cog => '\u{E806}',
         }
     }
-}
-
-fn styled(pair: theme::palette::Pair) -> Style {
-    Style {
-        background: Some(pair.color.into()),
-        text_color: pair.text.into(),
-        ..Default::default()
-    }
-}
-
-pub fn primary(theme: &Theme) -> Style {
-    let palette = theme.extended_palette();
-
-    styled(palette.primary.weak)
 }
 
 pub fn tooltip(theme: &Theme) -> Style {
@@ -99,6 +86,21 @@ pub fn pane_focused(theme: &Theme) -> Style {
     }
 }
 
+pub fn chart_modal(theme: &Theme) -> Style {
+    let palette = theme.extended_palette();
+
+    Style {
+        text_color: Some(palette.background.base.text),
+        background: Some(palette.background.base.color.into()),
+        border: Border {
+            width: 1.0,
+            color: palette.background.weak.color,
+            radius: 4.0.into(),
+        },
+        ..Default::default()
+    }
+}
+
 pub fn button_primary(theme: &Theme, status: Status) -> iced::widget::button::Style {
     let palette = theme.extended_palette();
 
@@ -143,6 +145,66 @@ pub fn button_primary(theme: &Theme, status: Status) -> iced::widget::button::St
             },
             ..Default::default()
         }
+    }
+}
+
+pub fn picklist_primary(theme: &Theme, status: pick_list::Status) -> pick_list::Style {
+    let palette = theme.extended_palette();
+    
+    match status {
+        pick_list::Status::Active => pick_list::Style {
+            text_color: palette.background.base.text,
+            placeholder_color: palette.background.base.text,
+            handle_color: palette.background.base.text,
+            background: palette.background.base.color.into(),
+            border: Border {
+                radius: 3.0.into(),
+                width: 1.0,
+                color: palette.background.weak.color,
+                ..Default::default()
+            },
+        },
+        pick_list::Status::Opened => pick_list::Style {
+            text_color: palette.background.base.text,
+            placeholder_color: palette.background.base.text,
+            handle_color: palette.background.base.text,
+            background: palette.background.base.color.into(),
+            border: Border {
+                radius: 3.0.into(),
+                width: 1.0,
+                color: palette.primary.base.color,
+                ..Default::default()
+            },
+        },
+        pick_list::Status::Hovered => pick_list::Style {
+            text_color: palette.background.weak.text,
+            placeholder_color: palette.background.weak.text,
+            handle_color: palette.background.weak.text,
+            background: palette.background.base.color.into(),
+            border: Border {
+                radius: 3.0.into(),
+                width: 1.0,
+                color: palette.primary.strong.color,
+                ..Default::default()
+            },
+        },
+    }
+}
+
+pub fn picklist_menu_primary(theme: &Theme) -> overlay::menu::Style {
+    let palette = theme.extended_palette();
+
+    overlay::menu::Style {
+        text_color: palette.background.base.text,
+        background: palette.background.base.color.into(),
+        border: Border {
+            radius: 3.0.into(),
+            width: 1.0,
+            color: palette.background.base.color,
+            ..Default::default()
+        },
+        selected_text_color: palette.background.weak.text,
+        selected_background: palette.secondary.weak.color.into(),
     }
 }
 
