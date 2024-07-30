@@ -96,9 +96,11 @@ impl Default for Interaction {
     }
 }
 
-fn chart_button(_theme: &Theme, _status: button::Status, is_active: bool) -> button::Style {
+fn chart_button(theme: &Theme, _status: button::Status, is_active: bool) -> button::Style {
+    let palette = theme.extended_palette();
+
     button::Style {
-        background: Some(Color::from_rgba8(20, 20, 20, 1.0).into()),
+        background: Some(Color::BLACK.into()),
         border: Border {
             color: {
                 if is_active {
@@ -110,7 +112,7 @@ fn chart_button(_theme: &Theme, _status: button::Status, is_active: bool) -> but
             width: 1.0,
             radius: 2.0.into(),
         },
-        text_color: Color::WHITE,
+        text_color: palette.background.base.text,
         ..button::Style::default()
     }
 }

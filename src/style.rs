@@ -1,5 +1,6 @@
+use iced::widget::button::Status;
 use iced::widget::container::Style;
-use iced::{theme, Border, Color, Font, Theme};
+use iced::{theme, Border, Color, Font, Shadow, Theme, Vector};
 
 pub const ICON_BYTES: &[u8] = include_bytes!("fonts/icons.ttf");
 pub const ICON_FONT: Font = Font::with_name("icons");
@@ -60,13 +61,8 @@ pub fn title_bar_active(theme: &Theme) -> Style {
     let palette = theme.extended_palette();
 
     Style {
-        text_color: Some(palette.background.strong.text),
-        background: Some(palette.background.strong.color.into()),
-        border: Border {
-            width: 1.0,
-            color: palette.primary.strong.color,
-            radius: 4.0.into(), 
-        },
+        text_color: Some(palette.background.base.text),
+        background: Some(Color::BLACK.into()),
         ..Default::default()
     }
 }
@@ -74,8 +70,8 @@ pub fn title_bar_focused(theme: &Theme) -> Style {
     let palette = theme.extended_palette();
 
     Style {
-        text_color: Some(palette.primary.strong.text),
-        background: Some(palette.primary.strong.color.into()),
+        text_color: Some(palette.background.weak.text),
+        background: Some(Color::TRANSPARENT.into()),
         ..Default::default()
     }
 }
@@ -83,12 +79,8 @@ pub fn pane_active(theme: &Theme) -> Style {
     let palette = theme.extended_palette();
 
     Style {
+        text_color: Some(palette.background.base.text),
         background: Some(Color::BLACK.into()),
-        border: Border {
-            width: 1.0,
-            color: palette.background.strong.color,
-            ..Border::default()
-        },
         ..Default::default()
     }
 }
@@ -96,15 +88,64 @@ pub fn pane_focused(theme: &Theme) -> Style {
     let palette = theme.extended_palette();
 
     Style {
+        text_color: Some(palette.background.weak.text),
         background: Some(Color::BLACK.into()),
         border: Border {
             width: 1.0,
-            color: palette.primary.strong.color,
-            ..Border::default()
+            color: palette.background.weak.color,
+            radius: 4.0.into(),
         },
         ..Default::default()
     }
 }
+
+pub fn button_primary(theme: &Theme, status: Status) -> iced::widget::button::Style {
+    let palette = theme.extended_palette();
+
+    match status {
+        Status::Active => iced::widget::button::Style {
+            background: Some(Color::BLACK.into()),
+            text_color: palette.background.base.text,
+            border: Border {
+                radius: 3.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        Status::Pressed => iced::widget::button::Style {
+            background: Some(Color::BLACK.into()),
+            text_color: palette.background.base.text,
+            border: Border {
+                color: palette.primary.weak.color,
+                width: 2.0,
+                radius: 6.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        Status::Hovered => iced::widget::button::Style {
+            background: Some(Color::BLACK.into()),
+            text_color: palette.background.weak.text,
+            border: Border {
+                color: palette.primary.strong.color,
+                width: 1.0,
+                radius: 3.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        Status::Disabled => iced::widget::button::Style {
+            background: Some(Color::BLACK.into()),
+            text_color: palette.background.base.text,
+            border: Border {
+                radius: 3.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+}
+
 pub fn sell_side_red(color_alpha: f32) -> Style {
     Style {
         text_color: Color::from_rgba(192.0 / 255.0, 80.0 / 255.0, 77.0 / 255.0, 1.0).into(),

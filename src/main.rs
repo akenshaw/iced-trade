@@ -19,13 +19,13 @@ use futures::TryFutureExt;
 use std::{collections::{HashMap, HashSet, VecDeque}, vec};
 
 use iced::{
-    alignment, font, widget::{
+    alignment, widget::{
         button, center, checkbox, mouse_area, opaque, pick_list, stack, tooltip, Column, Container, Row, Slider, Space, Text
-    }, Alignment, Color, Task, Element, Font, Length, Renderer, Settings, Size, Subscription, Theme
+    }, Alignment, Color, Element, Font, Length, Renderer, Settings, Size, Subscription, Task, Theme
 };
 use iced::widget::pane_grid::{self, PaneGrid, Configuration};
 use iced::widget::{
-    container, row, scrollable, text, responsive
+    container, row, scrollable, text
 };
 
 fn main() -> iced::Result {
@@ -399,6 +399,7 @@ impl State {
             },
             Message::ToggleLayoutLock => {
                 self.dashboard.pane_lock = !self.dashboard.pane_lock;
+
                 Task::none()
             },
 
@@ -560,15 +561,32 @@ impl State {
 
     fn view(&self) -> Element<'_, Message> {
         let focus = self.dashboard.focus;
-        let total_panes = self.dashboard.panes.len();
 
         let pane_grid = PaneGrid::new(&self.dashboard.panes, |id, pane, is_maximized| {
-            let is_focused = focus == Some(id);
-
+            let is_focused;
+            
+            if self.dashboard.pane_lock {
+                is_focused = false;
+            } else {
+                is_focused = focus == Some(id);
+            }
+        
             let chart_type = &self.dashboard.panes.get(id).unwrap().content;
+
+            let mut stream_name = pane.stream.iter().map(|stream| {
+                match stream {
+                    StreamType::Kline { exchange, ticker, timeframe } => {
+                        format!("{} {} {}", exchange, ticker, timeframe)
+                    }
+                    StreamType::DepthAndTrades { exchange, ticker } => {
+                        format!("{} {}", exchange, ticker)
+                    }
+                    _ => "".to_string()
+                }
+            }).collect::<Vec<String>>().join(", ");
     
-            let content: pane_grid::Content<'_, Message, _, Renderer> = 
-                pane_grid::Content::new(responsive(move |_| {
+            let mut content: pane_grid::Content<'_, Message, _, Renderer> = 
+                pane_grid::Content::new({
                     match chart_type {
                         PaneContent::Heatmap(chart) => view_chart(pane, chart),
                         
@@ -578,55 +596,44 @@ impl State {
 
                         PaneContent::TimeAndSales(chart) => view_chart(pane, chart),
 
-                        PaneContent::Starter => view_starter(pane),
+                        PaneContent::Starter => {
+                            stream_name = "Starter".to_string();
+                            view_starter(pane)
+                        }
                     }
-                }));
+                })
+                .style(
+                    if is_focused {
+                        style::pane_focused
+                    } else {
+                        style::pane_active
+                    }
+                );
     
-            if self.dashboard.pane_lock {
-                return content.style(style::pane_active);
-            }
-    
-            let mut content = content.style(if is_focused {
-                style::pane_focused
-            } else {
-                style::pane_active
-            });
-
-            let stream_name = pane.stream.iter().map(|stream| {
-                match stream {
-                    StreamType::Kline { exchange, ticker, timeframe } => {
-                        format!("{} {} {}", exchange, ticker, timeframe)
+            let title_bar = pane_grid::TitleBar::new(Text::new(stream_name))
+                .controls(view_controls(
+                    id,
+                    pane.id,
+                    chart_type,
+                    self.dashboard.panes.len(),
+                    is_maximized,
+                    &pane.settings,
+                ))
+                .padding(4)
+                .style(
+                    if is_focused {
+                        style::title_bar_focused
+                    } else {
+                        style::title_bar_active
                     }
-                    StreamType::DepthAndTrades { exchange, ticker } => {
-                        format!("{} {}", exchange, ticker)
-                    }
-                    _ => "Err stream type".to_string()
-                }
-            }).collect::<Vec<String>>().join(", ");
-        
-            if is_focused {
-                let title_bar = pane_grid::TitleBar::new(Text::new(stream_name))
-                    .always_show_controls()
-                    .controls(view_controls(
-                        id,
-                        pane.id,
-                        chart_type,
-                        total_panes,
-                        is_maximized,
-                        &pane.settings,
-                    ))
-                    .padding(4)
-                    .style(style::title_bar_focused);
-                content = content.title_bar(title_bar);
-            }
+                );
+            content = content.title_bar(title_bar);
+            
             content
         })
         .width(Length::Fill)
         .height(Length::Fill)
-        .spacing(6)
-        .on_click(Message::Clicked)
-        .on_drag(Message::Dragged)
-        .on_resize(10, Message::Resized);
+        .spacing(6);
 
         let layout_lock_button = button(
             container(
@@ -652,7 +659,8 @@ impl State {
             .spacing(10)
             .align_items(Alignment::Center)
             .push(
-                tooltip(add_pane_button, "Manage Panes", tooltip::Position::Bottom).style(style::tooltip))
+                tooltip(add_pane_button, "Manage Panes", tooltip::Position::Bottom).style(style::tooltip)
+            )
             .push(
                 tooltip(layout_lock_button, "Layout Lock", tooltip::Position::Bottom).style(style::tooltip)
             );
@@ -725,7 +733,16 @@ impl State {
                     .push(Space::with_width(Length::Fill))
                     .push(layout_controls)
             )
-            .push(pane_grid);
+            .push(
+                if self.dashboard.pane_lock {
+                    pane_grid
+                } else {
+                    pane_grid
+                        .on_click(Message::Clicked)
+                        .on_drag(Message::Dragged)
+                        .on_resize(10, Message::Resized)
+                }
+            );
 
         if self.dashboard.show_layout_modal {
             let pane_to_split = self.dashboard.focus.unwrap_or_else(|| { dbg!("No focused pane found"); self.dashboard.first_pane });
@@ -1168,6 +1185,7 @@ fn view_controls<'a>(
     for (content, message) in buttons {        
         row = row.push(
             button(content)
+                .style(style::button_primary)
                 .padding(3)
                 .on_press(message),
         );
