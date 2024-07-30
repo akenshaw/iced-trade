@@ -573,17 +573,23 @@ impl State {
         
             let chart_type = &self.dashboard.panes.get(id).unwrap().content;
 
-            let mut stream_name = pane.stream.iter().map(|stream| {
+            let mut stream_name = pane.stream.iter().find_map(|stream: &StreamType| {
                 match stream {
                     StreamType::Kline { exchange, ticker, timeframe } => {
-                        format!("{} {} {}", exchange, ticker, timeframe)
+                        Some(format!("{} {} {}", exchange, ticker, timeframe))
                     }
-                    StreamType::DepthAndTrades { exchange, ticker } => {
-                        format!("{} {}", exchange, ticker)
-                    }
-                    _ => "".to_string()
+                    _ => None,
                 }
-            }).collect::<Vec<String>>().join(", ");
+            }).or_else(|| {
+                pane.stream.iter().find_map(|stream: &StreamType| {
+                    match stream {
+                        StreamType::DepthAndTrades { exchange, ticker } => {
+                            Some(format!("{} {}", exchange, ticker))
+                        }
+                        _ => None,
+                    }
+                })
+            }).unwrap_or_else(|| "".to_string());
     
             let mut content: pane_grid::Content<'_, Message, _, Renderer> = 
                 pane_grid::Content::new({
@@ -781,7 +787,7 @@ impl State {
             )
             .width(Length::Shrink)
             .padding(20)
-            .style(style::title_bar_active);
+            .style(style::chart_modal);
             modal(content, signup, Message::HideLayoutModal)
         } else {
             content 
@@ -954,7 +960,7 @@ impl ChartView for HeatmapChart {
             .width(Length::Shrink)
             .padding(20)
             .max_width(500)
-            .style(style::title_bar_active);
+            .style(style::chart_modal);
 
             return modal(underlay, signup, Message::CloseModal(pane_id));
         } else {
@@ -1018,7 +1024,7 @@ impl ChartView for TimeAndSales {
             .width(Length::Shrink)
             .padding(20)
             .max_width(500)
-            .style(style::title_bar_active);
+            .style(style::chart_modal);
 
             return modal(underlay, signup, Message::CloseModal(pane_id));
         } else {
@@ -1091,8 +1097,8 @@ fn view_starter<'a>(
     let picklists = Row::new()
         .spacing(6)
         .align_items(Alignment::Center)
-        .push(exchange_selector)
-        .push(symbol_selector);
+        .push(exchange_selector.style(style::picklist_primary).menu_style(style::picklist_menu_primary))
+        .push(symbol_selector.style(style::picklist_primary).menu_style(style::picklist_menu_primary));
 
     let column = Column::new()
         .padding(10)
@@ -1144,7 +1150,14 @@ fn view_controls<'a>(
                 move |timeframe| Message::TimeframeSelected(timeframe, pane_id),
             ).placeholder("Choose a timeframe...").text_size(11).width(iced::Pixels(80.0));
     
-            let tf_tooltip = tooltip(timeframe_picker, "Timeframe", tooltip::Position::Top).style(style::tooltip);
+            let tf_tooltip = tooltip(
+                timeframe_picker
+                    .style(style::picklist_primary)
+                    .menu_style(style::picklist_menu_primary),
+                    "Timeframe",
+                    tooltip::Position::FollowCursor
+                )
+                .style(style::tooltip);
     
             row = row.push(tf_tooltip);
 
@@ -1154,7 +1167,14 @@ fn view_controls<'a>(
                 move |tick_multiply| Message::TicksizeSelected(tick_multiply, pane_id)
             ).placeholder("Ticksize multiplier...").text_size(11).width(iced::Pixels(80.0));
             
-            let ticksize_tooltip = tooltip(ticksize_picker, "Ticksize multiplier", tooltip::Position::Top).style(style::tooltip);
+            let ticksize_tooltip = tooltip(
+                ticksize_picker
+                    .style(style::picklist_primary)
+                    .menu_style(style::picklist_menu_primary),
+                    "Ticksize multiplier",
+                    tooltip::Position::FollowCursor
+                )
+                .style(style::tooltip);
     
             row = row.push(ticksize_tooltip);
         },
@@ -1165,7 +1185,14 @@ fn view_controls<'a>(
                 move |timeframe| Message::TimeframeSelected(timeframe, pane_id),
             ).placeholder("Choose a timeframe...").text_size(11).width(iced::Pixels(80.0));
     
-            let tooltip = tooltip(timeframe_picker, "Timeframe", tooltip::Position::Top).style(style::tooltip);
+            let tooltip = tooltip(
+                timeframe_picker
+                    .style(style::picklist_primary)
+                    .menu_style(style::picklist_menu_primary),
+                    "Timeframe", 
+                    tooltip::Position::FollowCursor
+                )
+                .style(style::tooltip);
     
             row = row.push(tooltip);
         },
