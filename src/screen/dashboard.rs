@@ -3,7 +3,7 @@ pub mod pane;
 pub use pane::{Uuid, PaneState, PaneContent, PaneSettings};
 
 use crate::{
-    charts::Message, 
+    charts::{candlestick::CandlestickChart, footprint::FootprintChart, Message}, 
     data_providers::{
         Depth, Kline, TickMultiplier, Ticker, Timeframe, Trade
     }, 
@@ -121,6 +121,34 @@ impl Dashboard {
         Err("No pane found")
     }
     
+    pub fn pane_change_timeframe(&mut self, pane_id: Uuid, new_timeframe: Timeframe) -> Result<&StreamType, &str> {
+        for (_, pane_state) in self.panes.iter_mut() {
+            if pane_state.id == pane_id {
+                pane_state.settings.selected_timeframe = Some(new_timeframe);
+
+                for stream_type in pane_state.stream.iter_mut() {
+                    match stream_type {
+                        StreamType::Kline { timeframe, .. } => {
+                            *timeframe = new_timeframe;
+
+                            match pane_state.content {
+                                PaneContent::Candlestick(_) => {
+                                    return Ok(stream_type);
+                                },
+                                PaneContent::Footprint(_) => {
+                                    return Ok(stream_type);
+                                },
+                                _ => {}
+                            }
+                        },
+                        _ => {}
+                    }
+                }
+            }
+        }
+        Err("No pane found")
+    }
+
     pub fn pane_set_size_filter(&mut self, pane_id: Uuid, new_size_filter: f32) -> Result<(), &str> {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.id == pane_id {
@@ -167,19 +195,42 @@ impl Dashboard {
         }
     }
 
-    pub fn insert_klines_vec(&mut self, stream_type: &StreamType, klines: &Vec<Kline>) {
+    pub fn insert_klines_vec(&mut self, stream_type: &StreamType, klines: &Vec<Kline>, pane_id: Uuid) {
         for (_, pane_state) in self.panes.iter_mut() {
-            if pane_state.matches_stream(&stream_type) {
-                match &mut pane_state.content {
-                    PaneContent::Candlestick(chart) => chart.insert_klines(klines.to_vec()),
-                    PaneContent::Footprint(chart) => chart.insert_klines(klines.to_vec()),
+            if pane_state.id == pane_id {
+                match stream_type {
+                    StreamType::Kline { timeframe, .. } => {
+                        let timeframe_u16: u16 = match timeframe {
+                            Timeframe::M1 => 1,
+                            Timeframe::M3 => 3,
+                            Timeframe::M5 => 5,
+                            Timeframe::M15 => 15,
+                            Timeframe::M30 => 30,
+                        };
+
+                        match &mut pane_state.content {
+                            PaneContent::Candlestick(chart) => {
+                                *chart = CandlestickChart::new(klines.to_vec(), *timeframe);
+                            },
+                            PaneContent::Footprint(chart) => {
+                                let raw_trades = chart.get_raw_trades();
+
+                                let tick_size = chart.get_tick_size();
+
+                                *chart = FootprintChart::new(timeframe_u16, tick_size, klines.to_vec(), raw_trades);
+                            },
+                            _ => {}
+                        }
+                    },
                     _ => {}
                 }
             }
         }
     }
 
-    pub fn update_latest_klines(&mut self, stream_type: &StreamType, kline: &Kline) {
+    pub fn update_latest_klines(&mut self, stream_type: &StreamType, kline: &Kline) -> Result<(), &str> {
+        let mut found_match = false;
+    
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.matches_stream(&stream_type) {
                 match &mut pane_state.content {
@@ -187,7 +238,14 @@ impl Dashboard {
                     PaneContent::Footprint(chart) => chart.update_latest_kline(kline),
                     _ => {}
                 }
+                found_match = true;
             }
+        }
+    
+        if found_match {
+            Ok(())
+        } else {
+            Err("No matching pane found for the stream")
         }
     }
 }

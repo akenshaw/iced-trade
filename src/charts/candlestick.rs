@@ -57,12 +57,6 @@ impl CandlestickChart {
         self.render_start();
     }
 
-    pub fn insert_klines(&mut self, klines: Vec<Kline>) {
-        for kline in klines {
-            self.data_points.insert(kline.time as i64, kline);
-        }
-    }
-
     pub fn render_start(&mut self) {
         let (latest, earliest, highest, lowest) = self.calculate_range();
 

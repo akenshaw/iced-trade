@@ -58,7 +58,7 @@ pub enum Message {
     TickerSelected(Ticker, Uuid),
     ExchangeSelected(Exchange, Uuid),
     MarketWsEvent(MarketEvents),
-    FetchEvent(Result<Vec<data_providers::Kline>, std::string::String>, StreamType),
+    FetchEvent(Result<Vec<data_providers::Kline>, std::string::String>, StreamType, Uuid),
     
     // Pane grid
     Split(pane_grid::Axis, pane_grid::Pane),
@@ -218,11 +218,38 @@ impl State {
                 }
             },
             Message::TimeframeSelected(timeframe, pane_id) => {                
-                match self.dashboard.get_pane_settings_mut(pane_id) {
-                    Ok(pane_settings) => {
-                        pane_settings.selected_timeframe = Some(timeframe);
+                match self.dashboard.pane_change_timeframe(pane_id, timeframe) {
+                    Ok(stream_type) => {
+                        match stream_type {
+                            StreamType::Kline { exchange, ticker, timeframe } => {
+                                let stream = stream_type.clone();
 
-                        Task::none()
+                                self.pane_streams
+                                    .entry(*exchange)
+                                    .or_insert_with(HashMap::new)
+                                    .entry(*ticker)
+                                    .or_insert_with(HashSet::new)
+                                    .insert(stream.clone());
+
+                                match exchange {
+                                    Exchange::BinanceFutures => {
+                                        Task::perform(
+                                            binance::market_data::fetch_klines(*ticker, *timeframe)
+                                                .map_err(|err| format!("{err}")),
+                                            move |klines| Message::FetchEvent(klines, stream, pane_id)
+                                        )
+                                    },
+                                    Exchange::BybitLinear => {
+                                        Task::perform(
+                                            bybit::market_data::fetch_klines(*ticker, *timeframe)
+                                                .map_err(|err| format!("{err}")),
+                                            move |klines| Message::FetchEvent(klines, stream, pane_id)
+                                        )
+                                    },
+                                }
+                            },
+                            _ => Task::none()
+                        }
                     },
                     Err(err) => {
                         eprintln!("Failed to change timeframe: {err}");
@@ -259,7 +286,7 @@ impl State {
                     }
                 }
             },  
-            Message::FetchEvent(klines, pane_stream) => {
+            Message::FetchEvent(klines, pane_stream, pane_id) => {
                 match klines {
                     Ok(klines) => {
                         match pane_stream {
@@ -268,7 +295,7 @@ impl State {
                                     exchange,
                                     ticker,
                                     timeframe,
-                                }, &klines);
+                                }, &klines, pane_id);
                             },
                             _ => {}
                         }
@@ -304,7 +331,16 @@ impl State {
                                 timeframe,
                             };
 
-                            self.dashboard.update_latest_klines(&stream_type, &kline);
+                            if let Err(err) = self.dashboard.update_latest_klines(&stream_type, &kline) {
+                                eprintln!("{err}, {stream_type:?}");
+
+                                self.pane_streams
+                                    .entry(Exchange::BinanceFutures)
+                                    .or_insert_with(HashMap::new)
+                                    .entry(ticker)
+                                    .or_insert_with(HashSet::new)
+                                    .remove(&stream_type);
+                            }
                         }
                     },
                     MarketEvents::Bybit(event) => match event {
@@ -329,7 +365,16 @@ impl State {
                                 timeframe,
                             };
 
-                            self.dashboard.update_latest_klines(&stream_type, &kline);
+                            if let Err(err) = self.dashboard.update_latest_klines(&stream_type, &kline) {
+                                eprintln!("{err}, {stream_type:?}");
+
+                                self.pane_streams
+                                    .entry(Exchange::BybitLinear)
+                                    .or_insert_with(HashMap::new)
+                                    .entry(ticker)
+                                    .or_insert_with(HashSet::new)
+                                    .remove(&stream_type);
+                            }
                         }
                     },
                 }
@@ -404,7 +449,7 @@ impl State {
             },
 
             Message::Debug(msg) => {
-                dbg!(msg);
+                dbg!(&self.pane_streams);
 
                 Task::none()
             },
@@ -501,12 +546,12 @@ impl State {
                                 Exchange::BinanceFutures => Task::perform(
                                     binance::market_data::fetch_klines(*ticker, *timeframe)
                                         .map_err(|err| format!("{err}")),
-                                    move |klines| Message::FetchEvent(klines, stream_clone)
+                                    move |klines| Message::FetchEvent(klines, stream_clone, pane_id)
                                 ),
                                 Exchange::BybitLinear => Task::perform(
                                     bybit::market_data::fetch_klines(*ticker, *timeframe)
                                         .map_err(|err| format!("{err}")),
-                                    move |klines| Message::FetchEvent(klines, stream_clone)
+                                    move |klines| Message::FetchEvent(klines, stream_clone, pane_id)
                                 ),
                                 _ => continue,
                             };

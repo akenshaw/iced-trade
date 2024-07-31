@@ -8,13 +8,6 @@ use crate::data_providers::{Kline, Trade};
 use super::{Chart, CommonChartData, Message, Interaction, AxisLabelXCanvas, AxisLabelYCanvas};
 use super::chart_button;
 
-pub struct FootprintChart {
-    chart: CommonChartData,
-    data_points: BTreeMap<i64, (HashMap<i64, (f32, f32)>, Kline)>,
-    timeframe: u16,
-    tick_size: f32,
-    raw_trades: Vec<Trade>,
-}
 
 impl Chart for FootprintChart {
     type DataPoint = BTreeMap<i64, (HashMap<i64, (f32, f32)>, Kline)>;
@@ -25,6 +18,14 @@ impl Chart for FootprintChart {
     fn get_common_data_mut(&mut self) -> &mut CommonChartData {
         &mut self.chart
     }
+}
+
+pub struct FootprintChart {
+    chart: CommonChartData,
+    data_points: BTreeMap<i64, (HashMap<i64, (f32, f32)>, Kline)>,
+    timeframe: u16,
+    tick_size: f32,
+    raw_trades: Vec<Trade>,
 }
 
 impl FootprintChart {
@@ -94,12 +95,6 @@ impl FootprintChart {
         }
     }
 
-    pub fn insert_klines(&mut self, klines: Vec<Kline>) {
-        for kline in klines {
-            self.data_points.insert(kline.time as i64, (HashMap::new(), kline));
-        }
-    }
-
     pub fn update_latest_kline(&mut self, kline: &Kline) {
         if let Some((_, kline_value)) = self.data_points.get_mut(&(kline.time as i64)) {
             kline_value.open = kline.open;
@@ -110,6 +105,14 @@ impl FootprintChart {
         } 
 
         self.render_start();
+    }
+
+    pub fn get_raw_trades(&self) -> Vec<Trade> {
+        self.raw_trades.clone()
+    }
+    
+    pub fn get_tick_size(&self) -> f32 {
+        self.tick_size
     }
     
     pub fn change_tick_size(&mut self, new_tick_size: f32) {
