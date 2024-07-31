@@ -14,6 +14,9 @@ pub enum Icon {
     Close,
     Layout,
     Cog,
+    Link,
+    BinanceLogo,
+    BybitLogo,
 }
 
 impl From<Icon> for char {
@@ -26,6 +29,9 @@ impl From<Icon> for char {
             Icon::Close => '\u{E804}',
             Icon::Layout => '\u{E805}',
             Icon::Cog => '\u{E806}',
+            Icon::Link => '\u{E807}',
+            Icon::BybitLogo => '\u{E808}',
+            Icon::BinanceLogo => '\u{E809}',
         }
     }
 }

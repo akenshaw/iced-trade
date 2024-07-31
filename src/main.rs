@@ -573,10 +573,12 @@ impl State {
         
             let chart_type = &self.dashboard.panes.get(id).unwrap().content;
 
-            let mut stream_name = pane.stream.iter().find_map(|stream: &StreamType| {
+            let stream_info = pane.stream.iter().find_map(|stream: &StreamType| {
                 match stream {
                     StreamType::Kline { exchange, ticker, timeframe } => {
-                        Some(format!("{} {} {}", exchange, ticker, timeframe))
+                        Some(
+                            Some((exchange, format!("{} {}", ticker, timeframe)))
+                        )
                     }
                     _ => None,
                 }
@@ -584,12 +586,28 @@ impl State {
                 pane.stream.iter().find_map(|stream: &StreamType| {
                     match stream {
                         StreamType::DepthAndTrades { exchange, ticker } => {
-                            Some(format!("{} {}", exchange, ticker))
+                            Some(
+                                Some((exchange, ticker.to_string()))
+                            )
                         }
                         _ => None,
                     }
                 })
-            }).unwrap_or_else(|| "".to_string());
+            }).unwrap_or_else(|| None);
+            
+            let mut stream_info_element: Row<Message> = Row::new();
+
+            if let Some((exchange, info)) = stream_info {
+                stream_info_element = Row::new()
+                    .spacing(3)
+                    .push(
+                        match exchange {
+                            Exchange::BinanceFutures => text(char::from(Icon::BinanceLogo).to_string()).font(ICON_FONT),
+                            Exchange::BybitLinear => text(char::from(Icon::BybitLogo).to_string()).font(ICON_FONT),
+                        }
+                    )
+                    .push(Text::new(info));
+            }
     
             let mut content: pane_grid::Content<'_, Message, _, Renderer> = 
                 pane_grid::Content::new({
@@ -602,10 +620,7 @@ impl State {
 
                         PaneContent::TimeAndSales(chart) => view_chart(pane, chart),
 
-                        PaneContent::Starter => {
-                            stream_name = "Starter".to_string();
-                            view_starter(pane)
-                        }
+                        PaneContent::Starter => view_starter(pane)
                     }
                 })
                 .style(
@@ -616,7 +631,7 @@ impl State {
                     }
                 );
     
-            let title_bar = pane_grid::TitleBar::new(Text::new(stream_name))
+            let title_bar = pane_grid::TitleBar::new(stream_info_element)
                 .controls(view_controls(
                     id,
                     pane.id,
