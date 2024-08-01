@@ -200,17 +200,11 @@ impl Dashboard {
             if pane_state.id == pane_id {
                 match stream_type {
                     StreamType::Kline { timeframe, .. } => {
-                        let timeframe_u16: u16 = match timeframe {
-                            Timeframe::M1 => 1,
-                            Timeframe::M3 => 3,
-                            Timeframe::M5 => 5,
-                            Timeframe::M15 => 15,
-                            Timeframe::M30 => 30,
-                        };
+                        let timeframe_u16 = timeframe.to_minutes();
 
                         match &mut pane_state.content {
                             PaneContent::Candlestick(chart) => {
-                                *chart = CandlestickChart::new(klines.to_vec(), *timeframe);
+                                *chart = CandlestickChart::new(klines.to_vec(), timeframe_u16);
                             },
                             PaneContent::Footprint(chart) => {
                                 let raw_trades = chart.get_raw_trades();

@@ -3,7 +3,7 @@ use iced::{
     alignment, mouse, widget::{button, canvas::{self, event::{self, Event}, stroke::Stroke, Cache, Canvas, Geometry, Path}}, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme
 };
 use iced::widget::{Column, Row, Container, Text};
-use crate::{data_providers::Kline, Timeframe};
+use crate::data_providers::Kline;
 
 use super::{Chart, CommonChartData, Message, Interaction, AxisLabelXCanvas, AxisLabelYCanvas};
 use super::{chart_button, calculate_price_step, calculate_time_step};
@@ -29,20 +29,12 @@ impl CandlestickChart {
     const MIN_SCALING: f32 = 0.1;
     const MAX_SCALING: f32 = 2.0;
 
-    pub fn new(klines: Vec<Kline>, timeframe: Timeframe) -> CandlestickChart {
+    pub fn new(klines: Vec<Kline>, timeframe: u16) -> CandlestickChart {
         let mut klines_raw = BTreeMap::new();
 
         for kline in klines {
             klines_raw.insert(kline.time as i64, kline);
         }
-
-        let timeframe = match timeframe {
-            Timeframe::M1 => 1,
-            Timeframe::M3 => 3,
-            Timeframe::M5 => 5,
-            Timeframe::M15 => 15,
-            Timeframe::M30 => 30,
-        };
 
         CandlestickChart {
             chart: CommonChartData::default(),

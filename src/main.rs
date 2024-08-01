@@ -519,7 +519,7 @@ impl State {
                         PaneContent::Footprint(footprint_chart)
                     },
                     "Candlestick chart" => {
-                        let candlestick_chart = CandlestickChart::new(vec![], Timeframe::M1);
+                        let candlestick_chart = CandlestickChart::new(vec![], 1);
                         PaneContent::Candlestick(candlestick_chart)
                     },
                     "Time&Sales" => PaneContent::TimeAndSales(TimeAndSales::new()),

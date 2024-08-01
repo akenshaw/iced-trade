@@ -243,6 +243,16 @@ pub enum Timeframe {
 }
 impl Timeframe {
     pub const ALL: [Timeframe; 5] = [Timeframe::M1, Timeframe::M3, Timeframe::M5, Timeframe::M15, Timeframe::M30];
+
+    pub fn to_minutes(&self) -> u16 {
+        match self {
+            Timeframe::M1 => 1,
+            Timeframe::M3 => 3,
+            Timeframe::M5 => 5,
+            Timeframe::M15 => 15,
+            Timeframe::M30 => 30,
+        }
+    }
 }
 
 #[derive(Debug)]
