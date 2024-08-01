@@ -217,46 +217,44 @@ impl State {
                     }
                 }
             },
-            Message::TimeframeSelected(timeframe, pane_id) => {                
+            Message::TimeframeSelected(timeframe, pane_id) => {    
+                let mut tasks = vec![];
+            
                 match self.dashboard.pane_change_timeframe(pane_id, timeframe) {
                     Ok(stream_type) => {
-                        match stream_type {
-                            StreamType::Kline { exchange, ticker, timeframe } => {
-                                let stream = stream_type.clone();
-
-                                self.pane_streams
-                                    .entry(*exchange)
-                                    .or_insert_with(HashMap::new)
-                                    .entry(*ticker)
-                                    .or_insert_with(HashSet::new)
-                                    .insert(stream.clone());
-
-                                match exchange {
-                                    Exchange::BinanceFutures => {
-                                        Task::perform(
-                                            binance::market_data::fetch_klines(*ticker, *timeframe)
-                                                .map_err(|err| format!("{err}")),
-                                            move |klines| Message::FetchEvent(klines, stream, pane_id)
-                                        )
-                                    },
-                                    Exchange::BybitLinear => {
-                                        Task::perform(
-                                            bybit::market_data::fetch_klines(*ticker, *timeframe)
-                                                .map_err(|err| format!("{err}")),
-                                            move |klines| Message::FetchEvent(klines, stream, pane_id)
-                                        )
-                                    },
-                                }
-                            },
-                            _ => Task::none()
+                        if let StreamType::Kline { exchange, ticker, timeframe } = stream_type {
+                            let stream = stream_type.clone();
+            
+                            match exchange {
+                                Exchange::BinanceFutures => {
+                                    let fetch_klines = Task::perform(
+                                        binance::market_data::fetch_klines(*ticker, *timeframe)
+                                            .map_err(|err| format!("{err}")),
+                                        move |klines| Message::FetchEvent(klines, stream, pane_id)
+                                    );
+            
+                                    tasks.push(fetch_klines);
+                                },
+                                Exchange::BybitLinear => {
+                                    let fetch_klines = Task::perform(
+                                        bybit::market_data::fetch_klines(*ticker, *timeframe)
+                                            .map_err(|err| format!("{err}")),
+                                        move |klines| Message::FetchEvent(klines, stream, pane_id)
+                                    );
+                                    
+                                    tasks.push(fetch_klines);
+                                },
+                            }
                         }
                     },
                     Err(err) => {
                         eprintln!("Failed to change timeframe: {err}");
-
-                        Task::none()
                     }
                 }
+
+                self.pane_streams = self.dashboard.get_all_diff_streams();
+            
+                Task::batch(tasks)
             },
             Message::ExchangeSelected(exchange, pane_id) => {
                 match self.dashboard.get_pane_settings_mut(pane_id) {
