@@ -5,12 +5,12 @@ pub use pane::{Uuid, PaneState, PaneContent, PaneSettings};
 use crate::{
     charts::{candlestick::CandlestickChart, footprint::FootprintChart, Message}, 
     data_providers::{
-        Depth, Kline, TickMultiplier, Ticker, Timeframe, Trade
+        Depth, Exchange, Kline, TickMultiplier, Ticker, Timeframe, Trade
     }, 
     StreamType
 };
 
-use std::{collections::HashMap, rc::Rc};
+use std::{collections::{HashMap, HashSet}, rc::Rc};
 use iced::widget::pane_grid::{self, Configuration};
 
 pub struct Dashboard {
@@ -172,39 +172,6 @@ impl Dashboard {
         Err("No pane found")
     }
 
-    pub fn update_depth_and_trades(&mut self, stream_type: StreamType, depth_update_t: i64, depth: Depth, trades_buffer: Vec<Trade>) -> Result<(), &str> {
-        let mut found_match = false;
-        
-        let depth = Rc::new(depth);
-
-        let trades_buffer = trades_buffer.into_boxed_slice();
-
-        for (_, pane_state) in self.panes.iter_mut() {
-            if pane_state.matches_stream(&stream_type) {
-                match &mut pane_state.content {
-                    PaneContent::Heatmap(chart) => {
-                        chart.insert_datapoint(&trades_buffer, depth_update_t, Rc::clone(&depth));
-                    },
-                    PaneContent::Footprint(chart) => {
-                        chart.insert_datapoint(&trades_buffer, depth_update_t);
-                    },
-                    PaneContent::TimeAndSales(chart) => {
-                        chart.update(&trades_buffer);
-                    },
-                    _ => {}
-                }
-
-                found_match = true;
-            }
-        }
-
-        if found_match {
-            Ok(())
-        } else {
-            Err("No matching pane found for the stream")
-        }
-    }
-
     pub fn insert_klines_vec(&mut self, stream_type: &StreamType, klines: &Vec<Kline>, pane_id: Uuid) {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.id == pane_id {
@@ -251,5 +218,69 @@ impl Dashboard {
         } else {
             Err("No matching pane found for the stream")
         }
+    }
+
+    pub fn update_depth_and_trades(&mut self, stream_type: StreamType, depth_update_t: i64, depth: Depth, trades_buffer: Vec<Trade>) -> Result<(), &str> {
+        let mut found_match = false;
+        
+        let depth = Rc::new(depth);
+
+        let trades_buffer = trades_buffer.into_boxed_slice();
+
+        for (_, pane_state) in self.panes.iter_mut() {
+            if pane_state.matches_stream(&stream_type) {
+                match &mut pane_state.content {
+                    PaneContent::Heatmap(chart) => {
+                        chart.insert_datapoint(&trades_buffer, depth_update_t, Rc::clone(&depth));
+                    },
+                    PaneContent::Footprint(chart) => {
+                        chart.insert_datapoint(&trades_buffer, depth_update_t);
+                    },
+                    PaneContent::TimeAndSales(chart) => {
+                        chart.update(&trades_buffer);
+                    },
+                    _ => {}
+                }
+
+                found_match = true;
+            }
+        }
+
+        if found_match {
+            Ok(())
+        } else {
+            Err("No matching pane found for the stream")
+        }
+    }
+
+    pub fn get_all_diff_streams(&self) -> HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>> {
+        let mut pane_streams = HashMap::new();
+
+        for (_, pane_state) in self.panes.iter() {
+            for stream_type in &pane_state.stream {
+                match stream_type {
+                    StreamType::Kline { exchange, ticker, timeframe } => {
+                        let exchange = exchange.clone();
+                        let ticker = ticker.clone();
+                        let timeframe = timeframe.clone();
+
+                        let exchange_map = pane_streams.entry(exchange.clone()).or_insert(HashMap::new());
+                        let ticker_map = exchange_map.entry(ticker).or_insert(HashSet::new());
+                        ticker_map.insert(StreamType::Kline { exchange, ticker, timeframe });
+                    },
+                    StreamType::DepthAndTrades { exchange, ticker } => {
+                        let exchange = exchange.clone();
+                        let ticker = ticker.clone();
+
+                        let exchange_map = pane_streams.entry(exchange).or_insert(HashMap::new());
+                        let ticker_map = exchange_map.entry(ticker).or_insert(HashSet::new());
+                        ticker_map.insert(StreamType::DepthAndTrades { exchange, ticker });
+                    },
+                    _ => {}
+                }
+            }
+        }
+
+        pane_streams
     }
 }
