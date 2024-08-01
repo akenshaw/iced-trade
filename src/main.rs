@@ -322,7 +322,16 @@ impl State {
                                 ticker,
                             };
                             
-                            self.dashboard.update_depth_and_trades(stream_type, depth_update_t, depth, trades_buffer);
+                            if let Err(err) = self.dashboard.update_depth_and_trades(stream_type, depth_update_t, depth, trades_buffer) {
+                                eprintln!("{err}, {stream_type:?}");
+
+                                self.pane_streams
+                                    .entry(Exchange::BinanceFutures)
+                                    .or_insert_with(HashMap::new)
+                                    .entry(ticker)
+                                    .or_insert_with(HashSet::new)
+                                    .remove(&stream_type);
+                            }
                         }
                         binance::market_data::Event::KlineReceived(ticker, kline, timeframe) => {
                             let stream_type = StreamType::Kline {
@@ -356,7 +365,16 @@ impl State {
                                 ticker,
                             };
                             
-                            self.dashboard.update_depth_and_trades(stream_type, depth_update_t, depth, trades_buffer);
+                            if let Err(err) = self.dashboard.update_depth_and_trades(stream_type, depth_update_t, depth, trades_buffer) {
+                                eprintln!("{err}, {stream_type:?}");
+
+                                self.pane_streams
+                                    .entry(Exchange::BybitLinear)
+                                    .or_insert_with(HashMap::new)
+                                    .entry(ticker)
+                                    .or_insert_with(HashSet::new)
+                                    .remove(&stream_type);
+                            }
                         }
                         bybit::market_data::Event::KlineReceived(ticker, kline, timeframe) => {
                             let stream_type = StreamType::Kline {

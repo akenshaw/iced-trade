@@ -172,7 +172,9 @@ impl Dashboard {
         Err("No pane found")
     }
 
-    pub fn update_depth_and_trades(&mut self, stream_type: StreamType, depth_update_t: i64, depth: Depth, trades_buffer: Vec<Trade>) {
+    pub fn update_depth_and_trades(&mut self, stream_type: StreamType, depth_update_t: i64, depth: Depth, trades_buffer: Vec<Trade>) -> Result<(), &str> {
+        let mut found_match = false;
+        
         let depth = Rc::new(depth);
 
         let trades_buffer = trades_buffer.into_boxed_slice();
@@ -191,7 +193,15 @@ impl Dashboard {
                     },
                     _ => {}
                 }
+
+                found_match = true;
             }
+        }
+
+        if found_match {
+            Ok(())
+        } else {
+            Err("No matching pane found for the stream")
         }
     }
 
