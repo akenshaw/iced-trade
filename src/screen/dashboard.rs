@@ -15,26 +15,19 @@ use iced::widget::pane_grid::{self, Configuration};
 
 pub struct Dashboard {
     pub panes: pane_grid::State<PaneState>,
-    pub show_layout_modal: bool,
     pub focus: Option<pane_grid::Pane>,
-    pub first_pane: pane_grid::Pane,
     pub pane_lock: bool,
-    pub pane_state_cache: HashMap<Uuid, (Option<Ticker>, Option<Timeframe>, Option<f32>)>,
-    pub last_axis_split: Option<pane_grid::Axis>,
+    pub show_layout_modal: bool,
 }
 impl Dashboard {
     pub fn empty(pane_config: Configuration<PaneState>) -> Self {
         let panes: pane_grid::State<PaneState> = pane_grid::State::with_configuration(pane_config);
-        let first_pane: pane_grid::Pane = *panes.panes.iter().next().unwrap().0;
         
         Self { 
-            show_layout_modal: false,
             panes,
             focus: None,
-            first_pane,
             pane_lock: false,
-            pane_state_cache: HashMap::new(),
-            last_axis_split: None,
+            show_layout_modal: false,
         }
     }
 

@@ -418,8 +418,6 @@ impl State {
                     self.dashboard.focus = focus_pane;
                 }
 
-                self.dashboard.last_axis_split = Some(axis);
-
                 Task::none()
             },
             Message::Clicked(pane) => {
@@ -448,14 +446,11 @@ impl State {
                 self.dashboard.panes.restore();
                 Task::none()
             },
-            Message::Close(pane) => {       
-                let pane_state = self.dashboard.panes.get(pane).unwrap();
-                
-                self.dashboard.pane_state_cache.insert(pane_state.id, (pane_state.settings.selected_ticker, pane_state.settings.selected_timeframe, pane_state.settings.min_tick_size));
-
+            Message::Close(pane) => {                       
                 if let Some((_, sibling)) = self.dashboard.panes.close(pane) {
                     self.dashboard.focus = Some(sibling);
                 }
+                
                 Task::none()
             },
             Message::ToggleLayoutLock => {
@@ -827,30 +822,22 @@ impl State {
             );
 
         if self.dashboard.show_layout_modal {
-            let pane_to_split = self.dashboard.focus.unwrap_or_else(|| { dbg!("No focused pane found"); self.dashboard.first_pane });
+            let pane_to_split = self.dashboard.focus
+                .unwrap_or_else(
+                    || { 
+                        dbg!("No focused pane found"); 
+                        *self.dashboard.panes.iter().next().unwrap().0
+                    }
+                );
 
-            let mut axis_to_split = if rand::random() { pane_grid::Axis::Horizontal } else { pane_grid::Axis::Vertical };
-
-            if let Some(axis) = self.dashboard.last_axis_split {
-                if axis == pane_grid::Axis::Horizontal {
-                    axis_to_split = pane_grid::Axis::Vertical;
-                } else {
-                    axis_to_split = pane_grid::Axis::Horizontal;
-                }
-            } 
-
-            let add_pane_button = button("add new pane").width(iced::Pixels(200.0)).on_press(
-                Message::Split(axis_to_split, pane_to_split)
+            let add_pane_button = button("Add a new pane").width(iced::Pixels(200.0)).on_press(
+                Message::Split(pane_grid::Axis::Horizontal, pane_to_split)
             );
 
             let signup = container(
                 Column::new()
                     .spacing(10)
                     .align_items(Alignment::Center)
-                    .push(
-                        Text::new("Add a new pane")
-                            .size(20)
-                    )
                     .push(add_pane_button)
                     .push(
                         Column::new()
