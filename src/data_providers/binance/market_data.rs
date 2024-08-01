@@ -39,8 +39,8 @@ enum State {
 pub enum Event {
     Connected(Connection),
     Disconnected,
-    DepthReceived(FeedLatency, i64, Depth, Vec<Trade>),
-    KlineReceived(Kline, Timeframe),
+    DepthReceived(Ticker, FeedLatency, i64, Depth, Vec<Trade>),
+    KlineReceived(Ticker, Kline, Timeframe),
 }
 
 #[derive(Debug, Clone)]
@@ -127,6 +127,8 @@ struct SonicKline {
 
 #[derive(Deserialize, Debug, Clone)]
 struct SonicKlineWrap {
+    #[serde(rename = "s")]
+    symbol: String,
     #[serde(rename = "k")]
     kline: SonicKline,
 }
@@ -135,7 +137,7 @@ struct SonicKlineWrap {
 enum StreamData {
 	Trade(SonicTrade),
 	Depth(SonicDepth),
-    Kline(SonicKline),
+    Kline(Ticker, SonicKline),
 }
 
 #[derive(Debug)]
@@ -146,12 +148,16 @@ enum StreamName {
     Unknown,
 }
 impl StreamName {
-    fn from_symbol_and_type(symbol: &str, stream_type: &str) -> Self {
-        match stream_type {
-            _ if stream_type == format!("{symbol}@depth@100ms") => StreamName::Depth,
-            _ if stream_type == format!("{symbol}@trade") => StreamName::Trade,
-            _ if stream_type.starts_with(&format!("{symbol}@kline_")) => StreamName::Kline,
-            _ => StreamName::Unknown,
+    fn from_stream_type(stream_type: &str) -> Self {
+        if let Some(after_at) = stream_type.split('@').nth(1) {
+            match after_at {
+                _ if after_at.starts_with("dep") => StreamName::Depth,
+                _ if after_at.starts_with("tra") => StreamName::Trade,
+                _ if after_at.starts_with("kli") => StreamName::Kline,
+                _ => StreamName::Unknown,
+            }
+        } else {
+            StreamName::Unknown
         }
     }
 }
@@ -163,7 +169,7 @@ enum StreamWrapper {
     Kline,
 }
 
-fn feed_de(bytes: &Bytes, symbol: &str) -> Result<StreamData> {
+fn feed_de(bytes: &Bytes) -> Result<StreamData> {
 	let mut stream_type: Option<StreamWrapper> = None;
 
 	let iter: sonic_rs::ObjectJsonIter = unsafe { to_object_iter_unchecked(bytes) };
@@ -174,7 +180,7 @@ fn feed_de(bytes: &Bytes, symbol: &str) -> Result<StreamData> {
 
 		if k == "stream" {
 			if let Some(val) = v.as_str() {
-                match StreamName::from_symbol_and_type(symbol, val) {
+                match StreamName::from_stream_type(val) {
 					StreamName::Depth => {
 						stream_type = Some(StreamWrapper::Depth);
 					},
@@ -207,7 +213,15 @@ fn feed_de(bytes: &Bytes, symbol: &str) -> Result<StreamData> {
                     let kline_wrap: SonicKlineWrap = sonic_rs::from_str(&v.as_raw_faststr())
                         .context("Error parsing kline")?;
 
-                    return Ok(StreamData::Kline(kline_wrap.kline));
+                    let ticker = match &kline_wrap.symbol[..] {
+                        "BTCUSDT" => Ticker::BTCUSDT,
+                        "ETHUSDT" => Ticker::ETHUSDT,
+                        "SOLUSDT" => Ticker::SOLUSDT,
+                        "LTCUSDT" => Ticker::LTCUSDT,
+                        _ => Ticker::BTCUSDT,
+                    };
+
+                    return Ok(StreamData::Kline(ticker, kline_wrap.kline));
                 },
 				_ => {
 					eprintln!("Unknown stream type");
@@ -286,15 +300,15 @@ where
   }
 }
 
-pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
-    struct Connect;
-
+pub fn connect_market_stream(stream: Ticker) -> Subscription<Event> {
     subscription::channel(
-        std::any::TypeId::of::<Connect>(),
+        stream,
         100,
         move |mut output| async move {
             let mut state = State::Disconnected;     
             let mut trades_buffer: Vec<Trade> = Vec::new(); 
+
+            let selected_ticker = stream;
 
             let symbol_str = match selected_ticker {
                 Ticker::BTCUSDT => "btcusdt",
@@ -365,7 +379,7 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
                                 OpCode::Text => {                    
                                     let json_bytes: Bytes = Bytes::from(msg.payload.to_vec());
                     
-                                    if let Ok(data) = feed_de(&json_bytes, symbol_str) {
+                                    if let Ok(data) = feed_de(&json_bytes) {
                                         match data {
                                             StreamData::Trade(de_trade) => {
                                                 let trade = Trade {
@@ -464,6 +478,7 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
     
                                                     let _ = output.send(
                                                         Event::DepthReceived(
+                                                            selected_ticker,
                                                             feed_latency,
                                                             time, 
                                                             current_depth,
@@ -499,19 +514,15 @@ pub fn connect_market_stream(selected_ticker: Ticker) -> Subscription<Event> {
     )
 }
 
-pub fn connect_kline_stream(vec: Vec<(Ticker, Timeframe)>) -> Subscription<Event> {
-    struct Connect;
-
+pub fn connect_kline_stream(streams: Vec<(Ticker, Timeframe)>) -> Subscription<Event> {
     subscription::channel(
-        std::any::TypeId::of::<Connect>(),
+        streams.clone(),
         100,
         move |mut output| async move {
             let mut state = State::Disconnected;    
 
-            let mut symbol_str: &str = "";
-
-            let stream_str = vec.iter().map(|(ticker, timeframe)| {
-                symbol_str = match ticker {
+            let stream_str = streams.iter().map(|(ticker, timeframe)| {
+                let symbol_str = match ticker {
                     Ticker::BTCUSDT => "btcusdt",
                     Ticker::ETHUSDT => "ethusdt",
                     Ticker::SOLUSDT => "solusdt",
@@ -551,19 +562,21 @@ pub fn connect_kline_stream(vec: Vec<(Ticker, Timeframe)>) -> Subscription<Event
                                 OpCode::Text => {                    
                                     let json_bytes: Bytes = Bytes::from(msg.payload.to_vec());
                     
-                                    if let Ok(StreamData::Kline(de_kline)) = feed_de(&json_bytes, symbol_str) {
+                                    if let Ok(StreamData::Kline(ticker, de_kline)) = feed_de(&json_bytes) {
+                                        let buy_volume = str_f32_parse(&de_kline.taker_buy_base_asset_volume);
+                                        let sell_volume = str_f32_parse(&de_kline.volume) - buy_volume;
+
                                         let kline = Kline {
                                             time: de_kline.time,
                                             open: str_f32_parse(&de_kline.open),
                                             high: str_f32_parse(&de_kline.high),
                                             low: str_f32_parse(&de_kline.low),
                                             close: str_f32_parse(&de_kline.close),
-                                            volume: str_f32_parse(&de_kline.volume),
-                                            taker_buy_base_asset_volume: str_f32_parse(&de_kline.taker_buy_base_asset_volume),
+                                            volume: (buy_volume, sell_volume),
                                         };
 
-                                        if let Some(timeframe) = vec.iter().find(|(_, tf)| tf.to_string() == de_kline.interval) {
-                                            let _ = output.send(Event::KlineReceived(kline, timeframe.1)).await;
+                                        if let Some(timeframe) = streams.iter().find(|(_, tf)| tf.to_string() == de_kline.interval) {
+                                            let _ = output.send(Event::KlineReceived(ticker, kline, timeframe.1)).await;
                                         }
                                     } else {
                                         eprintln!("\nUnknown data: {:?}", &json_bytes);
@@ -618,14 +631,15 @@ struct FetchedKlines (
 );
 impl From<FetchedKlines> for Kline {
     fn from(fetched: FetchedKlines) -> Self {
+        let sell_volume = fetched.5 - fetched.9;
+
         Self {
             time: fetched.0,
             open: fetched.1,
             high: fetched.2,
             low: fetched.3,
             close: fetched.4,
-            volume: fetched.5,
-            taker_buy_base_asset_volume: fetched.9,
+            volume: (fetched.9, sell_volume),
         }
     }
 }

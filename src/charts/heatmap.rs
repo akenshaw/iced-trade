@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::{collections::BTreeMap, rc::Rc};
 use chrono::NaiveDateTime;
 use iced::{
     alignment, color, mouse, widget::{button, canvas::{self, event::{self, Event}, stroke::Stroke, Cache, Canvas, Geometry, Path}}, window, Border, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector
@@ -11,7 +11,7 @@ use super::{Chart, CommonChartData, Message, chart_button, Interaction, AxisLabe
 
 pub struct HeatmapChart {
     chart: CommonChartData,
-    data_points: BTreeMap<i64, (Depth, Box<[Trade]>)>,
+    data_points: BTreeMap<i64, (Rc<Depth>, Box<[Trade]>)>,
     tick_size: f32,
     y_scaling: f32,
     size_filter: f32,
@@ -45,6 +45,9 @@ impl HeatmapChart {
     pub fn set_size_filter(&mut self, size_filter: f32) {
         self.size_filter = size_filter;
     }
+    pub fn get_size_filter(&self) -> f32 {
+        self.size_filter
+    }
 
     pub fn get_raw_trades(&mut self) -> Vec<Trade> {
         let mut trades_source = vec![];
@@ -56,21 +59,23 @@ impl HeatmapChart {
         trades_source
     }
 
-    pub fn insert_datapoint(&mut self, trades_buffer: Vec<Trade>, depth_update: i64, depth: Depth) {
+    pub fn insert_datapoint(&mut self, trades_buffer: &[Trade], depth_update: i64, depth: Rc<Depth>) {
         let aggregate_time = 100; // 100 ms
         let rounded_depth_update = (depth_update / aggregate_time) * aggregate_time;
         
-        self.data_points.entry(rounded_depth_update).or_insert((depth, trades_buffer.into_boxed_slice()));
+        self.data_points.insert(rounded_depth_update, (depth, trades_buffer.into()));
         
-        if self.data_points.len() > 3600 {
-            while let Some((&key_to_remove, _)) = self.data_points.iter().next() {
+        while self.data_points.len() > 3600 {
+            if let Some((&key_to_remove, _)) = self.data_points.first_key_value() {
                 self.data_points.remove(&key_to_remove);
                 if self.data_points.len() <= 3000 {
                     break;
                 }
+            } else {
+                break;
             }
-        }     
-
+        }
+        
         self.render_start();
     }
 
