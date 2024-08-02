@@ -1,12 +1,11 @@
-use iced::futures;  
-use iced::subscription::{self, Subscription};
+use iced::{futures, stream};
+use futures::stream::{Stream, StreamExt};
 use reqwest::header::{HeaderMap, HeaderValue};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use hex;
 use futures::channel::mpsc;
 use futures::sink::SinkExt;
-use futures::stream::StreamExt;
 use chrono::Utc;
 use serde::Deserialize;
 use serde_json::json;
@@ -51,11 +50,8 @@ pub enum Event {
 #[derive(Debug, Clone)]
 pub struct Connection(mpsc::Sender<String>);
 
-pub fn connect_user_stream(listen_key: String) -> Subscription<Event> {
-    struct Connect;
-
-    subscription::channel(
-        std::any::TypeId::of::<Connect>(),
+pub fn connect_user_stream(listen_key: String) -> impl Stream<Item = Event> {
+    stream::channel(
         100,
         |mut output| async move {
             let mut state = State::Disconnected;     
@@ -145,14 +141,11 @@ pub fn connect_user_stream(listen_key: String) -> Subscription<Event> {
     )
 }
 
-pub fn fetch_user_stream(api_key: &str, secret_key: &str) -> Subscription<Event> {
-    struct Connect;
-
+pub fn fetch_user_stream(api_key: &str, secret_key: &str) -> impl Stream<Item = Event> {
     let api_key = api_key.to_owned();
     let secret_key = secret_key.to_owned();
 
-    subscription::channel(
-        std::any::TypeId::of::<Connect>(),
+    stream::channel(
         100,
         move |mut output| {
             tokio::spawn(async move {

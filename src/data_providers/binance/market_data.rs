@@ -1,6 +1,6 @@
 use hyper::client::conn;
-use iced::futures;  
-use iced::subscription::{self, Subscription};
+use iced::{futures, stream};  
+use futures::stream::{Stream, StreamExt};
 use serde::{de, Deserializer};
 use futures::sink::SinkExt;
 
@@ -300,15 +300,14 @@ where
   }
 }
 
-pub fn connect_market_stream(stream: Ticker) -> Subscription<Event> {
-    subscription::channel(
-        stream,
+pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {    
+    stream::channel (
         100,
         move |mut output| async move {
             let mut state = State::Disconnected;     
             let mut trades_buffer: Vec<Trade> = Vec::new(); 
 
-            let selected_ticker = stream;
+            let selected_ticker = ticker;
 
             let symbol_str = match selected_ticker {
                 Ticker::BTCUSDT => "btcusdt",
@@ -514,9 +513,8 @@ pub fn connect_market_stream(stream: Ticker) -> Subscription<Event> {
     )
 }
 
-pub fn connect_kline_stream(streams: Vec<(Ticker, Timeframe)>) -> Subscription<Event> {
-    subscription::channel(
-        streams.clone(),
+pub fn connect_kline_stream(streams: Vec<(Ticker, Timeframe)>) -> impl Stream<Item = Event> {    
+    stream::channel (
         100,
         move |mut output| async move {
             let mut state = State::Disconnected;    
