@@ -354,21 +354,6 @@ impl Dashboard {
 
         pane_streams
     }
-
-    pub fn get_serialized_panes(&self) {    
-        for (_, pane_state) in self.panes.iter() {
-            let pane: SerializablePane = SerializablePane::from(pane_state);
-    
-            match serde_json::to_string(&pane) {
-                Ok(serialized_pane) => {
-                    println!("Serialized Pane: {}", serialized_pane);
-                }
-                Err(e) => {
-                    eprintln!("Failed to serialize Pane: {}", e);
-                }
-            }
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
