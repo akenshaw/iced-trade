@@ -1,7 +1,9 @@
+use serde::{Deserialize, Serialize};
+
 pub mod binance;
 pub mod bybit;
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum StreamType {
     Kline {
         exchange: Exchange,
@@ -155,7 +157,7 @@ pub trait DataProvider {
     fn get_trades(&self, symbol: &str) -> Result<Vec<Trade>, Box<dyn std::error::Error>>;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 pub struct TickMultiplier(pub u16);
 
 impl std::fmt::Display for TickMultiplier {
@@ -171,7 +173,7 @@ impl TickMultiplier {
 }
 
 // connection types
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum Exchange {
     BinanceFutures,
     BybitLinear,
@@ -207,7 +209,7 @@ impl std::fmt::Display for Ticker {
         )
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum Ticker {
     BTCUSDT,
     ETHUSDT,
@@ -233,7 +235,7 @@ impl std::fmt::Display for Timeframe {
         )
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum Timeframe {
     M1,
     M3,

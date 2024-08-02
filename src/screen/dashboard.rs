@@ -1,6 +1,9 @@
 pub mod pane;
 
+use pane::SerializablePane;
 pub use pane::{Uuid, PaneState, PaneContent, PaneSettings};
+use serde::{Deserialize, Serialize};
+use serde_json::to_string;
 
 use crate::{
     charts::{candlestick::CandlestickChart, footprint::FootprintChart, Message}, 
@@ -10,7 +13,7 @@ use crate::{
     StreamType
 };
 
-use std::{collections::{HashMap, HashSet}, rc::Rc};
+use std::{collections::{HashMap, HashSet}, io::Read, rc::Rc};
 use iced::widget::pane_grid::{self, Configuration};
 
 pub struct Dashboard {
@@ -20,14 +23,89 @@ pub struct Dashboard {
     pub show_layout_modal: bool,
 }
 impl Dashboard {
-    pub fn empty(pane_config: Configuration<PaneState>) -> Self {
-        let panes: pane_grid::State<PaneState> = pane_grid::State::with_configuration(pane_config);
+    pub fn empty() -> Self {
+        let pane_config: Configuration<PaneState> = Configuration::Split {
+            axis: pane_grid::Axis::Vertical,
+            ratio: 0.8,
+            a: Box::new(Configuration::Split {
+                axis: pane_grid::Axis::Horizontal,
+                ratio: 0.4,
+                a: Box::new(Configuration::Split {
+                    axis: pane_grid::Axis::Vertical,
+                    ratio: 0.5,
+                    a: Box::new(Configuration::Pane(
+                        PaneState { 
+                            id: Uuid::new_v4(), 
+                            show_modal: false, 
+                            stream: vec![],
+                            content: PaneContent::Starter,
+                            settings: PaneSettings::default(),
+                        })
+                    ),
+                    b: Box::new(Configuration::Pane(
+                        PaneState { 
+                            id: Uuid::new_v4(), 
+                            show_modal: false, 
+                            stream: vec![],
+                            content: PaneContent::Starter,
+                            settings: PaneSettings::default(),
+                        })
+                    ),
+                }),
+                b: Box::new(Configuration::Split {
+                    axis: pane_grid::Axis::Vertical,
+                    ratio: 0.5,
+                    a: Box::new(Configuration::Pane(
+                        PaneState { 
+                            id: Uuid::new_v4(), 
+                            show_modal: false, 
+                            stream: vec![],
+                            content: PaneContent::Starter,
+                            settings: PaneSettings::default(),
+                        })                      
+                    ),
+                    b: Box::new(Configuration::Pane(
+                        PaneState { 
+                            id: Uuid::new_v4(), 
+                            show_modal: false, 
+                            stream: vec![],
+                            content: PaneContent::Starter,
+                            settings: PaneSettings::default(),
+                        })
+                    ),
+                }),
+            }),
+            b: Box::new(Configuration::Pane(
+                PaneState { 
+                    id: Uuid::new_v4(), 
+                    show_modal: false, 
+                    stream: vec![],
+                    content: PaneContent::Starter,
+                    settings: PaneSettings::default(),
+                })
+            ),
+        };
         
         Self { 
-            panes,
+            panes: pane_grid::State::with_configuration(pane_config),
             focus: None,
             pane_lock: false,
             show_layout_modal: false,
+        }
+    }
+
+    pub fn from_config(panes: Configuration<PaneState>) -> Self {
+        Self {
+            panes: pane_grid::State::with_configuration(panes),
+            focus: None,
+            pane_lock: false,
+            show_layout_modal: false,
+        }
+    }
+
+    pub fn replace_new_pane(&mut self, pane: pane_grid::Pane) {
+        if let Some(pane) = self.panes.get_mut(pane) {
+            *pane = PaneState::new(Uuid::new_v4(), vec![], PaneSettings::default());
         }
     }
 
@@ -276,4 +354,76 @@ impl Dashboard {
 
         pane_streams
     }
+
+    pub fn get_serialized_panes(&self) {    
+        for (_, pane_state) in self.panes.iter() {
+            let pane: SerializablePane = SerializablePane::from(pane_state);
+    
+            match serde_json::to_string(&pane) {
+                Ok(serialized_pane) => {
+                    println!("Serialized Pane: {}", serialized_pane);
+                }
+                Err(e) => {
+                    eprintln!("Failed to serialize Pane: {}", e);
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SerializableDashboard {
+    pub pane: SerializablePane,
+}
+
+impl<'a> From<&'a Dashboard> for SerializableDashboard {
+    fn from(dashboard: &'a Dashboard) -> Self {
+        use pane_grid::Node;
+
+        fn from_layout(panes: &pane_grid::State<PaneState>, node: pane_grid::Node) -> SerializablePane {
+            match node {
+                Node::Split {
+                    axis, ratio, a, b, ..
+                } => SerializablePane::Split {
+                    axis: match axis {
+                        pane_grid::Axis::Horizontal => pane::Axis::Horizontal,
+                        pane_grid::Axis::Vertical => pane::Axis::Vertical,
+                    },
+                    ratio,
+                    a: Box::new(from_layout(panes, *a)),
+                    b: Box::new(from_layout(panes, *b)),
+                },
+                Node::Pane(pane) => panes
+                    .get(pane)
+                    .map(SerializablePane::from)
+                    .unwrap_or(SerializablePane::Starter),
+            }
+        }
+
+        let layout = dashboard.panes.layout().clone();
+
+        SerializableDashboard {
+            pane: from_layout(&dashboard.panes, layout),
+        }
+    }
+}
+
+use std::fs::File;
+use std::io::Write;
+use std::path::Path;
+
+pub fn write_json_to_file(json: &str, file_path: &str) -> std::io::Result<()> {
+    let path = Path::new(file_path);
+    let mut file = File::create(path)?;
+    file.write_all(json.as_bytes())?;
+    Ok(())
+}
+
+pub fn read_dashboard_from_file(file_path: &str) -> Result<SerializableDashboard, Box<dyn std::error::Error>> {
+    let path = Path::new(file_path);
+    let mut file = File::open(path)?;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)?;
+    let dashboard: SerializableDashboard = serde_json::from_str(&contents)?;
+    Ok(dashboard)
 }

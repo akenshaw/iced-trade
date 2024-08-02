@@ -709,7 +709,7 @@ dependencies = [
  "libm",
  "log",
  "rangemap",
- "rustc-hash",
+ "rustc-hash 1.1.0",
  "rustybuzz",
  "self_cell",
  "swash",
@@ -1527,7 +1527,7 @@ dependencies = [
  "cosmic-text",
  "etagere",
  "lru",
- "rustc-hash",
+ "rustc-hash 1.1.0",
  "wgpu",
 ]
 
@@ -1878,6 +1878,7 @@ dependencies = [
  "plotters-iced",
  "rand",
  "reqwest",
+ "rustc-hash 2.0.0",
  "serde",
  "serde_json",
  "sha2",
@@ -1923,7 +1924,7 @@ dependencies = [
  "num-traits",
  "once_cell",
  "palette",
- "rustc-hash",
+ "rustc-hash 1.1.0",
  "smol_str",
  "thiserror",
  "web-time 1.1.0",
@@ -1950,7 +1951,7 @@ dependencies = [
  "futures",
  "iced_core 0.13.0-dev",
  "log",
- "rustc-hash",
+ "rustc-hash 1.1.0",
  "tokio",
  "wasm-bindgen-futures",
  "wasm-timer",
@@ -1972,7 +1973,7 @@ dependencies = [
  "lyon_path",
  "once_cell",
  "raw-window-handle",
- "rustc-hash",
+ "rustc-hash 1.1.0",
  "thiserror",
  "unicode-segmentation",
  "xxhash-rust",
@@ -1995,7 +1996,7 @@ dependencies = [
  "lyon_path",
  "once_cell",
  "raw-window-handle",
- "rustc-hash",
+ "rustc-hash 1.1.0",
  "thiserror",
  "unicode-segmentation",
 ]
@@ -2082,7 +2083,7 @@ dependencies = [
  "iced_graphics 0.12.1",
  "kurbo",
  "log",
- "rustc-hash",
+ "rustc-hash 1.1.0",
  "softbuffer",
  "tiny-skia",
  "xxhash-rust",
@@ -2098,7 +2099,7 @@ dependencies = [
  "iced_graphics 0.13.0-dev",
  "kurbo",
  "log",
- "rustc-hash",
+ "rustc-hash 1.1.0",
  "softbuffer",
  "tiny-skia",
 ]
@@ -2137,7 +2138,7 @@ dependencies = [
  "log",
  "lyon",
  "once_cell",
- "rustc-hash",
+ "rustc-hash 1.1.0",
  "thiserror",
  "wgpu",
 ]
@@ -2165,7 +2166,7 @@ dependencies = [
  "iced_runtime 0.13.0-dev",
  "num-traits",
  "ouroboros",
- "rustc-hash",
+ "rustc-hash 1.1.0",
  "thiserror",
  "unicode-segmentation",
 ]
@@ -2179,7 +2180,7 @@ dependencies = [
  "iced_graphics 0.13.0-dev",
  "iced_runtime 0.13.0-dev",
  "log",
- "rustc-hash",
+ "rustc-hash 1.1.0",
  "thiserror",
  "tracing",
  "wasm-bindgen-futures",
@@ -2599,7 +2600,7 @@ dependencies = [
  "indexmap",
  "log",
  "num-traits",
- "rustc-hash",
+ "rustc-hash 1.1.0",
  "spirv",
  "termcolor",
  "thiserror",
@@ -3675,6 +3676,12 @@ name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
+
+[[package]]
+name = "rustc-hash"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "583034fd73374156e66797ed8e5b0d5690409c9226b22d87cb7f19821c05d152"
 
 [[package]]
 name = "rustc_version"
@@ -5029,7 +5036,7 @@ dependencies = [
  "parking_lot 0.12.3",
  "profiling",
  "raw-window-handle",
- "rustc-hash",
+ "rustc-hash 1.1.0",
  "smallvec",
  "thiserror",
  "web-sys",
@@ -5073,7 +5080,7 @@ dependencies = [
  "range-alloc",
  "raw-window-handle",
  "renderdoc-sys",
- "rustc-hash",
+ "rustc-hash 1.1.0",
  "smallvec",
  "thiserror",
  "wasm-bindgen",

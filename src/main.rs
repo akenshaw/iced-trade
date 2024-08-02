@@ -6,7 +6,7 @@ mod style;
 mod screen;
 
 use style::{ICON_FONT, ICON_BYTES, Icon};
-use screen::dashboard::{Dashboard, PaneContent, PaneSettings, PaneState, Uuid};
+use screen::dashboard::{self, pane::{self, SerializablePane}, read_dashboard_from_file, write_json_to_file, Dashboard, PaneContent, PaneSettings, PaneState, SerializableDashboard, Uuid};
 use data_providers::{binance, bybit, BinanceWsState, BybitWsState, UserWsState, Exchange, MarketEvents, TickMultiplier, Ticker, Timeframe, StreamType};
 
 use charts::footprint::FootprintChart;
@@ -70,6 +70,7 @@ pub enum Message {
     Close(pane_grid::Pane),
     ToggleLayoutLock,
     PaneContentSelected(String, Uuid, Vec<StreamType>),
+    ReplacePane,
 
     // Modal
     OpenModal(pane_grid::Pane),
@@ -105,69 +106,80 @@ struct State {
 
 impl State {
     fn new() -> Self {
-        let pane_config: Configuration<PaneState> = Configuration::Split {
-            axis: pane_grid::Axis::Vertical,
-            ratio: 0.8,
-            a: Box::new(Configuration::Split {
-                axis: pane_grid::Axis::Horizontal,
-                ratio: 0.4,
-                a: Box::new(Configuration::Split {
-                    axis: pane_grid::Axis::Vertical,
-                    ratio: 0.5,
-                    a: Box::new(Configuration::Pane(
-                        PaneState { 
-                            id: Uuid::new_v4(), 
-                            show_modal: false, 
-                            stream: vec![],
-                            content: PaneContent::Starter,
-                            settings: PaneSettings::default(),
-                        })
-                    ),
-                    b: Box::new(Configuration::Pane(
-                        PaneState { 
-                            id: Uuid::new_v4(), 
-                            show_modal: false, 
-                            stream: vec![],
-                            content: PaneContent::Starter,
-                            settings: PaneSettings::default(),
-                        })
-                    ),
-                }),
-                b: Box::new(Configuration::Split {
-                    axis: pane_grid::Axis::Vertical,
-                    ratio: 0.5,
-                    a: Box::new(Configuration::Pane(
-                        PaneState { 
-                            id: Uuid::new_v4(), 
-                            show_modal: false, 
-                            stream: vec![],
-                            content: PaneContent::Starter,
-                            settings: PaneSettings::default(),
-                        })                      
-                    ),
-                    b: Box::new(Configuration::Pane(
-                        PaneState { 
-                            id: Uuid::new_v4(), 
-                            show_modal: false, 
-                            stream: vec![],
-                            content: PaneContent::Starter,
-                            settings: PaneSettings::default(),
-                        })
-                    ),
-                }),
-            }),
-            b: Box::new(Configuration::Pane(
-                PaneState { 
-                    id: Uuid::new_v4(), 
-                    show_modal: false, 
-                    stream: vec![],
-                    content: PaneContent::Starter,
-                    settings: PaneSettings::default(),
-                })
-            ),
+        let dashboard = match read_dashboard_from_file("dashboard_state.json") {
+            Ok(dashboard) => {
+                println!("Successfully loaded dashboard state from file");
+
+                fn configuration(pane: SerializablePane) -> Configuration<PaneState> {
+                    match pane {
+                        SerializablePane::Split { axis, ratio, a, b } => Configuration::Split {
+                            axis: match axis {
+                                pane::Axis::Horizontal => pane_grid::Axis::Horizontal,
+                                pane::Axis::Vertical => pane_grid::Axis::Vertical,
+                            },
+                            ratio,
+                            a: Box::new(configuration(*a)),
+                            b: Box::new(configuration(*b)),
+                        },
+                        SerializablePane::Starter => {
+                            Configuration::Pane(PaneState::new(Uuid::new_v4(), vec![], PaneSettings::default()))
+                        },
+                        SerializablePane::CandlestickChart { stream_type, settings } => {
+                            Configuration::Pane(
+                                PaneState::from_config(
+                                    PaneContent::Candlestick(
+                                        CandlestickChart::new(vec![], settings.selected_timeframe.unwrap_or(Timeframe::M1).clone().to_minutes())
+                                    ),
+                                    stream_type,
+                                    settings
+                                )
+                            )
+                        },
+                        SerializablePane::FootprintChart { stream_type, settings } => {
+                            Configuration::Pane(
+                                PaneState::from_config(
+                                    PaneContent::Footprint(
+                                        FootprintChart::new(1, 1.0, vec![], vec![])
+                                    ),
+                                    stream_type,
+                                    settings
+                                )
+                            )
+                        },
+                        SerializablePane::HeatmapChart { stream_type, settings } => {
+                            Configuration::Pane(
+                                PaneState::from_config(
+                                    PaneContent::Heatmap(
+                                        HeatmapChart::new()
+                                    ),
+                                    stream_type,
+                                    settings
+                                )
+                            )
+                        },
+                        SerializablePane::TimeAndSales { stream_type, settings } => {
+                            Configuration::Pane(
+                                PaneState::from_config(
+                                    PaneContent::TimeAndSales(
+                                        TimeAndSales::new()
+                                    ),
+                                    stream_type,
+                                    settings
+                                )
+                            )
+                        },
+                    }
+                }
+
+                Dashboard::from_config(configuration(dashboard.pane))
+            },
+            Err(e) => {
+                eprintln!("Failed to load dashboard state: {}. Starting with a new dashboard.", e);
+
+                Dashboard::empty()
+            }
         };
-        let dashboard = Dashboard::empty(pane_config);
-        
+    
         Self { 
             dashboard,
             listen_key: None,
@@ -456,14 +468,25 @@ impl State {
             Message::ToggleLayoutLock => {
                 self.dashboard.pane_lock = !self.dashboard.pane_lock;
 
+                self.dashboard.focus = None;
+
                 Task::none()
             },
 
             Message::Debug(msg) => {
-                dbg!(&self.pane_streams);
-
+                let dashboard: SerializableDashboard = SerializableDashboard::from(&self.dashboard);
+                match serde_json::to_string(&dashboard) {
+                    Ok(json) => {
+                        if let Err(e) = write_json_to_file(&json, "dashboard_state.json") {
+                            eprintln!("Failed to write dashboard state to file: {}", e);
+                        } else {
+                            println!("Successfully wrote dashboard state to dashboard_state.json");
+                        }
+                    },
+                    Err(e) => eprintln!("Failed to serialize dashboard: {}", e),
+                }
                 Task::none()
-            },
+            }
 
             Message::OpenModal(pane) => {
                 if let Some(pane) = self.dashboard.panes.get_mut(pane) {
@@ -611,7 +634,14 @@ impl State {
                 dbg!(&self.pane_streams);
             
                 Task::batch(tasks)
-            }            
+            },
+            Message::ReplacePane => {
+                if let Some(pane) = self.dashboard.focus {
+                    self.dashboard.replace_new_pane(pane);
+                }
+
+                Task::none()
+            },
         }
     }
 
@@ -824,21 +854,24 @@ impl State {
         if self.dashboard.show_layout_modal {
             let pane_to_split = self.dashboard.focus
                 .unwrap_or_else(
-                    || { 
-                        dbg!("No focused pane found"); 
-                        *self.dashboard.panes.iter().next().unwrap().0
-                    }
+                    || { *self.dashboard.panes.iter().next().unwrap().0 }
                 );
 
             let add_pane_button = button("Add a new pane").width(iced::Pixels(200.0)).on_press(
                 Message::Split(pane_grid::Axis::Horizontal, pane_to_split)
             );
 
+            let mut replace_pane_button = button("Replace selected pane").width(iced::Pixels(200.0));
+            if self.dashboard.focus.is_some() {
+                replace_pane_button = replace_pane_button.on_press(Message::ReplacePane);
+            }
+
             let signup = container(
                 Column::new()
                     .spacing(10)
                     .align_items(Alignment::Center)
                     .push(add_pane_button)
+                    .push(replace_pane_button)
                     .push(
                         Column::new()
                             .align_items(Alignment::Center)
