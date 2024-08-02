@@ -125,10 +125,17 @@ impl State {
                             Configuration::Pane(PaneState::new(Uuid::new_v4(), vec![], PaneSettings::default()))
                         },
                         SerializablePane::CandlestickChart { stream_type, settings } => {
+                            let timeframe = settings.selected_timeframe
+                                .unwrap()
+                                .to_minutes();
+
                             Configuration::Pane(
                                 PaneState::from_config(
                                     PaneContent::Candlestick(
-                                        CandlestickChart::new(vec![], settings.selected_timeframe.unwrap_or(Timeframe::M1).clone().to_minutes())
+                                        CandlestickChart::new(
+                                            vec![], 
+                                            timeframe
+                                        )
                                     ),
                                     stream_type,
                                     settings
@@ -136,10 +143,23 @@ impl State {
                             )
                         },
                         SerializablePane::FootprintChart { stream_type, settings } => {
+                            let ticksize = settings.tick_multiply
+                                .unwrap()
+                                .multiply_with_min_tick_size(settings.min_tick_size.unwrap());
+                        
+                            let timeframe = settings.selected_timeframe
+                                .unwrap()
+                                .to_minutes();
+
                             Configuration::Pane(
                                 PaneState::from_config(
                                     PaneContent::Footprint(
-                                        FootprintChart::new(1, 1.0, vec![], vec![])
+                                        FootprintChart::new(
+                                            timeframe,
+                                            ticksize,
+                                            vec![], 
+                                            vec![]
+                                        )
                                     ),
                                     stream_type,
                                     settings
@@ -179,6 +199,8 @@ impl State {
                 Dashboard::empty()
             }
         };
+
+        let pane_streams = dashboard.get_all_diff_streams();
     
         Self { 
             dashboard,
@@ -189,7 +211,7 @@ impl State {
             ws_running: false,
             exchange_latency: None,
             feed_latency_cache: VecDeque::new(),
-            pane_streams: HashMap::new(),
+            pane_streams,
         }
     }
 
