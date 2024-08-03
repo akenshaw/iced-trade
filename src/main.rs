@@ -21,7 +21,7 @@ use std::{collections::{HashMap, HashSet, VecDeque}, vec};
 use iced::{
     alignment, widget::{
         button, center, checkbox, mouse_area, opaque, pick_list, stack, tooltip, Column, Container, Row, Slider, Space, Text
-    }, Alignment, Color, Element, Font, Length, Renderer, Settings, Size, Subscription, Task, Theme
+    }, window, Alignment, Color, Element, Font, Length, Renderer, Settings, Size, Subscription, Task, Theme
 };
 use iced::widget::pane_grid::{self, PaneGrid, Configuration};
 use iced::widget::{
@@ -40,6 +40,7 @@ fn main() -> iced::Result {
     .window_size(iced::Size::new(1600.0, 900.0))
     .centered()   
     .font(ICON_BYTES)
+    .exit_on_close_request(false)
     .run_with(move || State::new())
 }
 
@@ -84,6 +85,8 @@ pub enum Message {
     TicksizeSelected(TickMultiplier, Uuid),
     TimeframeSelected(Timeframe, Uuid),
     SetMinTickSize(f32, Uuid),   
+    
+    Event(Event),
 }
 
 struct State {
@@ -540,20 +543,29 @@ impl State {
             },
 
             Message::Debug(msg) => {
-                let dashboard: SerializableDashboard = SerializableDashboard::from(&self.dashboard);
-                match serde_json::to_string(&dashboard) {
-                    Ok(json) => {
-                        if let Err(e) = write_json_to_file(&json, "dashboard_state.json") {
-                            eprintln!("Failed to write dashboard state to file: {}", e);
-                        } else {
-                            println!("Successfully wrote dashboard state to dashboard_state.json");
-                        }
-                    },
-                    Err(e) => eprintln!("Failed to serialize dashboard: {}", e),
-                }
                 Task::none()
-            }
+            },
 
+            Message::Event(event) => {
+                if let Event::CloseRequested(window) = event {
+                    let dashboard: SerializableDashboard = SerializableDashboard::from(&self.dashboard);
+                    match serde_json::to_string(&dashboard) {
+                        Ok(json) => {
+                            if let Err(e) = write_json_to_file(&json, "dashboard_state.json") {
+                                eprintln!("Failed to write dashboard state to file: {}", e);
+                            } else {
+                                println!("Successfully wrote dashboard state to dashboard_state.json");
+                            }
+                        },
+                        Err(e) => eprintln!("Failed to serialize dashboard: {}", e),
+                    }
+
+                    window::close(window)
+                } else {
+                    Task::none()
+                }
+            },
+            
             Message::OpenModal(pane) => {
                 if let Some(pane) = self.dashboard.panes.get_mut(pane) {
                     pane.show_modal = true;
@@ -1010,6 +1022,8 @@ impl State {
                 all_subscriptions.push(Subscription::batch(depth_streams));
             }
         }
+
+        all_subscriptions.push(events().map(Message::Event));
     
         Subscription::batch(all_subscriptions)
     }    
@@ -1385,4 +1399,28 @@ fn view_controls<'a>(
     } 
 
     row.into()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Event {
+    CloseRequested(window::Id),
+    Copy,
+    Escape,
+    Home,
+    End,
+}
+
+pub fn events() -> Subscription<Event> {
+    iced::event::listen_with(filtered_events)
+}
+
+fn filtered_events(
+    event: iced::Event,
+    status: iced::event::Status,
+    window: window::Id,
+) -> Option<Event> {
+    match &event {
+        iced::Event::Window(window::Event::CloseRequested) => Some(Event::CloseRequested(window)),
+        _ => None,
+    }
 }
