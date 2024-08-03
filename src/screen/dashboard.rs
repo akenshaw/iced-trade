@@ -3,18 +3,15 @@ pub mod pane;
 use pane::SerializablePane;
 pub use pane::{Uuid, PaneState, PaneContent, PaneSettings};
 use serde::{Deserialize, Serialize};
-use serde_json::to_string;
 
 use crate::{
-    charts::{candlestick::CandlestickChart, footprint::FootprintChart, Message}, 
-    data_providers::{
+    charts::{candlestick::CandlestickChart, footprint::FootprintChart, Message}, data_providers::{
         Depth, Exchange, Kline, TickMultiplier, Ticker, Timeframe, Trade
-    }, 
-    StreamType
+    }, StreamType
 };
 
 use std::{collections::{HashMap, HashSet}, io::Read, rc::Rc};
-use iced::widget::pane_grid::{self, Configuration};
+use iced::{widget::pane_grid::{self, Configuration}, Point, Size};
 
 pub struct Dashboard {
     pub panes: pane_grid::State<PaneState>,
@@ -393,6 +390,41 @@ impl<'a> From<&'a Dashboard> for SerializableDashboard {
     }
 }
 
+impl Default for SerializableDashboard {
+    fn default() -> Self {
+        Self {
+            pane: SerializablePane::Starter,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SerializableLayout {
+    pub dashboard: SerializableDashboard,
+    pub window_size: Option<(f32, f32)>,
+    pub window_position: Option<(f32, f32)>,
+}
+
+impl SerializableLayout {
+    pub fn from_parts(dashboard: SerializableDashboard, size: Option<Size>, position: Option<Point>) -> Self {
+        SerializableLayout {
+            dashboard,
+            window_size: size.map(|s| (s.width, s.height)),
+            window_position: position.map(|p| (p.x, p.y)),
+        }
+    }
+}
+
+impl Default for SerializableLayout {
+    fn default() -> Self {
+        SerializableLayout {
+            dashboard: SerializableDashboard::default(),
+            window_size: None,
+            window_position: None,
+        }
+    }
+}
+
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
@@ -404,11 +436,11 @@ pub fn write_json_to_file(json: &str, file_path: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-pub fn read_dashboard_from_file(file_path: &str) -> Result<SerializableDashboard, Box<dyn std::error::Error>> {
+pub fn read_layout_from_file(file_path: &str) -> Result<SerializableLayout, Box<dyn std::error::Error>> {
     let path = Path::new(file_path);
     let mut file = File::open(path)?;
     let mut contents = String::new();
     file.read_to_string(&mut contents)?;
-    let dashboard: SerializableDashboard = serde_json::from_str(&contents)?;
-    Ok(dashboard)
+   
+    Ok(serde_json::from_str(&contents)?)
 }

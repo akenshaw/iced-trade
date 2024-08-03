@@ -6,7 +6,7 @@ mod style;
 mod screen;
 
 use style::{ICON_FONT, ICON_BYTES, Icon};
-use screen::dashboard::{self, pane::{self, SerializablePane}, read_dashboard_from_file, write_json_to_file, Dashboard, PaneContent, PaneSettings, PaneState, SerializableDashboard, Uuid};
+use screen::dashboard::{pane::{self, SerializablePane}, read_layout_from_file, write_json_to_file, Dashboard, PaneContent, PaneSettings, PaneState, SerializableDashboard, SerializableLayout, Uuid};
 use data_providers::{binance, bybit, BinanceWsState, BybitWsState, UserWsState, Exchange, MarketEvents, TickMultiplier, Ticker, Timeframe, StreamType};
 
 use charts::footprint::FootprintChart;
@@ -21,7 +21,7 @@ use std::{collections::{HashMap, HashSet, VecDeque}, vec};
 use iced::{
     alignment, widget::{
         button, center, checkbox, mouse_area, opaque, pick_list, stack, tooltip, Column, Container, Row, Slider, Space, Text
-    }, window, Alignment, Color, Element, Font, Length, Renderer, Settings, Size, Subscription, Task, Theme
+    }, window::{self, Position}, Alignment, Color, Element, Length, Point, Renderer, Size, Subscription, Task, Theme
 };
 use iced::widget::pane_grid::{self, PaneGrid, Configuration};
 use iced::widget::{
@@ -29,6 +29,119 @@ use iced::widget::{
 };
 
 fn main() -> iced::Result {
+    let (dashboard, window_settings) = match read_layout_from_file("dashboard_state.json") {
+        Ok(layout) => {
+            let dashboard = layout.dashboard;
+
+            println!("Successfully loaded dashboard state from file");
+
+            fn configuration(pane: SerializablePane) -> Configuration<PaneState> {
+                match pane {
+                    SerializablePane::Split { axis, ratio, a, b } => Configuration::Split {
+                        axis: match axis {
+                            pane::Axis::Horizontal => pane_grid::Axis::Horizontal,
+                            pane::Axis::Vertical => pane_grid::Axis::Vertical,
+                        },
+                        ratio,
+                        a: Box::new(configuration(*a)),
+                        b: Box::new(configuration(*b)),
+                    },
+                    SerializablePane::Starter => {
+                        Configuration::Pane(PaneState::new(Uuid::new_v4(), vec![], PaneSettings::default()))
+                    },
+                    SerializablePane::CandlestickChart { stream_type, settings } => {
+                        let timeframe = settings.selected_timeframe
+                            .unwrap()
+                            .to_minutes();
+
+                        Configuration::Pane(
+                            PaneState::from_config(
+                                PaneContent::Candlestick(
+                                    CandlestickChart::new(
+                                        vec![], 
+                                        timeframe
+                                    )
+                                ),
+                                stream_type,
+                                settings
+                            )
+                        )
+                    },
+                    SerializablePane::FootprintChart { stream_type, settings } => {
+                        let ticksize = settings.tick_multiply
+                            .unwrap()
+                            .multiply_with_min_tick_size(settings.min_tick_size.unwrap());
+                    
+                        let timeframe = settings.selected_timeframe
+                            .unwrap()
+                            .to_minutes();
+
+                        Configuration::Pane(
+                            PaneState::from_config(
+                                PaneContent::Footprint(
+                                    FootprintChart::new(
+                                        timeframe,
+                                        ticksize,
+                                        vec![], 
+                                        vec![]
+                                    )
+                                ),
+                                stream_type,
+                                settings
+                            )
+                        )
+                    },
+                    SerializablePane::HeatmapChart { stream_type, settings } => {
+                        Configuration::Pane(
+                            PaneState::from_config(
+                                PaneContent::Heatmap(
+                                    HeatmapChart::new()
+                                ),
+                                stream_type,
+                                settings
+                            )
+                        )
+                    },
+                    SerializablePane::TimeAndSales { stream_type, settings } => {
+                        Configuration::Pane(
+                            PaneState::from_config(
+                                PaneContent::TimeAndSales(
+                                    TimeAndSales::new()
+                                ),
+                                stream_type,
+                                settings
+                            )
+                        )
+                    },
+                }
+            }
+
+            let window_size = layout.window_size.unwrap_or((1600.9, 900.0));
+            let window_position = layout.window_position.unwrap_or((0.0, 0.0));
+
+            let window_settings = window::Settings {
+                size: iced::Size::new(
+                    window_size.0,
+                    window_size.1
+                ),
+                position: Position::Specific(
+                    Point::new(
+                        window_position.0,
+                        window_position.1
+                    )
+                ),
+                ..Default::default()
+            };
+
+            (Dashboard::from_config(configuration(dashboard.pane)), window_settings)
+        },
+        Err(e) => {
+            eprintln!("Failed to load layout state: {}. Starting with a new layout.", e);
+
+            (Dashboard::empty(), window::Settings::default())
+        }
+    };
+
     iced::application(
         "Iced Trade",
         State::update,
@@ -37,11 +150,11 @@ fn main() -> iced::Result {
     .subscription(State::subscription)
     .theme(|_| Theme::KanagawaDragon)
     .antialiasing(true)
-    .window_size(iced::Size::new(1600.0, 900.0))
+    .window(window_settings)
     .centered()   
     .font(ICON_BYTES)
     .exit_on_close_request(false)
-    .run_with(move || State::new())
+    .run_with(move || State::new(dashboard))
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +200,8 @@ pub enum Message {
     SetMinTickSize(f32, Uuid),   
     
     Event(Event),
+
+    SaveAndExit(window::Id, Option<Size>, Option<Point>),
 }
 
 struct State {
@@ -108,101 +223,7 @@ struct State {
 }
 
 impl State {
-    fn new() -> (Self, Task<Message>) {
-        let dashboard = match read_dashboard_from_file("dashboard_state.json") {
-            Ok(dashboard) => {
-                println!("Successfully loaded dashboard state from file");
-
-                fn configuration(pane: SerializablePane) -> Configuration<PaneState> {
-                    match pane {
-                        SerializablePane::Split { axis, ratio, a, b } => Configuration::Split {
-                            axis: match axis {
-                                pane::Axis::Horizontal => pane_grid::Axis::Horizontal,
-                                pane::Axis::Vertical => pane_grid::Axis::Vertical,
-                            },
-                            ratio,
-                            a: Box::new(configuration(*a)),
-                            b: Box::new(configuration(*b)),
-                        },
-                        SerializablePane::Starter => {
-                            Configuration::Pane(PaneState::new(Uuid::new_v4(), vec![], PaneSettings::default()))
-                        },
-                        SerializablePane::CandlestickChart { stream_type, settings } => {
-                            let timeframe = settings.selected_timeframe
-                                .unwrap()
-                                .to_minutes();
-
-                            Configuration::Pane(
-                                PaneState::from_config(
-                                    PaneContent::Candlestick(
-                                        CandlestickChart::new(
-                                            vec![], 
-                                            timeframe
-                                        )
-                                    ),
-                                    stream_type,
-                                    settings
-                                )
-                            )
-                        },
-                        SerializablePane::FootprintChart { stream_type, settings } => {
-                            let ticksize = settings.tick_multiply
-                                .unwrap()
-                                .multiply_with_min_tick_size(settings.min_tick_size.unwrap());
-                        
-                            let timeframe = settings.selected_timeframe
-                                .unwrap()
-                                .to_minutes();
-
-                            Configuration::Pane(
-                                PaneState::from_config(
-                                    PaneContent::Footprint(
-                                        FootprintChart::new(
-                                            timeframe,
-                                            ticksize,
-                                            vec![], 
-                                            vec![]
-                                        )
-                                    ),
-                                    stream_type,
-                                    settings
-                                )
-                            )
-                        },
-                        SerializablePane::HeatmapChart { stream_type, settings } => {
-                            Configuration::Pane(
-                                PaneState::from_config(
-                                    PaneContent::Heatmap(
-                                        HeatmapChart::new()
-                                    ),
-                                    stream_type,
-                                    settings
-                                )
-                            )
-                        },
-                        SerializablePane::TimeAndSales { stream_type, settings } => {
-                            Configuration::Pane(
-                                PaneState::from_config(
-                                    PaneContent::TimeAndSales(
-                                        TimeAndSales::new()
-                                    ),
-                                    stream_type,
-                                    settings
-                                )
-                            )
-                        },
-                    }
-                }
-
-                Dashboard::from_config(configuration(dashboard.pane))
-            },
-            Err(e) => {
-                eprintln!("Failed to load dashboard state: {}. Starting with a new dashboard.", e);
-
-                Dashboard::empty()
-            }
-        };
-
+    fn new(dashboard: Dashboard) -> (Self, Task<Message>) {
         let mut tasks = vec![];
 
         for (_, pane_state) in dashboard.panes.iter() {
@@ -547,23 +568,44 @@ impl State {
             },
 
             Message::Event(event) => {
-                if let Event::CloseRequested(window) = event {
-                    let dashboard: SerializableDashboard = SerializableDashboard::from(&self.dashboard);
-                    match serde_json::to_string(&dashboard) {
-                        Ok(json) => {
-                            if let Err(e) = write_json_to_file(&json, "dashboard_state.json") {
-                                eprintln!("Failed to write dashboard state to file: {}", e);
-                            } else {
-                                println!("Successfully wrote dashboard state to dashboard_state.json");
+                if let Event::CloseRequested(window) = event {                    
+                    Task::batch(vec![
+                        window::get_size(window).map(Either::Left),
+                        window::get_position(window).map(Either::Right)
+                    ])
+                    .collect()
+                    .map(move |results| {
+                        let mut size = None;
+                        let mut position = None;
+                        for result in results {
+                            match result {
+                                Either::Left(s) => size = Some(s),
+                                Either::Right(p) => position = p,
                             }
-                        },
-                        Err(e) => eprintln!("Failed to serialize dashboard: {}", e),
-                    }
-
-                    window::close(window)
+                        }
+                        Message::SaveAndExit(window, size, position)
+                    })
                 } else {
                     Task::none()
                 }
+            },
+
+            Message::SaveAndExit(window, size, position) => {
+                let dashboard = SerializableDashboard::from(&self.dashboard);
+                let layout = SerializableLayout::from_parts(dashboard, size, position);
+            
+                match serde_json::to_string(&layout) {
+                    Ok(layout_str) => {
+                        if let Err(e) = write_json_to_file(&layout_str, "dashboard_state.json") {
+                            eprintln!("Failed to write layout state to file: {}", e);
+                        } else {
+                            println!("Successfully wrote layout state to dashboard_state.json");
+                        }
+                    },
+                    Err(e) => eprintln!("Failed to serialize layout: {}", e),
+                }
+            
+                window::close(window)
             },
             
             Message::OpenModal(pane) => {
@@ -1423,4 +1465,9 @@ fn filtered_events(
         iced::Event::Window(window::Event::CloseRequested) => Some(Event::CloseRequested(window)),
         _ => None,
     }
+}
+
+enum Either<L, R> {
+    Left(L),
+    Right(R),
 }
