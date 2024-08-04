@@ -202,6 +202,8 @@ pub enum Message {
     Event(Event),
 
     SaveAndExit(window::Id, Option<Size>, Option<Point>),
+
+    NewLayout,
 }
 
 struct State {
@@ -230,35 +232,57 @@ impl State {
             match pane_state.content {
                 PaneContent::Candlestick(_) => {
                     for stream in pane_state.stream.iter() {
-                        if let StreamType::Kline { ticker, timeframe, .. } = stream {
+                        if let StreamType::Kline { ticker, timeframe, exchange } = stream {
                             let stream = stream.clone();
 
                             let pane_id = pane_state.id;
 
-                            let fetch_klines = Task::perform(
-                                binance::market_data::fetch_klines(*ticker, *timeframe)
-                                    .map_err(|err| format!("{err}")),
-                                move |klines| Message::FetchEvent(klines, stream, pane_id)
-                            );
-
-                            tasks.push(fetch_klines);
+                            match exchange {
+                                Exchange::BinanceFutures => {
+                                    let fetch_klines = Task::perform(
+                                        binance::market_data::fetch_klines(*ticker, *timeframe)
+                                            .map_err(|err| format!("{err}")),
+                                        move |klines| Message::FetchEvent(klines, stream, pane_id)
+                                    );
+                                    tasks.push(fetch_klines);
+                                },
+                                Exchange::BybitLinear => {
+                                    let fetch_klines = Task::perform(
+                                        bybit::market_data::fetch_klines(*ticker, *timeframe)
+                                            .map_err(|err| format!("{err}")),
+                                        move |klines| Message::FetchEvent(klines, stream, pane_id)
+                                    );
+                                    tasks.push(fetch_klines);
+                                }
+                            }
                         }
                     }
                 },
                 PaneContent::Footprint(_) => {
                     for stream in pane_state.stream.iter() {
-                        if let StreamType::Kline { ticker, timeframe, .. } = stream {
+                        if let StreamType::Kline { ticker, timeframe, exchange } = stream {
                             let stream = stream.clone();
 
                             let pane_id = pane_state.id;
 
-                            let fetch_klines = Task::perform(
-                                binance::market_data::fetch_klines(*ticker, *timeframe)
-                                    .map_err(|err| format!("{err}")),
-                                move |klines| Message::FetchEvent(klines, stream, pane_id)
-                            );
-
-                            tasks.push(fetch_klines);
+                            match exchange {
+                                Exchange::BinanceFutures => {
+                                    let fetch_klines = Task::perform(
+                                        binance::market_data::fetch_klines(*ticker, *timeframe)
+                                            .map_err(|err| format!("{err}")),
+                                        move |klines| Message::FetchEvent(klines, stream, pane_id)
+                                    );
+                                    tasks.push(fetch_klines);
+                                },
+                                Exchange::BybitLinear => {
+                                    let fetch_klines = Task::perform(
+                                        bybit::market_data::fetch_klines(*ticker, *timeframe)
+                                            .map_err(|err| format!("{err}")),
+                                        move |klines| Message::FetchEvent(klines, stream, pane_id)
+                                    );
+                                    tasks.push(fetch_klines);
+                                }
+                            }
                         }
                     }
                 },
@@ -564,6 +588,8 @@ impl State {
             },
 
             Message::Debug(msg) => {
+                println!("{msg}");
+                
                 Task::none()
             },
 
@@ -760,6 +786,11 @@ impl State {
                     self.dashboard.replace_new_pane(pane);
                 }
 
+                Task::none()
+            },
+
+            Message::NewLayout => {
+                self.dashboard = Dashboard::empty();
                 Task::none()
             },
         }
@@ -972,29 +1003,55 @@ impl State {
             );
 
         if self.dashboard.show_layout_modal {
-            let pane_to_split = self.dashboard.focus
-                .unwrap_or_else(
-                    || { *self.dashboard.panes.iter().next().unwrap().0 }
-                );
-
-            let add_pane_button = button("Add a new pane").width(iced::Pixels(200.0)).on_press(
-                Message::Split(pane_grid::Axis::Horizontal, pane_to_split)
-            );
+            let mut add_pane_button = button("Split selected pane").width(iced::Pixels(200.0));
 
             let mut replace_pane_button = button("Replace selected pane").width(iced::Pixels(200.0));
+
             if self.dashboard.focus.is_some() {
                 replace_pane_button = replace_pane_button.on_press(Message::ReplacePane);
+
+                add_pane_button = add_pane_button.on_press(
+                    Message::Split(
+                        pane_grid::Axis::Horizontal, 
+                        self.dashboard.focus
+                            .unwrap_or_else(|| { *self.dashboard.panes.iter().next().unwrap().0 })
+                    )
+                );
             }
 
-            let signup = container(
+            let layout_picklist = pick_list(
+                ["Layout 1", "Layout 2", "Layout 3", "Layout 4"],
+                Some("Layout 1"),
+                |arg0: &str| Message::Debug(arg0.to_string())
+            );
+
+            let layout_modal = container(
                 Column::new()
-                    .spacing(10)
+                    .spacing(8)
                     .align_x(Alignment::Center)
                     .push(add_pane_button)
                     .push(replace_pane_button)
                     .push(
-                        Column::new()
-                            .align_x(Alignment::Center)
+                        Row::new()
+                            .padding([8, 0])
+                            .spacing(8)
+                            .push(
+                                Row::new()
+                                .spacing(2)
+                                .push(
+                                    tooltip(
+                                        button(Text::new("+"))
+                                        .on_press(Message::NewLayout),
+                                        "New layout", 
+                                        tooltip::Position::Bottom
+                                    ).style(style::tooltip)
+                                )
+                                .push(
+                                    layout_picklist
+                                    .style(style::picklist_primary)
+                                    .menu_style(style::picklist_menu_primary)
+                                )                          
+                            )
                             .push(
                                 button("Close")
                                     .on_press(Message::HideLayoutModal)
@@ -1004,7 +1061,8 @@ impl State {
             .width(Length::Shrink)
             .padding(20)
             .style(style::chart_modal);
-            modal(content, signup, Message::HideLayoutModal)
+
+            modal(content, layout_modal, Message::HideLayoutModal)
         } else {
             content 
                 .into()
