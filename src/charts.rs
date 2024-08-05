@@ -53,7 +53,7 @@ impl Default for CommonChartData {
 
             mesh_cache: Cache::default(),
 
-            crosshair: false,
+            crosshair: true,
             crosshair_cache: Cache::default(),
             crosshair_position: Point::new(0.0, 0.0),
 
