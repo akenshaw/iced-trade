@@ -353,6 +353,12 @@ impl Dashboard {
     }
 }
 
+impl Default for Dashboard {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SerializableDashboard {
     pub pane: SerializablePane,
@@ -398,29 +404,69 @@ impl Default for SerializableDashboard {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct SerializableLayout {
-    pub dashboard: SerializableDashboard,
+pub struct SavedState {
+    pub layouts: HashMap<LayoutId, Dashboard>,
+    pub last_active_layout: LayoutId,
     pub window_size: Option<(f32, f32)>,
     pub window_position: Option<(f32, f32)>,
 }
-
-impl SerializableLayout {
-    pub fn from_parts(dashboard: SerializableDashboard, size: Option<Size>, position: Option<Point>) -> Self {
-        SerializableLayout {
-            dashboard,
-            window_size: size.map(|s| (s.width, s.height)),
-            window_position: position.map(|p| (p.x, p.y)),
+impl Default for SavedState {
+    fn default() -> Self {
+        let mut layouts = HashMap::new();
+        layouts.insert(LayoutId::Layout1, Dashboard::default());
+        layouts.insert(LayoutId::Layout2, Dashboard::default());
+        layouts.insert(LayoutId::Layout3, Dashboard::default());
+        layouts.insert(LayoutId::Layout4, Dashboard::default());
+        
+        SavedState {
+            layouts,
+            last_active_layout: LayoutId::Layout1,
+            window_size: None,
+            window_position: None,
         }
     }
 }
 
-impl Default for SerializableLayout {
-    fn default() -> Self {
-        SerializableLayout {
-            dashboard: SerializableDashboard::default(),
-            window_size: None,
-            window_position: None,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+pub enum LayoutId {
+    Layout1,
+    Layout2,
+    Layout3,
+    Layout4,
+}
+impl std::fmt::Display for LayoutId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LayoutId::Layout1 => write!(f, "Layout 1"),
+            LayoutId::Layout2 => write!(f, "Layout 2"),
+            LayoutId::Layout3 => write!(f, "Layout 3"),
+            LayoutId::Layout4 => write!(f, "Layout 4"),
+        }
+    }
+}
+impl LayoutId {
+    pub const ALL: [LayoutId; 4] = [LayoutId::Layout1, LayoutId::Layout2, LayoutId::Layout3, LayoutId::Layout4];
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SerializableState {
+    pub layouts: HashMap<LayoutId, SerializableDashboard>,
+    pub last_active_layout: LayoutId,
+    pub window_size: Option<(f32, f32)>,
+    pub window_position: Option<(f32, f32)>,
+}
+impl SerializableState {
+    pub fn from_parts(
+        layouts: HashMap<LayoutId, SerializableDashboard>,
+        last_active_layout: LayoutId,
+        size: Option<Size>,
+        position: Option<Point>,
+    ) -> Self {
+        SerializableState {
+            layouts,
+            last_active_layout,
+            window_size: size.map(|s| (s.width, s.height)),
+            window_position: position.map(|p| (p.x, p.y)),
         }
     }
 }
@@ -436,7 +482,7 @@ pub fn write_json_to_file(json: &str, file_path: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-pub fn read_layout_from_file(file_path: &str) -> Result<SerializableLayout, Box<dyn std::error::Error>> {
+pub fn read_layout_from_file(file_path: &str) -> Result<SerializableState, Box<dyn std::error::Error>> {
     let path = Path::new(file_path);
     let mut file = File::open(path)?;
     let mut contents = String::new();

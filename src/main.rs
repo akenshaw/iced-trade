@@ -6,7 +6,7 @@ mod style;
 mod screen;
 
 use style::{ICON_FONT, ICON_BYTES, Icon};
-use screen::dashboard::{pane::{self, SerializablePane}, read_layout_from_file, write_json_to_file, Dashboard, PaneContent, PaneSettings, PaneState, SerializableDashboard, SerializableLayout, Uuid};
+use screen::dashboard::{pane::{self, SerializablePane}, read_layout_from_file, write_json_to_file, Dashboard, LayoutId, PaneContent, PaneSettings, PaneState, SavedState, SerializableDashboard, SerializableState, Uuid};
 use data_providers::{binance, bybit, BinanceWsState, BybitWsState, UserWsState, Exchange, MarketEvents, TickMultiplier, Ticker, Timeframe, StreamType};
 
 use charts::footprint::FootprintChart;
@@ -29,11 +29,14 @@ use iced::widget::{
 };
 
 fn main() -> iced::Result {
-    let (dashboard, window_settings) = match read_layout_from_file("dashboard_state.json") {
-        Ok(layout) => {
-            let dashboard = layout.dashboard;
-
-            println!("Successfully loaded dashboard state from file");
+    let saved_state = match read_layout_from_file("dashboard_state.json") {
+        Ok(state) => {
+            let mut de_state = SavedState {
+                layouts: HashMap::new(),
+                last_active_layout: state.last_active_layout,
+                window_size: state.window_size,
+                window_position: state.window_position,
+            };
 
             fn configuration(pane: SerializablePane) -> Configuration<PaneState> {
                 match pane {
@@ -116,30 +119,28 @@ fn main() -> iced::Result {
                 }
             }
 
-            let window_size = layout.window_size.unwrap_or((1600.9, 900.0));
-            let window_position = layout.window_position.unwrap_or((0.0, 0.0));
+            for (id, dashboard) in state.layouts.iter() {                
+                let dashboard = Dashboard::from_config(configuration(dashboard.pane.clone()));
 
-            let window_settings = window::Settings {
-                size: iced::Size::new(
-                    window_size.0,
-                    window_size.1
-                ),
-                position: Position::Specific(
-                    Point::new(
-                        window_position.0,
-                        window_position.1
-                    )
-                ),
-                ..Default::default()
-            };
+                de_state.layouts.insert(*id, dashboard);
+            }
 
-            (Dashboard::from_config(configuration(dashboard.pane)), window_settings)
+            de_state
         },
         Err(e) => {
-            eprintln!("Failed to load layout state: {}. Starting with a new layout.", e);
+            eprintln!("Failed to load/find layout state: {}. Starting with a new layout.", e);
 
-            (Dashboard::empty(), window::Settings::default())
+            SavedState::default()
         }
+    };
+
+    let window_size = saved_state.window_size.unwrap_or((1600.0, 900.0));
+    let window_position = saved_state.window_position.unwrap_or((0.0, 0.0));
+
+    let window_settings = window::Settings {
+        size: iced::Size::new(window_size.0, window_size.1),
+        position: Position::Specific(Point::new(window_position.0, window_position.1)),
+        ..Default::default()
     };
 
     iced::application(
@@ -154,7 +155,7 @@ fn main() -> iced::Result {
     .centered()   
     .font(ICON_BYTES)
     .exit_on_close_request(false)
-    .run_with(move || State::new(dashboard))
+    .run_with(move || State::new(saved_state))
 }
 
 #[derive(Debug, Clone)]
@@ -184,7 +185,7 @@ pub enum Message {
     Close(pane_grid::Pane),
     ToggleLayoutLock,
     PaneContentSelected(String, Uuid, Vec<StreamType>),
-    ReplacePane,
+    ReplacePane(pane_grid::Pane),
 
     // Modal
     OpenModal(pane_grid::Pane),
@@ -203,11 +204,15 @@ pub enum Message {
 
     SaveAndExit(window::Id, Option<Size>, Option<Point>),
 
-    NewLayout,
+    ResetCurrentLayout,
+    LayoutSelected(LayoutId),
+    GetStreams,
 }
 
 struct State {
-    dashboard: Dashboard,
+    layouts: HashMap<LayoutId, Dashboard>,
+
+    last_active_layout: LayoutId,
 
     exchange_latency: Option<(u32, u32)>,
 
@@ -224,66 +229,84 @@ struct State {
     pane_streams: HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>,
 }
 
+fn fetch_related_klines(pane_state: &PaneState) -> Vec<Task<Message>> {
+    let mut tasks: Vec<Task<Message>> = vec![];
+
+    for stream in pane_state.stream.iter() {
+        if let StreamType::Kline { ticker, timeframe, exchange } = stream {
+            let stream = stream.clone();
+
+            let pane_id = pane_state.id;
+
+            match exchange {
+                Exchange::BinanceFutures => {
+                    let fetch_klines = Task::perform(
+                        binance::market_data::fetch_klines(*ticker, *timeframe)
+                            .map_err(|err| format!("{err}")),
+                        move |klines| Message::FetchEvent(klines, stream, pane_id)
+                    );
+                    tasks.push(fetch_klines);
+                },
+                Exchange::BybitLinear => {
+                    let fetch_klines = Task::perform(
+                        bybit::market_data::fetch_klines(*ticker, *timeframe)
+                            .map_err(|err| format!("{err}")),
+                        move |klines| Message::FetchEvent(klines, stream, pane_id)
+                    );
+                    tasks.push(fetch_klines);
+                }
+            }
+        }
+    }
+
+    tasks
+}
+
+fn fetch_related_ticksizes(pane_state: &PaneState) -> Vec<Task<Message>> {
+    let mut tasks: Vec<Task<Message>> = vec![];
+
+    for stream in pane_state.stream.iter() {
+        if let StreamType::Kline { ticker, exchange, .. } = stream {
+            let pane_id = pane_state.id;
+
+            let fetch_ticksize = match exchange {
+                Exchange::BinanceFutures => Task::perform(
+                    binance::market_data::fetch_ticksize(*ticker),
+                    move |result| match result {
+                        Ok(ticksize) => Message::SetMinTickSize(ticksize, pane_id),
+                        Err(err) => Message::ErrorOccurred(err.to_string()),
+                    }
+                ),
+                Exchange::BybitLinear => Task::perform(
+                    bybit::market_data::fetch_ticksize(*ticker),
+                    move |result| match result {
+                        Ok(ticksize) => Message::SetMinTickSize(ticksize, pane_id),
+                        Err(err) => Message::ErrorOccurred(err.to_string()),
+                    }
+                ),
+            };
+
+            tasks.push(fetch_ticksize);
+        }
+    }
+
+    tasks
+}
+
 impl State {
-    fn new(dashboard: Dashboard) -> (Self, Task<Message>) {
+    fn new(saved_state: SavedState) -> (Self, Task<Message>) {
         let mut tasks = vec![];
+
+        let last_active_layout = saved_state.last_active_layout;
+
+        let dashboard = saved_state.layouts.get(&last_active_layout).unwrap();
 
         for (_, pane_state) in dashboard.panes.iter() {
             match pane_state.content {
-                PaneContent::Candlestick(_) => {
-                    for stream in pane_state.stream.iter() {
-                        if let StreamType::Kline { ticker, timeframe, exchange } = stream {
-                            let stream = stream.clone();
-
-                            let pane_id = pane_state.id;
-
-                            match exchange {
-                                Exchange::BinanceFutures => {
-                                    let fetch_klines = Task::perform(
-                                        binance::market_data::fetch_klines(*ticker, *timeframe)
-                                            .map_err(|err| format!("{err}")),
-                                        move |klines| Message::FetchEvent(klines, stream, pane_id)
-                                    );
-                                    tasks.push(fetch_klines);
-                                },
-                                Exchange::BybitLinear => {
-                                    let fetch_klines = Task::perform(
-                                        bybit::market_data::fetch_klines(*ticker, *timeframe)
-                                            .map_err(|err| format!("{err}")),
-                                        move |klines| Message::FetchEvent(klines, stream, pane_id)
-                                    );
-                                    tasks.push(fetch_klines);
-                                }
-                            }
-                        }
-                    }
-                },
-                PaneContent::Footprint(_) => {
-                    for stream in pane_state.stream.iter() {
-                        if let StreamType::Kline { ticker, timeframe, exchange } = stream {
-                            let stream = stream.clone();
-
-                            let pane_id = pane_state.id;
-
-                            match exchange {
-                                Exchange::BinanceFutures => {
-                                    let fetch_klines = Task::perform(
-                                        binance::market_data::fetch_klines(*ticker, *timeframe)
-                                            .map_err(|err| format!("{err}")),
-                                        move |klines| Message::FetchEvent(klines, stream, pane_id)
-                                    );
-                                    tasks.push(fetch_klines);
-                                },
-                                Exchange::BybitLinear => {
-                                    let fetch_klines = Task::perform(
-                                        bybit::market_data::fetch_klines(*ticker, *timeframe)
-                                            .map_err(|err| format!("{err}")),
-                                        move |klines| Message::FetchEvent(klines, stream, pane_id)
-                                    );
-                                    tasks.push(fetch_klines);
-                                }
-                            }
-                        }
+                PaneContent::Candlestick(_) | PaneContent::Footprint(_) => {
+                    tasks.extend(fetch_related_klines(pane_state).into_iter());
+                    if let PaneContent::Footprint(_) = pane_state.content {
+                        tasks.extend(fetch_related_ticksizes(pane_state).into_iter());
                     }
                 },
                 _ => {}
@@ -293,7 +316,8 @@ impl State {
         let pane_streams = dashboard.get_all_diff_streams();
         (
             Self { 
-                dashboard,
+                layouts: saved_state.layouts,
+                last_active_layout: saved_state.last_active_layout,
                 listen_key: None,
                 binance_ws_state: BinanceWsState::Disconnected,
                 bybit_ws_state: BybitWsState::Disconnected,
@@ -310,13 +334,17 @@ impl State {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::ChartUserUpdate(message, pane_id) => {
-                match self.dashboard.update_chart_state(pane_id, message) {
+                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+
+                match dashboard.update_chart_state(pane_id, message) {
                     Ok(_) => Task::none(),
                     Err(err) => Task::none()
                 }
             },
-            Message::SetMinTickSize(min_tick_size, pane_id) => {      
-                match self.dashboard.get_pane_settings_mut(pane_id) {
+            Message::SetMinTickSize(min_tick_size, pane_id) => {
+                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+
+                match dashboard.get_pane_settings_mut(pane_id) {
                     Ok(pane_settings) => {
                         pane_settings.min_tick_size = Some(min_tick_size);
                         
@@ -330,7 +358,9 @@ impl State {
                 }
             },
             Message::TickerSelected(ticker, pane_id) => {
-                match self.dashboard.get_pane_settings_mut(pane_id) {
+                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+
+                match dashboard.get_pane_settings_mut(pane_id) {
                     Ok(pane_settings) => {
                         pane_settings.selected_ticker = Some(ticker);
                         
@@ -345,8 +375,10 @@ impl State {
             },
             Message::TimeframeSelected(timeframe, pane_id) => {    
                 let mut tasks = vec![];
+
+                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
             
-                match self.dashboard.pane_change_timeframe(pane_id, timeframe) {
+                match dashboard.pane_change_timeframe(pane_id, timeframe) {
                     Ok(stream_type) => {
                         if let StreamType::Kline { exchange, ticker, timeframe } = stream_type {
                             let stream = stream_type.clone();
@@ -378,12 +410,14 @@ impl State {
                     }
                 }
 
-                self.pane_streams = self.dashboard.get_all_diff_streams();
+                self.pane_streams = dashboard.get_all_diff_streams();
             
                 Task::batch(tasks)
             },
             Message::ExchangeSelected(exchange, pane_id) => {
-                match self.dashboard.get_pane_settings_mut(pane_id) {
+                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+
+                match dashboard.get_pane_settings_mut(pane_id) {
                     Ok(pane_settings) => {
                         pane_settings.selected_exchange = Some(exchange);
 
@@ -397,7 +431,9 @@ impl State {
                 }
             },
             Message::TicksizeSelected(tick_multiply, pane_id) => {
-                match self.dashboard.pane_change_ticksize(pane_id, tick_multiply) {
+                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+                
+                match dashboard.pane_change_ticksize(pane_id, tick_multiply) {
                     Ok(_) => {
                         dbg!("Ticksize changed");
 
@@ -411,11 +447,13 @@ impl State {
                 }
             },  
             Message::FetchEvent(klines, pane_stream, pane_id) => {
+                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+
                 match klines {
                     Ok(klines) => {
                         match pane_stream {
                             StreamType::Kline { exchange, ticker, timeframe } => {
-                                self.dashboard.insert_klines_vec(&StreamType::Kline {
+                                dashboard.insert_klines_vec(&StreamType::Kline {
                                     exchange,
                                     ticker,
                                     timeframe,
@@ -432,6 +470,8 @@ impl State {
                 Task::none()
             },
             Message::MarketWsEvent(event) => {
+                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+
                 match event {
                     MarketEvents::Binance(event) => match event {
                         binance::market_data::Event::Connected(connection) => {
@@ -446,7 +486,7 @@ impl State {
                                 ticker,
                             };
                             
-                            if let Err(err) = self.dashboard.update_depth_and_trades(stream_type, depth_update_t, depth, trades_buffer) {
+                            if let Err(err) = dashboard.update_depth_and_trades(stream_type, depth_update_t, depth, trades_buffer) {
                                 eprintln!("{err}, {stream_type:?}");
 
                                 self.pane_streams
@@ -464,7 +504,7 @@ impl State {
                                 timeframe,
                             };
 
-                            if let Err(err) = self.dashboard.update_latest_klines(&stream_type, &kline) {
+                            if let Err(err) = dashboard.update_latest_klines(&stream_type, &kline) {
                                 eprintln!("{err}, {stream_type:?}");
 
                                 self.pane_streams
@@ -489,7 +529,7 @@ impl State {
                                 ticker,
                             };
                             
-                            if let Err(err) = self.dashboard.update_depth_and_trades(stream_type, depth_update_t, depth, trades_buffer) {
+                            if let Err(err) = dashboard.update_depth_and_trades(stream_type, depth_update_t, depth, trades_buffer) {
                                 eprintln!("{err}, {stream_type:?}");
 
                                 self.pane_streams
@@ -507,7 +547,7 @@ impl State {
                                 timeframe,
                             };
 
-                            if let Err(err) = self.dashboard.update_latest_klines(&stream_type, &kline) {
+                            if let Err(err) = dashboard.update_latest_klines(&stream_type, &kline) {
                                 eprintln!("{err}, {stream_type:?}");
 
                                 self.pane_streams
@@ -531,68 +571,84 @@ impl State {
                 dbg!("Check API keys");
                 Task::none()
             },
-
             Message::Split(axis, pane) => {
+                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+
                 let focus_pane = if let Some((new_pane, _)) = 
-                    self.dashboard.panes.split(axis, pane, PaneState::new(Uuid::new_v4(), vec![], PaneSettings::default())) {
+                    dashboard.panes.split(axis, pane, PaneState::new(Uuid::new_v4(), vec![], PaneSettings::default())) {
                             Some(new_pane)
                         } else {
                             None
                         };
 
                 if Some(focus_pane).is_some() {
-                    self.dashboard.focus = focus_pane;
+                    dashboard.focus = focus_pane;
                 }
 
                 Task::none()
             },
             Message::Clicked(pane) => {
-                self.dashboard.focus = Some(pane);
+                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+
+                dashboard.focus = Some(pane);
                 Task::none()
             },
             Message::Resized(pane_grid::ResizeEvent { split, ratio }) => {
-                self.dashboard.panes.resize(split, ratio);
+                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+
+                dashboard.panes.resize(split, ratio);
                 Task::none()
             },
             Message::Dragged(pane_grid::DragEvent::Dropped {
                 pane,
                 target,
             }) => {
-                self.dashboard.panes.drop(pane, target);
+                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+
+                dashboard.panes.drop(pane, target);
+
+                dashboard.focus = None;
+
                 Task::none()
             },
             Message::Dragged(_) => {
                 Task::none()
             },
             Message::Maximize(pane) => {
-                self.dashboard.panes.maximize(pane);
+                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+
+                dashboard.panes.maximize(pane);
                 Task::none()
             },
             Message::Restore => {
-                self.dashboard.panes.restore();
+                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+
+                dashboard.panes.restore();
                 Task::none()
             },
-            Message::Close(pane) => {                       
-                if let Some((_, sibling)) = self.dashboard.panes.close(pane) {
-                    self.dashboard.focus = Some(sibling);
+            Message::Close(pane) => {    
+                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+
+                if let Some((_, sibling)) = dashboard.panes.close(pane) {
+                    dashboard.focus = Some(sibling);
                 }
                 
                 Task::none()
             },
             Message::ToggleLayoutLock => {
-                self.dashboard.pane_lock = !self.dashboard.pane_lock;
+                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
 
-                self.dashboard.focus = None;
+                dashboard.pane_lock = !dashboard.pane_lock;
+
+                dashboard.focus = None;
 
                 Task::none()
             },
-
             Message::Debug(msg) => {
                 println!("{msg}");
                 
                 Task::none()
             },
-
             Message::Event(event) => {
                 if let Event::CloseRequested(window) = event {                    
                     Task::batch(vec![
@@ -615,10 +671,21 @@ impl State {
                     Task::none()
                 }
             },
-
             Message::SaveAndExit(window, size, position) => {
-                let dashboard = SerializableDashboard::from(&self.dashboard);
-                let layout = SerializableLayout::from_parts(dashboard, size, position);
+                let mut layouts = HashMap::new();
+
+                for (id, dashboard) in self.layouts.iter() {
+                    let serialized_dashboard = SerializableDashboard::from(dashboard);
+
+                    layouts.insert(*id, serialized_dashboard);
+                }
+
+                let layout = SerializableState::from_parts(
+                    layouts,
+                    self.last_active_layout,
+                    size,
+                    position
+                );
             
                 match serde_json::to_string(&layout) {
                     Ok(layout_str) => {
@@ -633,26 +700,30 @@ impl State {
             
                 window::close(window)
             },
-            
             Message::OpenModal(pane) => {
-                if let Some(pane) = self.dashboard.panes.get_mut(pane) {
+                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+
+                if let Some(pane) = dashboard.panes.get_mut(pane) {
                     pane.show_modal = true;
                 };
                 Task::none()
             },
             Message::CloseModal(pane_id) => {
-                for (_, pane_state) in self.dashboard.panes.iter_mut() {
+                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+                
+                for (_, pane_state) in dashboard.panes.iter_mut() {
                     if pane_state.id == pane_id {
                         pane_state.show_modal = false;
                     }
                 }
                 Task::none()
             },
-
             Message::SliderChanged(pane_id, value) => {
-                match self.dashboard.pane_set_size_filter(pane_id, value) {
+                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+
+                match dashboard.pane_set_size_filter(pane_id, value) {
                     Ok(_) => {
-                        match self.dashboard.get_pane_settings_mut(pane_id) {
+                        match dashboard.get_pane_settings_mut(pane_id) {
                             Ok(pane_settings) => {
                                 pane_settings.trade_size_filter = Some(value);
         
@@ -675,21 +746,25 @@ impl State {
             
                 Task::none()
             },
-
             Message::ShowLayoutModal => {
-                self.dashboard.show_layout_modal = true;
+                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+
+                dashboard.show_layout_modal = true;
                 iced::widget::focus_next()
             },
             Message::HideLayoutModal => {
-                self.dashboard.show_layout_modal = false;
+                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+
+                dashboard.show_layout_modal = false;
                 Task::none()
             },
-
             Message::ErrorOccurred(err) => {
                 eprintln!("{err}");
                 Task::none()
             },
             Message::PaneContentSelected(content, pane_id, pane_stream) => {
+                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+
                 let mut tasks = vec![];
                 
                 let pane_content = match content.as_str() {
@@ -706,13 +781,13 @@ impl State {
                     _ => return Task::none(),
                 };
                 
-                if let Ok(vec_streams) = self.dashboard.get_pane_stream_mut(pane_id) {
+                if let Ok(vec_streams) = dashboard.get_pane_stream_mut(pane_id) {
                     *vec_streams = pane_stream.to_vec();
                 } else {
                     dbg!("No pane found for stream update");
                 }
             
-                if let Err(err) = self.dashboard.set_pane_content(pane_id, pane_content) {
+                if let Err(err) = dashboard.set_pane_content(pane_id, pane_content) {
                     dbg!("Failed to set pane content: {}", err);
                 } else {
                     dbg!("Pane content set");
@@ -781,34 +856,67 @@ impl State {
             
                 Task::batch(tasks)
             },
-            Message::ReplacePane => {
-                if let Some(pane) = self.dashboard.focus {
-                    self.dashboard.replace_new_pane(pane);
+            Message::ReplacePane(pane) => {
+                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+
+                dashboard.replace_new_pane(pane);
+
+                Task::none()
+            },
+            Message::ResetCurrentLayout => {
+                let new_dashboard = Dashboard::empty();
+
+                self.layouts.insert(self.last_active_layout, new_dashboard);
+
+                Task::none()
+            },
+            Message::LayoutSelected(layout_id) => {
+                self.last_active_layout = layout_id;        
+
+                Task::perform(
+                    async { tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; },
+                    |_| Message::GetStreams
+                )
+            },
+            Message::GetStreams => {
+                let mut tasks = vec![];
+
+                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+
+                self.pane_streams = dashboard.get_all_diff_streams();
+
+                for (_, pane_state) in dashboard.panes.iter() {
+                    match pane_state.content {
+                        PaneContent::Candlestick(_) | PaneContent::Footprint(_) => {
+                            tasks.extend(fetch_related_klines(pane_state).into_iter());
+                            if let PaneContent::Footprint(_) = pane_state.content {
+                                tasks.extend(fetch_related_ticksizes(pane_state).into_iter());
+                            }
+                        },
+                        _ => {}
+                    }
                 }
 
-                Task::none()
-            },
-
-            Message::NewLayout => {
-                self.dashboard = Dashboard::empty();
-                Task::none()
-            },
+                Task::batch(tasks)
+            }
         }
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let focus = self.dashboard.focus;
+        let dashboard = self.layouts.get(&self.last_active_layout).unwrap();
 
-        let pane_grid = PaneGrid::new(&self.dashboard.panes, |id, pane, is_maximized| {
+        let focus = dashboard.focus;
+
+        let pane_grid = PaneGrid::new(&dashboard.panes, |id, pane, is_maximized| {
             let is_focused;
             
-            if self.dashboard.pane_lock {
+            if dashboard.pane_lock {
                 is_focused = false;
             } else {
                 is_focused = focus == Some(id);
             }
         
-            let chart_type = &self.dashboard.panes.get(id).unwrap().content;
+            let chart_type = &dashboard.panes.get(id).unwrap().content;
 
             let stream_info = pane.stream.iter().find_map(|stream: &StreamType| {
                 match stream {
@@ -873,7 +981,7 @@ impl State {
                     id,
                     pane.id,
                     chart_type,
-                    self.dashboard.panes.len(),
+                    dashboard.panes.len(),
                     is_maximized,
                     &pane.settings,
                 ))
@@ -895,7 +1003,7 @@ impl State {
 
         let layout_lock_button = button(
             container(
-                if self.dashboard.pane_lock { 
+                if dashboard.pane_lock { 
                     text(char::from(Icon::Locked).to_string()).font(ICON_FONT) 
                 } else { 
                     text(char::from(Icon::Unlocked).to_string()).font(ICON_FONT) 
@@ -923,12 +1031,9 @@ impl State {
                 tooltip(layout_lock_button, "Layout Lock", tooltip::Position::Bottom).style(style::tooltip)
             );
 
-        let debug_button = button("Debug").on_press(Message::Debug("Debug".to_string()));
-
         let mut ws_controls = Row::new()
             .spacing(10)
-            .align_y(Alignment::Center)
-            .push(debug_button);
+            .align_y(Alignment::Center);
 
         if self.ws_running {
             let exchange_latency_tooltip: String;
@@ -992,7 +1097,7 @@ impl State {
                     .push(layout_controls)
             )
             .push(
-                if self.dashboard.pane_lock {
+                if dashboard.pane_lock {
                     pane_grid
                 } else {
                     pane_grid
@@ -1002,60 +1107,77 @@ impl State {
                 }
             );
 
-        if self.dashboard.show_layout_modal {
+        if dashboard.show_layout_modal {
             let mut add_pane_button = button("Split selected pane").width(iced::Pixels(200.0));
 
             let mut replace_pane_button = button("Replace selected pane").width(iced::Pixels(200.0));
 
-            if self.dashboard.focus.is_some() {
-                replace_pane_button = replace_pane_button.on_press(Message::ReplacePane);
+            if dashboard.focus.is_some() {
+                replace_pane_button = replace_pane_button.on_press(
+                    Message::ReplacePane(
+                        dashboard.focus
+                            .unwrap_or_else(|| { *dashboard.panes.iter().next().unwrap().0 })
+                    )
+                );
 
                 add_pane_button = add_pane_button.on_press(
                     Message::Split(
                         pane_grid::Axis::Horizontal, 
-                        self.dashboard.focus
-                            .unwrap_or_else(|| { *self.dashboard.panes.iter().next().unwrap().0 })
+                        dashboard.focus
+                            .unwrap_or_else(|| { *dashboard.panes.iter().next().unwrap().0 })
                     )
                 );
             }
 
             let layout_picklist = pick_list(
-                ["Layout 1", "Layout 2", "Layout 3", "Layout 4"],
-                Some("Layout 1"),
-                |arg0: &str| Message::Debug(arg0.to_string())
+                &LayoutId::ALL[..],
+                Some(self.last_active_layout),
+                move |layout: LayoutId| Message::LayoutSelected(layout)
             );
 
             let layout_modal = container(
                 Column::new()
-                    .spacing(8)
+                    .spacing(16)
                     .align_x(Alignment::Center)
-                    .push(add_pane_button)
-                    .push(replace_pane_button)
                     .push(
-                        Row::new()
+                        Column::new()
+                            .align_x(Alignment::Center)
+                            .push(Text::new("Layouts"))
                             .padding([8, 0])
                             .spacing(8)
                             .push(
                                 Row::new()
-                                .spacing(2)
-                                .push(
-                                    tooltip(
-                                        button(Text::new("+"))
-                                        .on_press(Message::NewLayout),
-                                        "New layout", 
-                                        tooltip::Position::Bottom
-                                    ).style(style::tooltip)
-                                )
-                                .push(
-                                    layout_picklist
-                                    .style(style::picklist_primary)
-                                    .menu_style(style::picklist_menu_primary)
-                                )                          
+                                    .push(
+                                        Row::new()
+                                        .spacing(8)
+                                        .push(
+                                            tooltip(
+                                                button(Text::new("Reset"))
+                                                .on_press(Message::ResetCurrentLayout),
+                                                "Reset current layout", 
+                                                tooltip::Position::Bottom
+                                            ).style(style::tooltip)
+                                        )
+                                        .push(
+                                            layout_picklist
+                                            .style(style::picklist_primary)
+                                            .menu_style(style::picklist_menu_primary)
+                                        )                          
+                                    )
                             )
-                            .push(
-                                button("Close")
-                                    .on_press(Message::HideLayoutModal)
-                            )
+                    )
+                    .push(
+                        Column::new()
+                            .align_x(Alignment::Center)
+                            .push(Text::new("Panes"))
+                            .padding([8, 0])
+                            .spacing(8)
+                            .push(add_pane_button)
+                            .push(replace_pane_button)
+                    )       
+                    .push(
+                        button("Close")
+                            .on_press(Message::HideLayoutModal)
                     )
             )
             .width(Length::Shrink)
