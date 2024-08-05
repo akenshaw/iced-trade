@@ -206,7 +206,7 @@ pub enum Message {
 
     ResetCurrentLayout,
     LayoutSelected(LayoutId),
-    GetStreams,
+    RefreshStreams,
 }
 
 struct State {
@@ -229,95 +229,35 @@ struct State {
     pane_streams: HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>,
 }
 
-fn fetch_related_klines(pane_state: &PaneState) -> Vec<Task<Message>> {
-    let mut tasks: Vec<Task<Message>> = vec![];
-
-    for stream in pane_state.stream.iter() {
-        if let StreamType::Kline { ticker, timeframe, exchange } = stream {
-            let stream = stream.clone();
-
-            let pane_id = pane_state.id;
-
-            match exchange {
-                Exchange::BinanceFutures => {
-                    let fetch_klines = Task::perform(
-                        binance::market_data::fetch_klines(*ticker, *timeframe)
-                            .map_err(|err| format!("{err}")),
-                        move |klines| Message::FetchEvent(klines, stream, pane_id)
-                    );
-                    tasks.push(fetch_klines);
-                },
-                Exchange::BybitLinear => {
-                    let fetch_klines = Task::perform(
-                        bybit::market_data::fetch_klines(*ticker, *timeframe)
-                            .map_err(|err| format!("{err}")),
-                        move |klines| Message::FetchEvent(klines, stream, pane_id)
-                    );
-                    tasks.push(fetch_klines);
-                }
-            }
-        }
-    }
-
-    tasks
-}
-
-fn fetch_related_ticksizes(pane_state: &PaneState) -> Vec<Task<Message>> {
-    let mut tasks: Vec<Task<Message>> = vec![];
-
-    for stream in pane_state.stream.iter() {
-        if let StreamType::Kline { ticker, exchange, .. } = stream {
-            let pane_id = pane_state.id;
-
-            let fetch_ticksize = match exchange {
-                Exchange::BinanceFutures => Task::perform(
-                    binance::market_data::fetch_ticksize(*ticker),
-                    move |result| match result {
-                        Ok(ticksize) => Message::SetMinTickSize(ticksize, pane_id),
-                        Err(err) => Message::ErrorOccurred(err.to_string()),
-                    }
-                ),
-                Exchange::BybitLinear => Task::perform(
-                    bybit::market_data::fetch_ticksize(*ticker),
-                    move |result| match result {
-                        Ok(ticksize) => Message::SetMinTickSize(ticksize, pane_id),
-                        Err(err) => Message::ErrorOccurred(err.to_string()),
-                    }
-                ),
-            };
-
-            tasks.push(fetch_ticksize);
-        }
-    }
-
-    tasks
-}
-
 impl State {
     fn new(saved_state: SavedState) -> (Self, Task<Message>) {
         let mut tasks = vec![];
 
+        let mut pane_streams = HashMap::new();
+
         let last_active_layout = saved_state.last_active_layout;
+        let dashboard = saved_state.layouts.get(&last_active_layout);
 
-        let dashboard = saved_state.layouts.get(&last_active_layout).unwrap();
-
-        for (_, pane_state) in dashboard.panes.iter() {
-            match pane_state.content {
-                PaneContent::Candlestick(_) | PaneContent::Footprint(_) => {
-                    tasks.extend(fetch_related_klines(pane_state).into_iter());
-                    if let PaneContent::Footprint(_) = pane_state.content {
-                        tasks.extend(fetch_related_ticksizes(pane_state).into_iter());
-                    }
-                },
-                _ => {}
+        if let Some(dashboard) = dashboard {
+            for (_, pane_state) in dashboard.panes.iter() {
+                match pane_state.content {
+                    PaneContent::Candlestick(_) | PaneContent::Footprint(_) => {
+                        tasks.extend(kline_fetch_tasks(pane_state).into_iter());
+                        if let PaneContent::Footprint(_) = pane_state.content {
+                            tasks.extend(ticksize_fetch_tasks(pane_state).into_iter());
+                        }
+                    },
+                    _ => {}
+                }
             }
+
+            pane_streams = dashboard.get_all_diff_streams();
         }
 
-        let pane_streams = dashboard.get_all_diff_streams();
         (
             Self { 
                 layouts: saved_state.layouts,
-                last_active_layout: saved_state.last_active_layout,
+                last_active_layout,
                 listen_key: None,
                 binance_ws_state: BinanceWsState::Disconnected,
                 bybit_ws_state: BybitWsState::Disconnected,
@@ -334,7 +274,7 @@ impl State {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::ChartUserUpdate(message, pane_id) => {
-                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+                let dashboard = self.get_mut_dashboard();
 
                 match dashboard.update_chart_state(pane_id, message) {
                     Ok(_) => Task::none(),
@@ -342,7 +282,7 @@ impl State {
                 }
             },
             Message::SetMinTickSize(min_tick_size, pane_id) => {
-                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+                let dashboard = self.get_mut_dashboard();
 
                 match dashboard.get_pane_settings_mut(pane_id) {
                     Ok(pane_settings) => {
@@ -358,7 +298,7 @@ impl State {
                 }
             },
             Message::TickerSelected(ticker, pane_id) => {
-                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+                let dashboard = self.get_mut_dashboard();
 
                 match dashboard.get_pane_settings_mut(pane_id) {
                     Ok(pane_settings) => {
@@ -376,7 +316,7 @@ impl State {
             Message::TimeframeSelected(timeframe, pane_id) => {    
                 let mut tasks = vec![];
 
-                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+                let dashboard = self.get_mut_dashboard();
             
                 match dashboard.pane_change_timeframe(pane_id, timeframe) {
                     Ok(stream_type) => {
@@ -415,7 +355,7 @@ impl State {
                 Task::batch(tasks)
             },
             Message::ExchangeSelected(exchange, pane_id) => {
-                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+                let dashboard = self.get_mut_dashboard();
 
                 match dashboard.get_pane_settings_mut(pane_id) {
                     Ok(pane_settings) => {
@@ -431,7 +371,7 @@ impl State {
                 }
             },
             Message::TicksizeSelected(tick_multiply, pane_id) => {
-                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+                let dashboard = self.get_mut_dashboard();
                 
                 match dashboard.pane_change_ticksize(pane_id, tick_multiply) {
                     Ok(_) => {
@@ -447,7 +387,7 @@ impl State {
                 }
             },  
             Message::FetchEvent(klines, pane_stream, pane_id) => {
-                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+                let dashboard = self.get_mut_dashboard();
 
                 match klines {
                     Ok(klines) => {
@@ -470,7 +410,7 @@ impl State {
                 Task::none()
             },
             Message::MarketWsEvent(event) => {
-                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+                let dashboard = self.get_mut_dashboard();
 
                 match event {
                     MarketEvents::Binance(event) => match event {
@@ -572,7 +512,7 @@ impl State {
                 Task::none()
             },
             Message::Split(axis, pane) => {
-                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+                let dashboard = self.get_mut_dashboard();
 
                 let focus_pane = if let Some((new_pane, _)) = 
                     dashboard.panes.split(axis, pane, PaneState::new(Uuid::new_v4(), vec![], PaneSettings::default())) {
@@ -588,13 +528,13 @@ impl State {
                 Task::none()
             },
             Message::Clicked(pane) => {
-                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+                let dashboard = self.get_mut_dashboard();
 
                 dashboard.focus = Some(pane);
                 Task::none()
             },
             Message::Resized(pane_grid::ResizeEvent { split, ratio }) => {
-                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+                let dashboard = self.get_mut_dashboard();
 
                 dashboard.panes.resize(split, ratio);
                 Task::none()
@@ -603,7 +543,7 @@ impl State {
                 pane,
                 target,
             }) => {
-                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+                let dashboard = self.get_mut_dashboard();
 
                 dashboard.panes.drop(pane, target);
 
@@ -615,19 +555,19 @@ impl State {
                 Task::none()
             },
             Message::Maximize(pane) => {
-                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+                let dashboard = self.get_mut_dashboard();
 
                 dashboard.panes.maximize(pane);
                 Task::none()
             },
             Message::Restore => {
-                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+                let dashboard = self.get_mut_dashboard();
 
                 dashboard.panes.restore();
                 Task::none()
             },
             Message::Close(pane) => {    
-                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+                let dashboard = self.get_mut_dashboard();
 
                 if let Some((_, sibling)) = dashboard.panes.close(pane) {
                     dashboard.focus = Some(sibling);
@@ -636,7 +576,7 @@ impl State {
                 Task::none()
             },
             Message::ToggleLayoutLock => {
-                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+                let dashboard = self.get_mut_dashboard();
 
                 dashboard.pane_lock = !dashboard.pane_lock;
 
@@ -650,7 +590,12 @@ impl State {
                 Task::none()
             },
             Message::Event(event) => {
-                if let Event::CloseRequested(window) = event {                    
+                if let Event::CloseRequested(window) = event {     
+                    enum Either<L, R> {
+                        Left(L),
+                        Right(R),
+                    }
+
                     Task::batch(vec![
                         window::get_size(window).map(Either::Left),
                         window::get_position(window).map(Either::Right)
@@ -701,7 +646,7 @@ impl State {
                 window::close(window)
             },
             Message::OpenModal(pane) => {
-                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+                let dashboard = self.get_mut_dashboard();
 
                 if let Some(pane) = dashboard.panes.get_mut(pane) {
                     pane.show_modal = true;
@@ -709,7 +654,7 @@ impl State {
                 Task::none()
             },
             Message::CloseModal(pane_id) => {
-                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+                let dashboard = self.get_mut_dashboard();
                 
                 for (_, pane_state) in dashboard.panes.iter_mut() {
                     if pane_state.id == pane_id {
@@ -719,7 +664,7 @@ impl State {
                 Task::none()
             },
             Message::SliderChanged(pane_id, value) => {
-                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+                let dashboard = self.get_mut_dashboard();
 
                 match dashboard.pane_set_size_filter(pane_id, value) {
                     Ok(_) => {
@@ -747,13 +692,13 @@ impl State {
                 Task::none()
             },
             Message::ShowLayoutModal => {
-                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+                let dashboard = self.get_mut_dashboard();
 
                 dashboard.show_layout_modal = true;
                 iced::widget::focus_next()
             },
             Message::HideLayoutModal => {
-                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+                let dashboard = self.get_mut_dashboard();
 
                 dashboard.show_layout_modal = false;
                 Task::none()
@@ -763,7 +708,7 @@ impl State {
                 Task::none()
             },
             Message::PaneContentSelected(content, pane_id, pane_stream) => {
-                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+                let dashboard = self.get_mut_dashboard();
 
                 let mut tasks = vec![];
                 
@@ -857,7 +802,7 @@ impl State {
                 Task::batch(tasks)
             },
             Message::ReplacePane(pane) => {
-                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+                let dashboard = self.get_mut_dashboard();
 
                 dashboard.replace_new_pane(pane);
 
@@ -871,39 +816,43 @@ impl State {
                 Task::none()
             },
             Message::LayoutSelected(layout_id) => {
-                self.last_active_layout = layout_id;        
-
-                Task::perform(
-                    async { tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; },
-                    |_| Message::GetStreams
-                )
-            },
-            Message::GetStreams => {
                 let mut tasks = vec![];
 
-                let dashboard = self.layouts.get_mut(&self.last_active_layout).unwrap();
+                self.last_active_layout = layout_id;    
 
-                self.pane_streams = dashboard.get_all_diff_streams();
+                let dashboard = self.get_mut_dashboard();
 
                 for (_, pane_state) in dashboard.panes.iter() {
                     match pane_state.content {
                         PaneContent::Candlestick(_) | PaneContent::Footprint(_) => {
-                            tasks.extend(fetch_related_klines(pane_state).into_iter());
+                            tasks.extend(kline_fetch_tasks(pane_state).into_iter());
                             if let PaneContent::Footprint(_) = pane_state.content {
-                                tasks.extend(fetch_related_ticksizes(pane_state).into_iter());
+                                tasks.extend(ticksize_fetch_tasks(pane_state).into_iter());
                             }
                         },
                         _ => {}
                     }
                 }
 
+                let sleep_task = Task::perform(
+                    async { tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; },
+                    |_| Message::RefreshStreams
+                );
+
+                tasks.push(sleep_task);
+
                 Task::batch(tasks)
+            },
+            Message::RefreshStreams => {
+                self.pane_streams = self.get_dashboard().get_all_diff_streams();
+
+                Task::none()
             }
         }
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let dashboard = self.layouts.get(&self.last_active_layout).unwrap();
+        let dashboard = self.get_dashboard();
 
         let focus = dashboard.focus;
 
@@ -1249,6 +1198,18 @@ impl State {
     
         Subscription::batch(all_subscriptions)
     }    
+    
+    fn get_mut_dashboard(&mut self) -> &mut Dashboard {
+        self.layouts
+            .get_mut(&self.last_active_layout)
+            .expect("No active layout")
+    }
+
+    fn get_dashboard(&self) -> &Dashboard {
+        self.layouts
+            .get(&self.last_active_layout)
+            .expect("No active layout")
+    }
 
     fn update_exchange_latency(&mut self) {
         let mut depth_latency_sum: i64 = 0;
@@ -1623,6 +1584,70 @@ fn view_controls<'a>(
     row.into()
 }
 
+fn kline_fetch_tasks(pane_state: &PaneState) -> Vec<Task<Message>> {
+    let mut tasks: Vec<Task<Message>> = vec![];
+
+    for stream in pane_state.stream.iter() {
+        if let StreamType::Kline { ticker, timeframe, exchange } = stream {
+            let stream = stream.clone();
+
+            let pane_id = pane_state.id;
+
+            match exchange {
+                Exchange::BinanceFutures => {
+                    let fetch_klines = Task::perform(
+                        binance::market_data::fetch_klines(*ticker, *timeframe)
+                            .map_err(|err| format!("{err}")),
+                        move |klines| Message::FetchEvent(klines, stream, pane_id)
+                    );
+                    tasks.push(fetch_klines);
+                },
+                Exchange::BybitLinear => {
+                    let fetch_klines = Task::perform(
+                        bybit::market_data::fetch_klines(*ticker, *timeframe)
+                            .map_err(|err| format!("{err}")),
+                        move |klines| Message::FetchEvent(klines, stream, pane_id)
+                    );
+                    tasks.push(fetch_klines);
+                }
+            }
+        }
+    }
+
+    tasks
+}
+
+fn ticksize_fetch_tasks(pane_state: &PaneState) -> Vec<Task<Message>> {
+    let mut tasks: Vec<Task<Message>> = vec![];
+
+    for stream in pane_state.stream.iter() {
+        if let StreamType::Kline { ticker, exchange, .. } = stream {
+            let pane_id = pane_state.id;
+
+            let fetch_ticksize = match exchange {
+                Exchange::BinanceFutures => Task::perform(
+                    binance::market_data::fetch_ticksize(*ticker),
+                    move |result| match result {
+                        Ok(ticksize) => Message::SetMinTickSize(ticksize, pane_id),
+                        Err(err) => Message::ErrorOccurred(err.to_string()),
+                    }
+                ),
+                Exchange::BybitLinear => Task::perform(
+                    bybit::market_data::fetch_ticksize(*ticker),
+                    move |result| match result {
+                        Ok(ticksize) => Message::SetMinTickSize(ticksize, pane_id),
+                        Err(err) => Message::ErrorOccurred(err.to_string()),
+                    }
+                ),
+            };
+
+            tasks.push(fetch_ticksize);
+        }
+    }
+
+    tasks
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
     CloseRequested(window::Id),
@@ -1645,9 +1670,4 @@ fn filtered_events(
         iced::Event::Window(window::Event::CloseRequested) => Some(Event::CloseRequested(window)),
         _ => None,
     }
-}
-
-enum Either<L, R> {
-    Left(L),
-    Right(R),
 }
