@@ -250,7 +250,6 @@ impl State {
                     _ => {}
                 }
             }
-
             pane_streams = dashboard.get_all_diff_streams();
         }
 
@@ -1104,14 +1103,21 @@ impl State {
                                                 button(Text::new("Reset"))
                                                 .on_press(Message::ResetCurrentLayout),
                                                 "Reset current layout", 
-                                                tooltip::Position::Bottom
+                                                tooltip::Position::Top
                                             ).style(style::tooltip)
                                         )
                                         .push(
                                             layout_picklist
                                             .style(style::picklist_primary)
                                             .menu_style(style::picklist_menu_primary)
-                                        )                          
+                                        )
+                                        .push(
+                                            tooltip(
+                                                button(Text::new("i")).style(style::button_for_info),
+                                                "Layouts won't be saved if app exited abruptly", 
+                                                tooltip::Position::Top
+                                            ).style(style::tooltip)
+                                        )                         
                                     )
                             )
                     )

@@ -107,6 +107,53 @@ pub fn chart_modal(theme: &Theme) -> Style {
     }
 }
 
+pub fn button_for_info(theme: &Theme, status: Status) -> iced::widget::button::Style {
+    let palette = theme.extended_palette();
+
+    match status {
+        Status::Active => iced::widget::button::Style {
+            background: Some(Color::BLACK.into()),
+            text_color: palette.background.base.text,
+            border: Border {
+                radius: 3.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        Status::Pressed => iced::widget::button::Style {
+            background: Some(Color::BLACK.into()),
+            text_color: palette.background.base.text,
+            border: Border {
+                color: palette.primary.weak.color,
+                width: 2.0,
+                radius: 6.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        Status::Hovered => iced::widget::button::Style {
+            background: Some(Color::BLACK.into()),
+            text_color: palette.background.weak.text,
+            border: Border {
+                color: palette.primary.strong.color,
+                width: 1.0,
+                radius: 3.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        Status::Disabled => iced::widget::button::Style {
+            background: Some(Color::BLACK.into()),
+            text_color: palette.background.base.text,
+            border: Border {
+                radius: 3.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+}
+
 pub fn button_primary(theme: &Theme, status: Status) -> iced::widget::button::Style {
     let palette = theme.extended_palette();
 
