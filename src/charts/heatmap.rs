@@ -459,6 +459,10 @@ impl canvas::Program<Message> for HeatmapChart {
                 for (time, (depth, trades)) in self.data_points.range(earliest..=latest) {
                     let x_position = ((time - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
 
+                    if x_position.is_nan() {
+                        continue;
+                    }
+
                     let mut buy_volume: f32 = 0.0;
                     let mut sell_volume: f32 = 0.0;
 
