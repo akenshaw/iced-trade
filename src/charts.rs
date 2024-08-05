@@ -349,6 +349,10 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
                 };
         
                 let snap_x = snap_ratio * bounds.width as f64;
+
+                if snap_x.is_nan() {
+                    return;
+                }
         
                 let text_size = 12.0;
                 let growth_amount = 6.0;
