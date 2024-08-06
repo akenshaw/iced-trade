@@ -713,18 +713,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "core-text"
-version = "20.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9d2790b5c08465d49f8dc05c8bcae9fea467855947db39b0f8145c091aaced5"
-dependencies = [
- "core-foundation",
- "core-graphics",
- "foreign-types 0.5.0",
- "libc",
-]
-
-[[package]]
 name = "cosmic-text"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -828,16 +816,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cstr"
-version = "0.2.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68523903c8ae5aacfa32a0d9ae60cadeb764e1da14ee0d26b1f3089f13a54636"
-dependencies = [
- "proc-macro2",
- "quote",
-]
-
-[[package]]
 name = "ctor-lite"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -915,31 +893,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "dirs-next"
-version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b98cf8ebf19c3d1b223e151f99a4f9f0690dca41414773390fc824184ac833e1"
-dependencies = [
- "cfg-if",
- "dirs-sys-next",
-]
-
-[[package]]
 name = "dirs-sys"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b1d1d91c932ef41c0f2663aa8b0ca0342d444d842c06914aa0a7e352d0bada6"
-dependencies = [
- "libc",
- "redox_users",
- "winapi",
-]
-
-[[package]]
-name = "dirs-sys-next"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ebda144c4fe02d1f7ea1a7d9641b6fc6b580adcfa024ae48797ecdeb6825b4d"
 dependencies = [
  "libc",
  "redox_users",
@@ -1015,18 +972,6 @@ checksum = "fd39dde40b6e196c2e8763f23d119ddb1a8714534bf7d77fa97a65b0feda3986"
 dependencies = [
  "libc",
  "linux-raw-sys 0.6.4",
-]
-
-[[package]]
-name = "dwrote"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "439a1c2ba5611ad3ed731280541d36d2e9c4ac5e7fb818a27b604bdc5a6aa65b"
-dependencies = [
- "lazy_static",
- "libc",
- "winapi",
- "wio",
 ]
 
 [[package]]
@@ -1212,12 +1157,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "float-ord"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ce81f49ae8a0482e4c55ea62ebbd7e5a686af544c00b9d090bba3ff9be97b3d"
-
-[[package]]
 name = "float_next_after"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1237,31 +1176,6 @@ name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
-
-[[package]]
-name = "font-kit"
-version = "0.13.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2845a73bbd781e691ab7c2a028c579727cd254942e8ced57ff73e0eafd60de87"
-dependencies = [
- "bitflags 2.6.0",
- "byteorder",
- "core-foundation",
- "core-graphics",
- "core-text",
- "dirs-next",
- "dwrote",
- "float-ord",
- "freetype-sys",
- "lazy_static",
- "libc",
- "log",
- "pathfinder_geometry",
- "pathfinder_simd",
- "walkdir",
- "winapi",
- "yeslogic-fontconfig-sys",
-]
 
 [[package]]
 name = "font-types"
@@ -1358,17 +1272,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13624c2627564efccf4934284bdd98cbaa14e79b0b5a141218e507b3a823456"
 dependencies = [
  "percent-encoding",
-]
-
-[[package]]
-name = "freetype-sys"
-version = "0.20.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e7edc5b9669349acfda99533e9e0bcf26a51862ab43b08ee7745c55d28eb134"
-dependencies = [
- "cc",
- "libc",
- "pkg-config",
 ]
 
 [[package]]
@@ -1507,16 +1410,6 @@ dependencies = [
 
 [[package]]
 name = "gif"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80792593675e051cf94a4b111980da2ba60d4a83e43e0048c5693baab3977045"
-dependencies = [
- "color_quant",
- "weezl",
-]
-
-[[package]]
-name = "gif"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3fb2d69b19215e18bb912fa30f7ce15846e301408695e44e0ef719f1da9e19f2"
@@ -1567,18 +1460,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c8098adac955faa2d31079b65dc48841251f69efd3ac25477903fc424362ead"
 dependencies = [
  "gl_generator",
-]
-
-[[package]]
-name = "glyphon"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a62d0338e4056db6a73221c2fb2e30619452f6ea9651bac4110f51b0f7a7581"
-dependencies = [
- "cosmic-text 0.10.0",
- "etagere",
- "lru",
- "wgpu",
 ]
 
 [[package]]
@@ -1916,7 +1797,7 @@ dependencies = [
 
 [[package]]
 name = "iced-trade"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-tungstenite",
@@ -1935,10 +1816,6 @@ dependencies = [
  "iced_futures 0.12.0",
  "iced_table",
  "native-tls",
- "plotters",
- "plotters-backend",
- "plotters-iced",
- "rand",
  "reqwest",
  "rustc-hash 2.0.0",
  "serde",
@@ -2032,7 +1909,6 @@ dependencies = [
  "iced_core 0.12.3",
  "iced_futures 0.12.0",
  "log",
- "lyon_path",
  "once_cell",
  "raw-window-handle",
  "rustc-hash 1.1.0",
@@ -2071,7 +1947,6 @@ checksum = "5c281e03001d566058f53dec9325bbe61c62da715341206d2627f57a3ecc7f69"
 dependencies = [
  "iced_graphics 0.12.1",
  "iced_tiny_skia 0.12.1",
- "iced_wgpu 0.12.1",
  "log",
  "thiserror",
 ]
@@ -2083,7 +1958,7 @@ source = "git+https://github.com/iced-rs/iced.git#169667ef1b4fa754ed1edb5fa0e845
 dependencies = [
  "iced_graphics 0.13.0-dev",
  "iced_tiny_skia 0.13.0-dev",
- "iced_wgpu 0.13.0-dev",
+ "iced_wgpu",
  "log",
  "thiserror",
 ]
@@ -2168,25 +2043,6 @@ dependencies = [
 
 [[package]]
 name = "iced_wgpu"
-version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3c243b6700452886aac1ee1987e84d9fb43b56b53fea9a1eb67713fd0fde244"
-dependencies = [
- "bitflags 2.6.0",
- "bytemuck",
- "futures",
- "glam",
- "glyphon 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "guillotiere",
- "iced_graphics 0.12.1",
- "log",
- "lyon",
- "once_cell",
- "wgpu",
-]
-
-[[package]]
-name = "iced_wgpu"
 version = "0.13.0-dev"
 source = "git+https://github.com/iced-rs/iced.git#169667ef1b4fa754ed1edb5fa0e845aede2638fb"
 dependencies = [
@@ -2194,7 +2050,7 @@ dependencies = [
  "bytemuck",
  "futures",
  "glam",
- "glyphon 0.5.0 (git+https://github.com/hecrj/glyphon.git?rev=feef9f5630c2adb3528937e55f7bfad2da561a65)",
+ "glyphon",
  "guillotiere",
  "iced_graphics 0.13.0-dev",
  "log",
@@ -2273,7 +2129,7 @@ dependencies = [
  "byteorder",
  "color_quant",
  "exr",
- "gif 0.13.1",
+ "gif",
  "jpeg-decoder",
  "num-traits",
  "png",
@@ -2407,12 +2263,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lazy_static"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
-
-[[package]]
 name = "lebe"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2504,9 +2354,6 @@ name = "lru"
 version = "0.12.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37ee39891760e7d94734f6f63fedc29a2e4a152f836120753a72503f09fcf904"
-dependencies = [
- "hashbrown 0.14.5",
-]
 
 [[package]]
 name = "lyon"
@@ -3240,25 +3087,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
-name = "pathfinder_geometry"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b7b7e7b4ea703700ce73ebf128e1450eb69c3a8329199ffbfb9b2a0418e5ad3"
-dependencies = [
- "log",
- "pathfinder_simd",
-]
-
-[[package]]
-name = "pathfinder_simd"
-version = "0.5.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5cf07ef4804cfa9aea3b04a7bbdd5a40031dbb6b4f2cbaf2b011666c80c5b4f2"
-dependencies = [
- "rustc_version",
-]
-
-[[package]]
 name = "percent-encoding"
 version = "2.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3354,65 +3182,6 @@ name = "pkg-config"
 version = "0.3.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d231b230927b5e4ad203db57bbcbee2802f6bce620b1e4a9024a07d94e2907ec"
-
-[[package]]
-name = "plotters"
-version = "0.3.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a15b6eccb8484002195a3e44fe65a4ce8e93a625797a063735536fd59cb01cf3"
-dependencies = [
- "chrono",
- "font-kit",
- "image",
- "lazy_static",
- "num-traits",
- "pathfinder_geometry",
- "plotters-backend",
- "plotters-bitmap",
- "plotters-svg",
- "ttf-parser 0.20.0",
- "wasm-bindgen",
- "web-sys",
-]
-
-[[package]]
-name = "plotters-backend"
-version = "0.3.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "414cec62c6634ae900ea1c56128dfe87cf63e7caece0852ec76aba307cebadb7"
-
-[[package]]
-name = "plotters-bitmap"
-version = "0.3.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f7e7f6fb8302456d7c264a94dada86f76d76e1a03e2294ee86ca7da92983b0a6"
-dependencies = [
- "gif 0.12.0",
- "image",
- "plotters-backend",
-]
-
-[[package]]
-name = "plotters-iced"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5e45cd10abd572d7d0dce11446a915c8b54442480d2a46e71dcb9dd43d93b4c"
-dependencies = [
- "iced_graphics 0.12.1",
- "iced_widget 0.12.3",
- "once_cell",
- "plotters",
- "plotters-backend",
-]
-
-[[package]]
-name = "plotters-svg"
-version = "0.3.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81b30686a7d9c3e010b84284bdd26a29f2138574f52f5eb6f794fc0ad924e705"
-dependencies = [
- "plotters-backend",
-]
 
 [[package]]
 name = "png"
@@ -3751,15 +3520,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "583034fd73374156e66797ed8e5b0d5690409c9226b22d87cb7f19821c05d152"
 
 [[package]]
-name = "rustc_version"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bfa0f585226d2e68097d4f95d113b15b83a82e819ab25717ec0590d9584ef366"
-dependencies = [
- "semver",
-]
-
-[[package]]
 name = "rustix"
 version = "0.38.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3979,12 +3739,6 @@ name = "self_cell"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d369a96f978623eb3dc28807c4852d6cc617fed53da5d3c400feff1ef34a714a"
-
-[[package]]
-name = "semver"
-version = "1.0.23"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61697e0a1c7e512e84a621326239844a24d8207b4669b41bc18b32ea5cbf988b"
 
 [[package]]
 name = "serde"
@@ -5607,15 +5361,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wio"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d129932f4644ac2396cb456385cbf9e63b5b30c6e8dc4820bdca4eb082037a5"
-dependencies = [
- "winapi",
-]
-
-[[package]]
 name = "x11-dl"
 version = "2.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5705,18 +5450,6 @@ name = "yazi"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c94451ac9513335b5e23d7a8a2b61a7102398b8cca5160829d313e84c9d98be1"
-
-[[package]]
-name = "yeslogic-fontconfig-sys"
-version = "5.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffb6b23999a8b1a997bf47c7bb4d19ad4029c3327bb3386ebe0a5ff584b33c7a"
-dependencies = [
- "cstr",
- "dlib",
- "once_cell",
- "pkg-config",
-]
 
 [[package]]
 name = "zbus"
