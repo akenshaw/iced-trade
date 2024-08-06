@@ -177,6 +177,13 @@ impl Dashboard {
                             
                             return Ok(());
                         },
+                        PaneContent::Heatmap(ref mut chart) => {
+                            chart.change_tick_size(
+                                new_tick_multiply.multiply_with_min_tick_size(min_tick_size)
+                            );
+                            
+                            return Ok(());
+                        },
                         _ => {
                             return Err("No footprint chart found");
                         }
@@ -264,6 +271,77 @@ impl Dashboard {
                     _ => {}
                 }
             }
+        }
+    }
+
+    pub fn find_and_insert_klines(&mut self, stream_type: &StreamType, klines: &Vec<Kline>) -> Result<(), &str> {
+        dbg!(stream_type);
+
+        let mut found_match = false;
+
+        for (_, pane_state) in self.panes.iter_mut() {
+            if pane_state.matches_stream(&stream_type) {
+                match stream_type {
+                    StreamType::Kline { timeframe, .. } => {
+                        let timeframe_u16 = timeframe.to_minutes();
+
+                        match &mut pane_state.content {
+                            PaneContent::Candlestick(chart) => {
+                                *chart = CandlestickChart::new(klines.to_vec(), timeframe_u16);
+
+                                found_match = true;
+                            },
+                            PaneContent::Footprint(chart) => {
+                                let raw_trades = chart.get_raw_trades();
+
+                                let tick_size = chart.get_tick_size();
+
+                                *chart = FootprintChart::new(timeframe_u16, tick_size, klines.to_vec(), raw_trades);
+
+                                found_match = true;
+                            },
+                            _ => {}
+                        }
+                    },
+                    _ => {}
+                }
+            }
+        }
+
+        if found_match {
+            Ok(())
+        } else {
+            Err("No matching pane found for the stream")
+        }
+    }
+
+    pub fn find_and_insert_ticksizes(&mut self, stream_type: &StreamType, tick_sizes: f32) -> Result<(), &str> {
+        dbg!(stream_type);
+
+        let mut found_match = false;
+
+        for (_, pane_state) in self.panes.iter_mut() {
+            if pane_state.matches_stream(&stream_type) {
+                match &mut pane_state.content {
+                    PaneContent::Footprint(_) => {
+                        pane_state.settings.min_tick_size = Some(tick_sizes);
+
+                        found_match = true;
+                    },
+                    PaneContent::Heatmap(_) => {
+                        pane_state.settings.min_tick_size = Some(tick_sizes);
+
+                        found_match = true;
+                    },
+                    _ => {}
+                }
+            }
+        }
+
+        if found_match {
+            Ok(())
+        } else {
+            Err("No matching pane found for the stream")
         }
     }
 

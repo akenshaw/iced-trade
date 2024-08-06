@@ -9,9 +9,22 @@ use crate::data_providers::{Depth, Trade};
 
 use super::{Chart, CommonChartData, Message, chart_button, Interaction, AxisLabelYCanvas, AxisLabelXCanvas};
 
+#[derive(Debug, Clone, Default)]
+pub struct GroupedDepth {
+    pub time: i64,
+    pub bids: BTreeMap<i64, f32>, // price -> quantity
+    pub asks: BTreeMap<i64, f32>, // price -> quantity
+}
+pub struct GroupedTrade {
+    pub time: i64,
+    pub is_sell: bool,
+    pub price: i64,
+    pub qty: f32,
+}
+
 pub struct HeatmapChart {
     chart: CommonChartData,
-    data_points: BTreeMap<i64, (Rc<Depth>, Box<[Trade]>)>,
+    data_points: BTreeMap<i64, (GroupedDepth, Vec<GroupedTrade>)>,
     tick_size: f32,
     y_scaling: f32,
     size_filter: f32,
@@ -29,14 +42,14 @@ impl Chart for HeatmapChart {
 }
 
 impl HeatmapChart {
-    const MIN_SCALING: f32 = 0.6;
-    const MAX_SCALING: f32 = 3.6;
+    const MIN_SCALING: f32 = 1.0;
+    const MAX_SCALING: f32 = 3.0;
 
-    pub fn new() -> Self {
+    pub fn new(tick_size: f32) -> Self {
         HeatmapChart {
             chart: CommonChartData::default(),
             data_points: BTreeMap::new(),
-            tick_size: 0.0,
+            tick_size,
             y_scaling: 0.0001,
             size_filter: 0.0,
         }
@@ -49,21 +62,43 @@ impl HeatmapChart {
         self.size_filter
     }
 
-    pub fn get_raw_trades(&mut self) -> Vec<Trade> {
-        let mut trades_source = vec![];
+    pub fn change_tick_size(&mut self, tick_size: f32) {
+        self.tick_size = tick_size;
 
-        for (_, trades) in self.data_points.values() {
-            trades_source.extend(trades.iter().cloned());
-        }
-
-        trades_source
+        self.data_points.clear();
+        self.chart.x_labels_cache.clear();
+        self.chart.y_labels_cache.clear();
     }
 
     pub fn insert_datapoint(&mut self, trades_buffer: &[Trade], depth_update: i64, depth: Rc<Depth>) {
         let aggregate_time = 100; // 100 ms
         let rounded_depth_update = (depth_update / aggregate_time) * aggregate_time;
+
+        let grouped_depth = GroupedDepth {
+            time: depth.time,
+            bids: depth.bids.iter().fold(BTreeMap::new(), |mut acc, order| {
+                let rounded_price = (order.price * (1.0 / self.tick_size)).round() as i64;
+                *acc.entry(rounded_price).or_insert(0.0) += order.qty;
+                acc
+            }),
+            asks: depth.asks.iter().fold(BTreeMap::new(), |mut acc, order| {
+                let rounded_price = (order.price * (1.0 / self.tick_size)).round() as i64;
+                *acc.entry(rounded_price).or_insert(0.0) += order.qty;
+                acc
+            }),
+        };
+
+        let grouped_trades: Vec<GroupedTrade> = trades_buffer
+            .iter()
+            .map(|trade| GroupedTrade {
+                time: trade.time,
+                is_sell: trade.is_sell,
+                price: (trade.price * (1.0 / self.tick_size)).round() as i64,
+                qty: trade.qty,
+            })
+            .collect();
         
-        self.data_points.insert(rounded_depth_update, (depth, trades_buffer.into()));
+        self.data_points.insert(rounded_depth_update, (grouped_depth, grouped_trades));
         
         while self.data_points.len() > 3600 {
             if let Some((&key_to_remove, _)) = self.data_points.first_key_value() {
@@ -112,15 +147,23 @@ impl HeatmapChart {
         let timestamp_latest: &i64 = self.data_points.keys().last().unwrap_or(&0);
 
         let latest: i64 = *timestamp_latest - (self.chart.translation.x*80.0) as i64;
-        let earliest: i64 = latest - (64000.0 / (self.chart.scaling / (self.chart.bounds.width/800.0))) as i64;
+        let earliest: i64 = latest - (48000.0 / (self.chart.scaling / (self.chart.bounds.width/800.0))) as i64;
     
         let mut max_ask_price = f32::MIN;
         let mut min_bid_price = f32::MAX;
 
         for (_, (depth, _)) in self.data_points.range(earliest..=latest) {
-            if !depth.asks.is_empty() && !depth.bids.is_empty() {        
-                let ask_price: f32 = depth.asks[std::cmp::min(20, depth.asks.len() - 1)].price;
-                let bid_price: f32 = depth.bids[std::cmp::min(20, depth.bids.len() - 1)].price;
+            if !depth.asks.is_empty() && !depth.bids.is_empty() {
+                let ask_price: f32 = self.price_to_float(
+                    *depth.asks.keys().nth(
+                        std::cmp::min(20, depth.asks.len() - 1)
+                    ).unwrap_or(&0)
+                );
+                let bid_price: f32 = self.price_to_float(
+                    *depth.bids.keys().nth(
+                        std::cmp::min(20, depth.bids.len() - 1)
+                    ).unwrap_or(&0)
+                );
     
                 if ask_price > max_ask_price {
                     max_ask_price = ask_price;
@@ -185,6 +228,10 @@ impl HeatmapChart {
             },
             _ => {}
         }
+    }
+
+    fn price_to_float(&self, price: i64) -> f32 {
+        price as f32 * self.tick_size
     }
 
     pub fn view(&self) -> Element<Message> {
@@ -435,17 +482,20 @@ impl canvas::Program<Message> for HeatmapChart {
 
                     max_volume = max_volume.max(buy_volume).max(sell_volume);
             
-                    for ask in depth.asks.iter() {
-                        if ask.price > highest {
+                    for (&price_i64, &qty) in depth.asks.iter() {
+                        let price = self.price_to_float(price_i64);
+                        if price > highest {
                             continue;
                         };
-                        max_depth_qty = max_depth_qty.max(ask.qty);
+                        max_depth_qty = max_depth_qty.max(qty);
                     }
-                    for bid in depth.bids.iter() {
-                        if bid.price < lowest {
+                
+                    for (&price_i64, &qty) in depth.bids.iter() {
+                        let price = self.price_to_float(price_i64);
+                        if price < lowest {
                             continue;
                         };
-                        max_depth_qty = max_depth_qty.max(bid.qty);
+                        max_depth_qty = max_depth_qty.max(qty);
                     }   
                 };
                 
@@ -473,9 +523,11 @@ impl canvas::Program<Message> for HeatmapChart {
                             buy_volume += trade.qty;
                         }
 
-                        if trade.qty * trade.price > self.size_filter {
+                        let price = self.price_to_float(trade.price);
+
+                        if trade.qty * price > self.size_filter {
                             let x_position = ((time - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
-                            let y_position = heatmap_area_height - ((trade.price - lowest) / y_range * heatmap_area_height);
+                            let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
 
                             let color = if trade.is_sell {
                                 Color::from_rgba8(192, 80, 77, 1.0)
@@ -493,37 +545,41 @@ impl canvas::Program<Message> for HeatmapChart {
                         }
                     }
 
-                    for bid in depth.bids.iter() {
-                        if bid.price >= lowest {
-                            let y_position = heatmap_area_height - ((bid.price - lowest) / y_range * heatmap_area_height);
-                            let color_alpha = (bid.qty / max_depth_qty).min(1.0);
+                    for (&price_i64, &qty) in depth.bids.iter() {
+                        let price = self.price_to_float(price_i64);
+
+                        if price >= lowest {
+                            let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
+                            let color_alpha = (qty / max_depth_qty).min(1.0);
 
                             if let (Some(prev_price), Some(prev_qty), Some(prev_x)) = (prev_bid_price, prev_bid_qty, prev_x_position) {
-                                if prev_price != bid.price || prev_qty != bid.qty {
+                                if prev_price != price || prev_qty != qty {
                                     let path = Path::line(Point::new(prev_x as f32, y_position), Point::new(x_position as f32, y_position));
                                     let stroke = Stroke::default().with_color(Color::from_rgba8(0, 144, 144, color_alpha)).with_width(1.0);
                                     frame.stroke(&path, stroke);
                                 }
                             }
-                            prev_bid_price = Some(bid.price);
-                            prev_bid_qty = Some(bid.qty);
+                            prev_bid_price = Some(price);
+                            prev_bid_qty = Some(qty);
                         }
                     }
 
-                    for ask in depth.asks.iter() {
-                        if ask.price <= highest {
-                            let y_position = heatmap_area_height - ((ask.price - lowest) / y_range * heatmap_area_height);
-                            let color_alpha = (ask.qty / max_depth_qty).min(1.0);
+                    for (&price_i64, &qty) in depth.asks.iter() {
+                        let price = self.price_to_float(price_i64);
+
+                        if price <= highest {
+                            let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
+                            let color_alpha = (qty / max_depth_qty).min(1.0);
 
                             if let (Some(prev_price), Some(prev_qty), Some(prev_x)) = (prev_ask_price, prev_ask_qty, prev_x_position) {
-                                if prev_price != ask.price || prev_qty != ask.qty {
+                                if prev_price != price || prev_qty != qty {
                                     let path = Path::line(Point::new(prev_x as f32, y_position), Point::new(x_position as f32, y_position));
                                     let stroke = Stroke::default().with_color(Color::from_rgba8(192, 0, 192, color_alpha)).with_width(1.0);
                                     frame.stroke(&path, stroke);
                                 }
                             }
-                            prev_ask_price = Some(ask.price);
-                            prev_ask_qty = Some(ask.qty);
+                            prev_ask_price = Some(price);
+                            prev_ask_qty = Some(qty);
                         }
                     }
 
@@ -549,18 +605,16 @@ impl canvas::Program<Message> for HeatmapChart {
             };
         
             // current orderbook as bars
-            if let Some(latest_data_points) = self.data_points.iter().last() {
-                let latest_timestamp = latest_data_points.0 + 200;
+            if let Some((&latest_timestamp, (grouped_depth, _))) = self.data_points.iter().last() {
+                let latest_bids: Vec<(f32, f32)> = grouped_depth.bids.iter()
+                    .map(|(&price_i64, &qty)| (self.price_to_float(price_i64), qty))
+                    .filter(|&(price, _)| price >= lowest)
+                    .collect();
 
-                let latest_bids: Vec<(f32, f32)> = latest_data_points.1.0.bids.iter()
-                    .filter(|order| (order.price) >= lowest)
-                    .map(|order| (order.price, order.qty))
-                    .collect::<Vec<_>>();
-
-                let latest_asks: Vec<(f32, f32)> = latest_data_points.1.0.asks.iter()
-                    .filter(|order| (order.price) <= highest)
-                    .map(|order| (order.price, order.qty))
-                    .collect::<Vec<_>>();
+                let latest_asks: Vec<(f32, f32)> = grouped_depth.asks.iter()
+                    .map(|(&price_i64, &qty)| (self.price_to_float(price_i64), qty))
+                    .filter(|&(price, _)| price <= highest)
+                    .collect();
 
                 let max_qty = latest_bids.iter().map(|(_, qty)| qty).chain(latest_asks.iter().map(|(_, qty)| qty)).fold(f32::MIN, |arg0: f32, other: &f32| f32::max(arg0, *other));
 

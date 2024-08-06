@@ -73,7 +73,10 @@ fn main() -> iced::Result {
                     SerializablePane::FootprintChart { stream_type, settings } => {
                         let ticksize = settings.tick_multiply
                             .unwrap()
-                            .multiply_with_min_tick_size(settings.min_tick_size.unwrap());
+                            .multiply_with_min_tick_size(
+                                settings.min_tick_size
+                                    .expect("No min tick size found, deleting dashboard_state.json probably fixes this")
+                            );
                     
                         let timeframe = settings.selected_timeframe
                             .unwrap()
@@ -95,10 +98,17 @@ fn main() -> iced::Result {
                         )
                     },
                     SerializablePane::HeatmapChart { stream_type, settings } => {
+                        let ticksize = settings.tick_multiply
+                            .unwrap()
+                            .multiply_with_min_tick_size(
+                                settings.min_tick_size
+                                    .expect("No min tick size found, deleting dashboard_state.json probably fixes this")
+                            );
+
                         Configuration::Pane(
                             PaneState::from_config(
                                 PaneContent::Heatmap(
-                                    HeatmapChart::new()
+                                    HeatmapChart::new(ticksize)
                                 ),
                                 stream_type,
                                 settings
@@ -160,6 +170,8 @@ fn main() -> iced::Result {
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    FetchDistributeKlines(StreamType, Result<Vec<data_providers::Kline>, std::string::String>),
+    FetchDistributeTicks(StreamType, Result<f32, std::string::String>),
     Debug(String),
     ErrorOccurred(String),
 
@@ -239,17 +251,13 @@ impl State {
         let dashboard = saved_state.layouts.get(&last_active_layout);
 
         if let Some(dashboard) = dashboard {
-            for (_, pane_state) in dashboard.panes.iter() {
-                match pane_state.content {
-                    PaneContent::Candlestick(_) | PaneContent::Footprint(_) => {
-                        tasks.extend(kline_fetch_tasks(pane_state).into_iter());
-                        if let PaneContent::Footprint(_) = pane_state.content {
-                            tasks.extend(ticksize_fetch_tasks(pane_state).into_iter());
-                        }
-                    },
-                    _ => {}
-                }
-            }
+            let sleep_and_fetch = Task::perform(
+                async { tokio::time::sleep(tokio::time::Duration::from_millis(200)).await; },
+                move |_| Message::LayoutSelected(last_active_layout)
+            );
+
+            tasks.push(sleep_and_fetch);
+
             pane_streams = dashboard.get_all_diff_streams();
         }
 
@@ -712,7 +720,7 @@ impl State {
                 let mut tasks = vec![];
                 
                 let pane_content = match content.as_str() {
-                    "Heatmap chart" => PaneContent::Heatmap(HeatmapChart::new()),
+                    "Heatmap chart" => PaneContent::Heatmap(HeatmapChart::new(1.0)),
                     "Footprint chart" => {
                         let footprint_chart = FootprintChart::new(1, 1.0, vec![], vec![]);
                         PaneContent::Footprint(footprint_chart)
@@ -736,48 +744,24 @@ impl State {
                 } else {
                     dbg!("Pane content set");
                 }
-            
-                if content == "Footprint chart" || content == "Candlestick chart" {
+                
+                if content == "Footprint chart" || content == "Candlestick chart" || content == "Heatmap chart" {
                     for stream in pane_stream.iter() {
                         if let StreamType::Kline { exchange, ticker, timeframe } = stream {
                             let stream_clone = stream.clone();
-                            let fetch_klines = match exchange {
-                                Exchange::BinanceFutures => Task::perform(
-                                    binance::market_data::fetch_klines(*ticker, *timeframe)
-                                        .map_err(|err| format!("{err}")),
-                                    move |klines| Message::FetchEvent(klines, stream_clone, pane_id)
-                                ),
-                                Exchange::BybitLinear => Task::perform(
-                                    bybit::market_data::fetch_klines(*ticker, *timeframe)
-                                        .map_err(|err| format!("{err}")),
-                                    move |klines| Message::FetchEvent(klines, stream_clone, pane_id)
-                                ),
-                                _ => continue,
-                            };
                 
-                            tasks.push(fetch_klines);
+                            if content == "Candlestick chart" || content == "Footprint Chart" {
+                                let fetch_klines = create_fetch_klines_task(exchange, ticker, timeframe, stream_clone, pane_id);
+                                tasks.push(fetch_klines);
+                            }
                 
                             if content == "Footprint chart" {
-                                let fetch_ticksize: Task<Message> = match exchange {
-                                    Exchange::BinanceFutures => Task::perform(
-                                        binance::market_data::fetch_ticksize(*ticker),
-                                        move |result| match result {
-                                            Ok(ticksize) => Message::SetMinTickSize(ticksize, pane_id),
-                                            Err(err) => Message::ErrorOccurred(err.to_string()),
-                                        }
-                                    ),
-                                    Exchange::BybitLinear => Task::perform(
-                                        bybit::market_data::fetch_ticksize(*ticker),
-                                        move |result| match result {
-                                            Ok(ticksize) => Message::SetMinTickSize(ticksize, pane_id),
-                                            Err(err) => Message::ErrorOccurred(err.to_string()),
-                                        }
-                                    ),
-                                    _ => continue,
-                                };
-                
+                                let fetch_ticksize = create_fetch_ticksize_task(exchange, ticker, pane_id);
                                 tasks.push(fetch_ticksize);
                             }
+                        } else if let StreamType::DepthAndTrades { exchange, ticker } = stream {
+                            let fetch_ticksize = create_fetch_ticksize_task(exchange, ticker, pane_id);
+                            tasks.push(fetch_ticksize);
                         }
                     }
                 }
@@ -815,35 +799,58 @@ impl State {
                 Task::none()
             },
             Message::LayoutSelected(layout_id) => {
+                self.last_active_layout = layout_id;
+            
+                Task::perform(
+                    async { tokio::time::sleep(tokio::time::Duration::from_millis(200)).await; },
+                    |_| Message::RefreshStreams
+                )
+            },
+            Message::RefreshStreams => {
                 let mut tasks = vec![];
 
-                self.last_active_layout = layout_id;    
+                self.pane_streams = self.get_dashboard().get_all_diff_streams();
 
+                let kline_tasks = klines_fetch_all_task(&self.pane_streams);
+
+                let ticksize_tasks = ticksize_fetch_all_task(&self.pane_streams);
+
+                tasks.extend(kline_tasks.into_iter());
+                tasks.extend(ticksize_tasks.into_iter());
+
+                Task::batch(tasks)
+            }
+        
+            Message::FetchDistributeKlines(stream_type, klines) => {
                 let dashboard = self.get_mut_dashboard();
 
-                for (_, pane_state) in dashboard.panes.iter() {
-                    match pane_state.content {
-                        PaneContent::Candlestick(_) | PaneContent::Footprint(_) => {
-                            tasks.extend(kline_fetch_tasks(pane_state).into_iter());
-                            if let PaneContent::Footprint(_) = pane_state.content {
-                                tasks.extend(ticksize_fetch_tasks(pane_state).into_iter());
-                            }
-                        },
-                        _ => {}
+                match klines {
+                    Ok(klines) => {
+                        if let Err(err) = dashboard.find_and_insert_klines(&stream_type, &klines) {
+                            eprintln!("{err}");
+                        }
+                    },
+                    Err(err) => {
+                        eprintln!("{err}");
                     }
                 }
 
-                let sleep_task = Task::perform(
-                    async { tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; },
-                    |_| Message::RefreshStreams
-                );
+                Task::none()
+            }
+            
+            Message::FetchDistributeTicks(stream_type, min_tick_size) => {
+                let dashboard = self.get_mut_dashboard();
 
-                tasks.push(sleep_task);
-
-                Task::batch(tasks)
-            },
-            Message::RefreshStreams => {
-                self.pane_streams = self.get_dashboard().get_all_diff_streams();
+                match min_tick_size {
+                    Ok(ticksize) => {
+                        if let Err(err) = dashboard.find_and_insert_ticksizes(&stream_type, ticksize) {
+                            eprintln!("{err}");
+                        }
+                    },
+                    Err(err) => {
+                        eprintln!("{err}");
+                    }
+                }
 
                 Task::none()
             }
@@ -1509,6 +1516,22 @@ fn view_controls<'a>(
 
     match pane_type {
         PaneContent::Heatmap(_) => {
+            let ticksize_picker = pick_list(
+                [TickMultiplier(1), TickMultiplier(2), TickMultiplier(5), TickMultiplier(10), TickMultiplier(25), TickMultiplier(50)],
+                settings.tick_multiply, 
+                move |tick_multiply| Message::TicksizeSelected(tick_multiply, pane_id)
+            ).placeholder("Ticksize multiplier...").text_size(11).width(iced::Pixels(80.0));
+
+            let ticksize_tooltip = tooltip(
+                ticksize_picker
+                    .style(style::picklist_primary)
+                    .menu_style(style::picklist_menu_primary),
+                    "Ticksize multiplier",
+                    tooltip::Position::FollowCursor
+                )
+                .style(style::tooltip);
+    
+            row = row.push(ticksize_tooltip);
         },
         PaneContent::TimeAndSales(_) => {
         },
@@ -1590,29 +1613,46 @@ fn view_controls<'a>(
     row.into()
 }
 
-fn kline_fetch_tasks(pane_state: &PaneState) -> Vec<Task<Message>> {
+fn klines_fetch_all_task(stream_types: &HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>) -> Vec<Task<Message>> {
     let mut tasks: Vec<Task<Message>> = vec![];
 
-    for stream in pane_state.stream.iter() {
-        if let StreamType::Kline { ticker, timeframe, exchange } = stream {
-            let stream = stream.clone();
+    for (exchange, stream) in stream_types {
+        let mut kline_fetches = Vec::new();
 
-            let pane_id = pane_state.id;
+        for stream_types in stream.values() {
+            for stream_type in stream_types {
+                match stream_type {
+                    StreamType::Kline { ticker, timeframe, .. } => {
+                        kline_fetches.push((*ticker, *timeframe));
+                    },
+                    _ => {}
+                }
+            }
+        }
+
+        for (ticker, timeframe) in kline_fetches {
+            let ticker = ticker.clone();
+            let timeframe = timeframe.clone();
+            let exchange = exchange.clone();
 
             match exchange {
                 Exchange::BinanceFutures => {
                     let fetch_klines = Task::perform(
-                        binance::market_data::fetch_klines(*ticker, *timeframe)
+                        binance::market_data::fetch_klines(ticker, timeframe)
                             .map_err(|err| format!("{err}")),
-                        move |klines| Message::FetchEvent(klines, stream, pane_id)
+                        move |klines| Message::FetchDistributeKlines(
+                            StreamType::Kline { exchange, ticker, timeframe }, klines
+                        )
                     );
                     tasks.push(fetch_klines);
                 },
                 Exchange::BybitLinear => {
                     let fetch_klines = Task::perform(
-                        bybit::market_data::fetch_klines(*ticker, *timeframe)
+                        bybit::market_data::fetch_klines(ticker, timeframe)
                             .map_err(|err| format!("{err}")),
-                        move |klines| Message::FetchEvent(klines, stream, pane_id)
+                        move |klines| Message::FetchDistributeKlines(
+                            StreamType::Kline { exchange, ticker, timeframe }, klines
+                        )
                     );
                     tasks.push(fetch_klines);
                 }
@@ -1623,35 +1663,98 @@ fn kline_fetch_tasks(pane_state: &PaneState) -> Vec<Task<Message>> {
     tasks
 }
 
-fn ticksize_fetch_tasks(pane_state: &PaneState) -> Vec<Task<Message>> {
+fn ticksize_fetch_all_task(stream_types: &HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>) -> Vec<Task<Message>> {
     let mut tasks: Vec<Task<Message>> = vec![];
 
-    for stream in pane_state.stream.iter() {
-        if let StreamType::Kline { ticker, exchange, .. } = stream {
-            let pane_id = pane_state.id;
+    for (exchange, stream) in stream_types {
+        let mut ticksize_fetches = Vec::new();
 
-            let fetch_ticksize = match exchange {
-                Exchange::BinanceFutures => Task::perform(
-                    binance::market_data::fetch_ticksize(*ticker),
-                    move |result| match result {
-                        Ok(ticksize) => Message::SetMinTickSize(ticksize, pane_id),
-                        Err(err) => Message::ErrorOccurred(err.to_string()),
-                    }
-                ),
-                Exchange::BybitLinear => Task::perform(
-                    bybit::market_data::fetch_ticksize(*ticker),
-                    move |result| match result {
-                        Ok(ticksize) => Message::SetMinTickSize(ticksize, pane_id),
-                        Err(err) => Message::ErrorOccurred(err.to_string()),
-                    }
-                ),
-            };
+        for stream_types in stream.values() {
+            for stream_type in stream_types {
+                match stream_type {
+                    StreamType::DepthAndTrades { ticker, .. } => {
+                        ticksize_fetches.push(*ticker);
+                    },
+                    _ => {}
+                }
+            }
+        }
 
-            tasks.push(fetch_ticksize);
+        for ticker in ticksize_fetches {
+            let ticker = ticker.clone();
+            let exchange = exchange.clone();
+
+            match exchange {
+                Exchange::BinanceFutures => {
+                    let fetch_ticksize = Task::perform(
+                        binance::market_data::fetch_ticksize(ticker)
+                            .map_err(|err| format!("{err}")),
+                        move |ticksize| Message::FetchDistributeTicks(
+                            StreamType::DepthAndTrades { exchange, ticker }, ticksize
+                        )
+                    );
+                    tasks.push(fetch_ticksize);
+                },
+                Exchange::BybitLinear => {
+                    let fetch_ticksize = Task::perform(
+                        bybit::market_data::fetch_ticksize(ticker)
+                            .map_err(|err| format!("{err}")),
+                        move |ticksize| Message::FetchDistributeTicks(
+                            StreamType::DepthAndTrades { exchange, ticker }, ticksize
+                        )
+                    );
+                    tasks.push(fetch_ticksize);
+                }
+            }
         }
     }
 
     tasks
+}
+
+fn create_fetch_klines_task(
+    exchange: &Exchange,
+    ticker: &Ticker,
+    timeframe: &Timeframe,
+    stream_clone: StreamType,
+    pane_id: Uuid,
+) -> Task<Message> {
+    match exchange {
+        Exchange::BinanceFutures => Task::perform(
+            binance::market_data::fetch_klines(*ticker, *timeframe)
+                .map_err(|err| format!("{err}")),
+            move |klines| Message::FetchEvent(klines, stream_clone, pane_id),
+        ),
+        Exchange::BybitLinear => Task::perform(
+            bybit::market_data::fetch_klines(*ticker, *timeframe)
+                .map_err(|err| format!("{err}")),
+            move |klines| Message::FetchEvent(klines, stream_clone, pane_id),
+        ),
+        _ => return Task::none(),
+    }
+}
+
+fn create_fetch_ticksize_task(
+    exchange: &Exchange,
+    ticker: &Ticker,
+    pane_id: Uuid,
+) -> Task<Message> {
+    match exchange {
+        Exchange::BinanceFutures => Task::perform(
+            binance::market_data::fetch_ticksize(*ticker),
+            move |result| match result {
+                Ok(ticksize) => Message::SetMinTickSize(ticksize, pane_id),
+                Err(err) => Message::ErrorOccurred(err.to_string()),
+            },
+        ),
+        Exchange::BybitLinear => Task::perform(
+            bybit::market_data::fetch_ticksize(*ticker),
+            move |result| match result {
+                Ok(ticksize) => Message::SetMinTickSize(ticksize, pane_id),
+                Err(err) => Message::ErrorOccurred(err.to_string()),
+            },
+        ),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
