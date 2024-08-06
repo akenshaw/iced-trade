@@ -4,6 +4,7 @@ mod data_providers;
 mod charts;
 mod style;
 mod screen;
+mod logger;
 
 use style::{ICON_FONT, ICON_BYTES, Icon};
 use screen::dashboard::{pane::{self, SerializablePane}, read_layout_from_file, write_json_to_file, Dashboard, LayoutId, PaneContent, PaneSettings, PaneState, SavedState, SerializableDashboard, SerializableState, Uuid};
@@ -29,6 +30,8 @@ use iced::widget::{
 };
 
 fn main() -> iced::Result {
+    logger::setup(false, false).expect("Failed to initialize logger");
+
     let saved_state = match read_layout_from_file("dashboard_state.json") {
         Ok(state) => {
             let mut de_state = SavedState {
@@ -138,7 +141,7 @@ fn main() -> iced::Result {
             de_state
         },
         Err(e) => {
-            eprintln!("Failed to load/find layout state: {}. Starting with a new layout.", e);
+            log::error!("Failed to load/find layout state: {}. Starting with a new layout.", e);
 
             SavedState::default()
         }
@@ -285,7 +288,10 @@ impl State {
 
                 match dashboard.update_chart_state(pane_id, message) {
                     Ok(_) => Task::none(),
-                    Err(err) => Task::none()
+                    Err(err) => {
+                        log::error!("{err}");
+                        Task::none()
+                    }
                 }
             },
             Message::SetMinTickSize(min_tick_size, pane_id) => {
@@ -298,7 +304,7 @@ impl State {
                         Task::none()
                     },
                     Err(err) => {
-                        eprintln!("Failed to set min tick size: {err}");
+                        log::error!("Failed to set min tick size: {err}");
 
                         Task::none()
                     }
@@ -314,7 +320,7 @@ impl State {
                         Task::none()
                     },
                     Err(err) => {
-                        eprintln!("{err}");
+                        log::error!("{err}");
 
                         Task::none()
                     }
@@ -353,7 +359,7 @@ impl State {
                         }
                     },
                     Err(err) => {
-                        eprintln!("Failed to change timeframe: {err}");
+                        log::error!("Failed to change timeframe: {err}");
                     }
                 }
 
@@ -371,7 +377,7 @@ impl State {
                         Task::none()
                     },
                     Err(err) => {
-                        eprintln!("{err}");
+                        log::error!("{err}");
 
                         Task::none()
                     }
@@ -382,17 +388,17 @@ impl State {
                 
                 match dashboard.pane_change_ticksize(pane_id, tick_multiply) {
                     Ok(_) => {
-                        dbg!("Ticksize changed");
-
+                        log::info!("Ticksize changed");
+            
                         Task::none()
                     },
                     Err(err) => {
-                        eprintln!("Failed to change ticksize: {err}");
-
+                        log::error!("Failed to change ticksize: {err}");
+            
                         Task::none()
                     }
                 }
-            },  
+            },
             Message::FetchEvent(klines, pane_stream, pane_id) => {
                 let dashboard = self.get_mut_dashboard();
 
@@ -410,7 +416,7 @@ impl State {
                         }
                     },
                     Err(err) => {
-                        eprintln!("{err}");
+                        log::error!("{err}");
                     }
                 }
 
@@ -434,7 +440,7 @@ impl State {
                             };
                             
                             if let Err(err) = dashboard.update_depth_and_trades(stream_type, depth_update_t, depth, trades_buffer) {
-                                eprintln!("{err}, {stream_type:?}");
+                                log::error!("{err}, {stream_type:?}");
 
                                 self.pane_streams
                                     .entry(Exchange::BinanceFutures)
@@ -452,7 +458,7 @@ impl State {
                             };
 
                             if let Err(err) = dashboard.update_latest_klines(&stream_type, &kline) {
-                                eprintln!("{err}, {stream_type:?}");
+                                log::error!("{err}, {stream_type:?}");
 
                                 self.pane_streams
                                     .entry(Exchange::BinanceFutures)
@@ -477,7 +483,7 @@ impl State {
                             };
                             
                             if let Err(err) = dashboard.update_depth_and_trades(stream_type, depth_update_t, depth, trades_buffer) {
-                                eprintln!("{err}, {stream_type:?}");
+                                log::error!("{err}, {stream_type:?}");
 
                                 self.pane_streams
                                     .entry(Exchange::BybitLinear)
@@ -495,7 +501,7 @@ impl State {
                             };
 
                             if let Err(err) = dashboard.update_latest_klines(&stream_type, &kline) {
-                                eprintln!("{err}, {stream_type:?}");
+                                log::error!("{err}, {stream_type:?}");
 
                                 self.pane_streams
                                     .entry(Exchange::BybitLinear)
@@ -515,7 +521,7 @@ impl State {
                 Task::none()
             },
             Message::UserKeyError => {
-                dbg!("Check API keys");
+                log::error!("Check API keys");
                 Task::none()
             },
             Message::Split(axis, pane) => {
@@ -642,12 +648,12 @@ impl State {
                 match serde_json::to_string(&layout) {
                     Ok(layout_str) => {
                         if let Err(e) = write_json_to_file(&layout_str, "dashboard_state.json") {
-                            eprintln!("Failed to write layout state to file: {}", e);
+                            log::error!("Failed to write layout state to file: {}", e);
                         } else {
-                            println!("Successfully wrote layout state to dashboard_state.json");
+                            log::info!("Successfully wrote layout state to dashboard_state.json");
                         }
                     },
-                    Err(e) => eprintln!("Failed to serialize layout: {}", e),
+                    Err(e) => log::error!("Failed to serialize layout: {}", e),
                 }
             
                 window::close(window)
@@ -682,14 +688,14 @@ impl State {
                                 Task::none()
                             },
                             Err(err) => {
-                                eprintln!("Failed to set size filter: {err}");
+                                log::error!("Failed to set size filter: {err}");
         
                                 Task::none()
                             }
                         }
                     }
                     Err(err) => {
-                        eprintln!("{err}");
+                        log::error!("{err}");
                         Task::none()
                     }
                 }
@@ -711,7 +717,7 @@ impl State {
                 Task::none()
             },
             Message::ErrorOccurred(err) => {
-                eprintln!("{err}");
+                log::error!("{err}");
                 Task::none()
             },
             Message::PaneContentSelected(content, pane_id, pane_stream) => {
@@ -736,13 +742,13 @@ impl State {
                 if let Ok(vec_streams) = dashboard.get_pane_stream_mut(pane_id) {
                     *vec_streams = pane_stream.to_vec();
                 } else {
-                    dbg!("No pane found for stream update");
+                    log::error!("No pane found for stream update");
                 }
             
                 if let Err(err) = dashboard.set_pane_content(pane_id, pane_content) {
-                    dbg!("Failed to set pane content: {}", err);
+                    log::error!("Failed to set pane content: {}", err);
                 } else {
-                    dbg!("Pane content set");
+                    log::info!("Pane content set: {content}");
                 }
                 
                 if content == "Footprint chart" || content == "Candlestick chart" || content == "Heatmap chart" {
@@ -780,8 +786,8 @@ impl State {
                     }
                 }
             
-                dbg!(&self.pane_streams);
-            
+                log::info!("{:?}", &self.pane_streams);
+                
                 Task::batch(tasks)
             },
             Message::ReplacePane(pane) => {
@@ -827,11 +833,11 @@ impl State {
                 match klines {
                     Ok(klines) => {
                         if let Err(err) = dashboard.find_and_insert_klines(&stream_type, &klines) {
-                            eprintln!("{err}");
+                            log::error!("{err}");
                         }
                     },
                     Err(err) => {
-                        eprintln!("{err}");
+                        log::error!("{err}");
                     }
                 }
 
@@ -844,11 +850,11 @@ impl State {
                 match min_tick_size {
                     Ok(ticksize) => {
                         if let Err(err) = dashboard.find_and_insert_ticksizes(&stream_type, ticksize) {
-                            eprintln!("{err}");
+                            log::error!("{err}");
                         }
                     },
                     Err(err) => {
-                        eprintln!("{err}");
+                        log::error!("{err}");
                     }
                 }
 
@@ -1440,7 +1446,9 @@ fn view_starter<'a>(
             .align_x(Alignment::Center), |column, &label| {
                 let mut btn = button(label).width(Length::Fill);
                 if let (Some(exchange), Some(ticker)) = (pane.settings.selected_exchange, pane.settings.selected_ticker) {
-                    let timeframe = pane.settings.selected_timeframe.unwrap_or_else(|| { dbg!("No timeframe found"); Timeframe::M1 });
+                    let timeframe = pane.settings.selected_timeframe.unwrap_or_else(
+                        || { log::error!("No timeframe found"); Timeframe::M1 }
+                    );
 
                     let pane_stream: Vec<StreamType> = match label {
                         "Heatmap chart" => vec![StreamType::DepthAndTrades { exchange, ticker }],

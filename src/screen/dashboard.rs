@@ -275,8 +275,6 @@ impl Dashboard {
     }
 
     pub fn find_and_insert_klines(&mut self, stream_type: &StreamType, klines: &Vec<Kline>) -> Result<(), &str> {
-        dbg!(stream_type);
-
         let mut found_match = false;
 
         for (_, pane_state) in self.panes.iter_mut() {
@@ -316,8 +314,6 @@ impl Dashboard {
     }
 
     pub fn find_and_insert_ticksizes(&mut self, stream_type: &StreamType, tick_sizes: f32) -> Result<(), &str> {
-        dbg!(stream_type);
-
         let mut found_match = false;
 
         for (_, pane_state) in self.panes.iter_mut() {

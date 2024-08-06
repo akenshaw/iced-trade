@@ -184,7 +184,7 @@ fn feed_de(bytes: &Bytes) -> Result<StreamData> {
                         topic_ticker = ticker;
                     },
                     _ => {
-                        eprintln!("Unknown stream name");
+                        log::error!("Unknown stream name");
                     }
                 }
             }
@@ -216,7 +216,7 @@ fn feed_de(bytes: &Bytes) -> Result<StreamData> {
                     return Ok(StreamData::Kline(topic_ticker, kline_wrap));
                 },
                 _ => {
-                    eprintln!("Unknown stream type");
+                    log::error!("Unknown stream type");
                 }
             }
         } else if k == "cts" {
@@ -297,7 +297,7 @@ where
 
 fn str_f32_parse(s: &str) -> f32 {
     s.parse::<f32>().unwrap_or_else(|e| {
-        eprintln!("Failed to parse float: {}, error: {}", s, e);
+        log::error!("Failed to parse float: {}, error: {}", s, e);
         0.0
     })
 }
@@ -344,7 +344,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                             }).to_string();
     
                             if let Err(e) = websocket.write_frame(Frame::text(fastwebsockets::Payload::Borrowed(subscribe_message.as_bytes()))).await {
-                                eprintln!("Failed subscribing: {}", e);
+                                log::error!("Failed subscribing: {}", e);
 
                                 let _ = output.send(Event::Disconnected).await;
 
@@ -432,19 +432,19 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                 }
                                             },
                                             _ => {
-                                                println!("Unknown data: {:?}", &data);
+                                                log::warn!("Unknown data: {:?}", &data);
                                             }
                                         }
                                     }
                                 },
                                 OpCode::Close => {
-                                    eprintln!("Connection closed");
+                                    log::error!("Connection closed");
                                     let _ = output.send(Event::Disconnected).await;
                                 },
                                 _ => {}
                             },
                             Err(e) => {
-                                println!("Error reading frame: {}", e);
+                                log::error!("Error reading frame: {}", e);
                             }
                         }
                     }
@@ -492,7 +492,7 @@ pub fn connect_kline_stream(streams: Vec<(Ticker, Timeframe)>) -> impl Stream<It
                             }).to_string();
     
                             if let Err(e) = websocket.write_frame(Frame::text(fastwebsockets::Payload::Borrowed(subscribe_message.as_bytes()))).await {
-                                eprintln!("Failed subscribing: {}", e);
+                                log::error!("Failed subscribing: {}", e);
 
                                 let _ = output.send(Event::Disconnected).await;
 
@@ -527,18 +527,18 @@ pub fn connect_kline_stream(streams: Vec<(Ticker, Timeframe)>) -> impl Stream<It
                                             if let Some(timeframe) = string_to_timeframe(&de_kline.interval) {
                                                 let _ = output.send(Event::KlineReceived(ticker, kline, timeframe)).await;
                                             } else {
-                                                eprintln!("Failed to find timeframe: {}, {:?}", &de_kline.interval, streams);
+                                                log::error!("Failed to find timeframe: {}, {:?}", &de_kline.interval, streams);
                                             }
                                         }
                                          
                                     } else {
-                                        eprintln!("\nUnknown data: {:?}", &json_bytes);
+                                        log::error!("\nUnknown data: {:?}", &json_bytes);
                                     }
                                 }
                                 _ => {}
                             },
                             Err(e) => {
-                                eprintln!("Error reading frame: {}", e);
+                                log::error!("Error reading frame: {}", e);
                             }
                         }
                     }

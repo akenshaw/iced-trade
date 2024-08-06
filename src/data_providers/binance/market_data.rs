@@ -191,7 +191,7 @@ fn feed_de(bytes: &Bytes) -> Result<StreamData> {
                         stream_type = Some(StreamWrapper::Kline);
                     },
 					_ => {
-                        eprintln!("Unknown stream name");
+                        log::warn!("Unknown stream name");
                     }
 				}
 			}
@@ -224,11 +224,11 @@ fn feed_de(bytes: &Bytes) -> Result<StreamData> {
                     return Ok(StreamData::Kline(ticker, kline_wrap.kline));
                 },
 				_ => {
-					eprintln!("Unknown stream type");
+					log::error!("Unknown stream type");
 				}
 			}
 		} else {
-			eprintln!("Unknown data: {:?}", k);
+			log::error!("Unknown data: {:?}", k);
 		}
 	}
 
@@ -270,7 +270,6 @@ async fn connect(domain: &str, streams: &str) -> Result<FragmentCollector<TokioI
 	let tls_stream: tokio_rustls::client::TlsStream<TcpStream> = tls_connector.connect(domain, tcp_stream).await?;
 
     let url = format!("wss://{}/stream?streams={}", &addr, streams);
-    println!("Connecting to {}", url);
 
 	let req: Request<Empty<Bytes>> = Request::builder()
 	.method("GET")
@@ -396,7 +395,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                             },
                                             StreamData::Depth(de_depth) => {
                                                 if already_fetching {
-                                                    println!("Already fetching...\n");
+                                                    log::warn!("Already fetching...\n");
     
                                                     continue;
                                                 }
@@ -408,7 +407,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                 }
     
                                                 if prev_id == 0 && (de_depth.first_id > last_update_id + 1) || (last_update_id + 1 > de_depth.final_id) {
-                                                    println!("Out of sync at first event. Trying to resync...\n");
+                                                    log::warn!("Out of sync at first event. Trying to resync...\n");
     
                                                     let (tx, rx) = tokio::sync::oneshot::channel();
                                                     already_fetching = true;
@@ -487,23 +486,23 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
     
                                                     prev_id = de_depth.final_id;
                                                 } else {
-                                                    eprintln!("Out of sync...\n");
+                                                    log::error!("Out of sync...\n");
                                                 }
                                             },
                                             _ => {}
                                         }
                                     } else {
-                                        eprintln!("\nUnknown data: {:?}", &json_bytes);
+                                        log::error!("\nUnknown data: {:?}", &json_bytes);
                                     }
                                 }
                                 OpCode::Close => {
-                                    eprintln!("Connection closed");
+                                    log::error!("Connection closed");
                                     let _ = output.send(Event::Disconnected).await;
                                 }
                                 _ => {}
                             },
                             Err(e) => {
-                                println!("Error reading frame: {}", e);
+                                log::error!("Error reading frame: {}", e);
                             }
                         };
                     }
@@ -577,13 +576,13 @@ pub fn connect_kline_stream(streams: Vec<(Ticker, Timeframe)>) -> impl Stream<It
                                             let _ = output.send(Event::KlineReceived(ticker, kline, timeframe.1)).await;
                                         }
                                     } else {
-                                        eprintln!("\nUnknown data: {:?}", &json_bytes);
+                                        log::error!("\nUnknown data: {:?}", &json_bytes);
                                     }
                                 }
                                 _ => {}
                             }, 
                             Err(e) => {
-                                eprintln!("Error reading frame: {}", e);
+                                log::error!("Error reading frame: {}", e);
                             }
                         }
                     }
@@ -595,7 +594,7 @@ pub fn connect_kline_stream(streams: Vec<(Ticker, Timeframe)>) -> impl Stream<It
 
 fn str_f32_parse(s: &str) -> f32 {
     s.parse::<f32>().unwrap_or_else(|e| {
-        eprintln!("Failed to parse float: {}, error: {}", s, e);
+        log::error!("Failed to parse float: {}, error: {}", s, e);
         0.0
     })
 }

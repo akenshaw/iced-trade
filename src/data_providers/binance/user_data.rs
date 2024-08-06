@@ -69,11 +69,11 @@ pub fn connect_user_stream(listen_key: String) -> impl Stream<Item = Event> {
                         )
                         .await {
                             state = State::Connected(websocket);
-                            dbg!("Connected to user stream");
+                            log::info!("Connected to user stream");
                         } else {
                             tokio::time::sleep(tokio::time::Duration::from_secs(1))
                             .await;
-                            dbg!("Failed to connect to user stream");
+                            log::info!("Failed to connect to user stream");
                             let _ = output.send(Event::Disconnected).await;
                         }
                     }
@@ -121,12 +121,12 @@ pub fn connect_user_stream(listen_key: String) -> impl Stream<Item = Event> {
                                                 let _ = output.send(event).await;
                                             },
                                             Err(e) => {
-                                                dbg!(e, message);
+                                                log::error!("Failed to parse message: {e:?}");
                                             }
                                         }
                                     }
                                     Err(_) => {
-                                        dbg!("Disconnected from user stream");
+                                        log::info!("Disconnected from user stream");
                                         let _ = output.send(Event::Disconnected).await;
                                         state = State::Disconnected;
                                     }
@@ -160,7 +160,7 @@ pub fn fetch_user_stream(api_key: &str, secret_key: &str) -> impl Stream<Item = 
                             let _ = output.send(Event::FetchedPositions(positions)).await;
                         }
                         Err(e) => {
-                            eprintln!("Error fetching positions: {e:?}");
+                            log::error!("Error fetching positions: {e:?}");
                         }
                     }
 
@@ -169,7 +169,7 @@ pub fn fetch_user_stream(api_key: &str, secret_key: &str) -> impl Stream<Item = 
                             let _ = output.send(Event::FetchedBalance(balance)).await;
                         }
                         Err(e) => {
-                            eprintln!("Error fetching balance: {e:?}");
+                            log::error!("Error fetching balance: {e:?}");
                         }
                     }
 

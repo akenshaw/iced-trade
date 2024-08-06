@@ -1147,6 +1147,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fern"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d9f0c14694cbd524c8720dd69b0e3179344f04ebb5f90f2e4a440c6ea3b2f1ee"
+dependencies = [
+ "log",
+]
+
+[[package]]
 name = "flate2"
 version = "1.0.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1805,6 +1814,7 @@ dependencies = [
  "bytes",
  "chrono",
  "fastwebsockets",
+ "fern",
  "futures",
  "futures-util",
  "hex",
@@ -1815,6 +1825,7 @@ dependencies = [
  "iced",
  "iced_futures 0.12.0",
  "iced_table",
+ "log",
  "native-tls",
  "reqwest",
  "rustc-hash 2.0.0",
