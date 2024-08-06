@@ -756,15 +756,16 @@ impl State {
                         if let StreamType::Kline { exchange, ticker, timeframe } = stream {
                             let stream_clone = stream.clone();
                 
-                            if content == "Candlestick chart" || content == "Footprint Chart" {
+                            if content == "Candlestick chart" || content == "Footprint chart" {
                                 let fetch_klines = create_fetch_klines_task(exchange, ticker, timeframe, stream_clone, pane_id);
                                 tasks.push(fetch_klines);
+
+                                if content == "Footprint chart" {
+                                    let fetch_ticksize = create_fetch_ticksize_task(exchange, ticker, pane_id);
+                                    tasks.push(fetch_ticksize);
+                                }
                             }
-                
-                            if content == "Footprint chart" {
-                                let fetch_ticksize = create_fetch_ticksize_task(exchange, ticker, pane_id);
-                                tasks.push(fetch_ticksize);
-                            }
+                        
                         } else if let StreamType::DepthAndTrades { exchange, ticker } = stream {
                             let fetch_ticksize = create_fetch_ticksize_task(exchange, ticker, pane_id);
                             tasks.push(fetch_ticksize);
