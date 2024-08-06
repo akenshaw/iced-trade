@@ -1,7 +1,7 @@
 use hyper::client::conn;
-use iced::futures;  
-use iced::subscription::{self, Subscription};
+use iced::{stream, futures};
 use futures::sink::SinkExt;
+use futures::stream::{Stream, StreamExt};
 
 use serde_json::Value;
 use bytes::Bytes;
@@ -306,16 +306,15 @@ fn string_to_timeframe(interval: &str) -> Option<Timeframe> {
     Timeframe::ALL.iter().find(|&tf| tf.to_string() == format!("{}m", interval)).copied()
 }
 
-pub fn connect_market_stream(stream: Ticker) -> Subscription<Event> {
-    subscription::channel(
-        stream,
+pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
+    stream::channel (
         100,
         move |mut output| async move {
             let mut state: State = State::Disconnected;  
 
             let mut trades_buffer: Vec<Trade> = Vec::new();    
 
-            let selected_ticker = stream;
+            let selected_ticker = ticker;
 
             let symbol_str = match selected_ticker {
                 Ticker::BTCUSDT => "BTCUSDT",
@@ -455,9 +454,8 @@ pub fn connect_market_stream(stream: Ticker) -> Subscription<Event> {
     )
 }
  
-pub fn connect_kline_stream(streams: Vec<(Ticker, Timeframe)>) -> Subscription<Event> {
-    subscription::channel(
-        streams.clone(),
+pub fn connect_kline_stream(streams: Vec<(Ticker, Timeframe)>) -> impl Stream<Item = Event> {
+    stream::channel (
         100,
         move |mut output| async move {
             let mut state = State::Disconnected;    

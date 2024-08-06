@@ -222,7 +222,7 @@ impl HeatmapChart {
         let autoscale_button = button(
             Text::new("A")
                 .size(12)
-                .horizontal_alignment(alignment::Horizontal::Center)
+                .align_x(alignment::Horizontal::Center)
             )
             .width(Length::Fill)
             .height(Length::Fill)
@@ -231,7 +231,7 @@ impl HeatmapChart {
         let crosshair_button = button(
             Text::new("+")
                 .size(12)
-                .horizontal_alignment(alignment::Horizontal::Center)
+                .align_x(alignment::Horizontal::Center)
             ) 
             .width(Length::Fill)
             .height(Length::Fill)
@@ -242,7 +242,7 @@ impl HeatmapChart {
             Row::new()
                 .push(autoscale_button)
                 .push(crosshair_button).spacing(2)
-            ).padding([0, 2, 0, 2])
+            ).padding([0, 2])
             .width(Length::Fixed(60.0))
             .height(Length::Fixed(26.0));
 
@@ -458,6 +458,10 @@ impl canvas::Program<Message> for HeatmapChart {
 
                 for (time, (depth, trades)) in self.data_points.range(earliest..=latest) {
                     let x_position = ((time - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
+
+                    if x_position.is_nan() {
+                        continue;
+                    }
 
                     let mut buy_volume: f32 = 0.0;
                     let mut sell_volume: f32 = 0.0;

@@ -53,7 +53,7 @@ impl Default for CommonChartData {
 
             mesh_cache: Cache::default(),
 
-            crosshair: false,
+            crosshair: true,
             crosshair_cache: Cache::default(),
             crosshair_position: Point::new(0.0, 0.0),
 
@@ -287,6 +287,10 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
                 while time <= latest_in_millis {                    
                     let x_position = ((time - earliest_in_millis) as f64 / (latest_in_millis - earliest_in_millis) as f64) * bounds.width as f64;
 
+                    if x_position.is_nan() {
+                        break;
+                    }
+
                     if x_position >= 0.0 && x_position <= bounds.width as f64 {
                         let text_size = 12.0;
                         let time_as_datetime = NaiveDateTime::from_timestamp(time / 1000, 0);
@@ -345,6 +349,10 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
                 };
         
                 let snap_x = snap_ratio * bounds.width as f64;
+
+                if snap_x.is_nan() {
+                    return;
+                }
         
                 let text_size = 12.0;
                 let growth_amount = 6.0;

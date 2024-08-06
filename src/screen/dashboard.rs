@@ -1,17 +1,17 @@
 pub mod pane;
 
+use pane::SerializablePane;
 pub use pane::{Uuid, PaneState, PaneContent, PaneSettings};
+use serde::{Deserialize, Serialize};
 
 use crate::{
-    charts::{candlestick::CandlestickChart, footprint::FootprintChart, Message}, 
-    data_providers::{
+    charts::{candlestick::CandlestickChart, footprint::FootprintChart, Message}, data_providers::{
         Depth, Exchange, Kline, TickMultiplier, Ticker, Timeframe, Trade
-    }, 
-    StreamType
+    }, StreamType
 };
 
-use std::{collections::{HashMap, HashSet}, rc::Rc};
-use iced::widget::pane_grid::{self, Configuration};
+use std::{collections::{HashMap, HashSet}, io::Read, rc::Rc};
+use iced::{widget::pane_grid::{self, Configuration}, Point, Size};
 
 pub struct Dashboard {
     pub panes: pane_grid::State<PaneState>,
@@ -20,14 +20,89 @@ pub struct Dashboard {
     pub show_layout_modal: bool,
 }
 impl Dashboard {
-    pub fn empty(pane_config: Configuration<PaneState>) -> Self {
-        let panes: pane_grid::State<PaneState> = pane_grid::State::with_configuration(pane_config);
+    pub fn empty() -> Self {
+        let pane_config: Configuration<PaneState> = Configuration::Split {
+            axis: pane_grid::Axis::Vertical,
+            ratio: 0.8,
+            a: Box::new(Configuration::Split {
+                axis: pane_grid::Axis::Horizontal,
+                ratio: 0.4,
+                a: Box::new(Configuration::Split {
+                    axis: pane_grid::Axis::Vertical,
+                    ratio: 0.5,
+                    a: Box::new(Configuration::Pane(
+                        PaneState { 
+                            id: Uuid::new_v4(), 
+                            show_modal: false, 
+                            stream: vec![],
+                            content: PaneContent::Starter,
+                            settings: PaneSettings::default(),
+                        })
+                    ),
+                    b: Box::new(Configuration::Pane(
+                        PaneState { 
+                            id: Uuid::new_v4(), 
+                            show_modal: false, 
+                            stream: vec![],
+                            content: PaneContent::Starter,
+                            settings: PaneSettings::default(),
+                        })
+                    ),
+                }),
+                b: Box::new(Configuration::Split {
+                    axis: pane_grid::Axis::Vertical,
+                    ratio: 0.5,
+                    a: Box::new(Configuration::Pane(
+                        PaneState { 
+                            id: Uuid::new_v4(), 
+                            show_modal: false, 
+                            stream: vec![],
+                            content: PaneContent::Starter,
+                            settings: PaneSettings::default(),
+                        })                      
+                    ),
+                    b: Box::new(Configuration::Pane(
+                        PaneState { 
+                            id: Uuid::new_v4(), 
+                            show_modal: false, 
+                            stream: vec![],
+                            content: PaneContent::Starter,
+                            settings: PaneSettings::default(),
+                        })
+                    ),
+                }),
+            }),
+            b: Box::new(Configuration::Pane(
+                PaneState { 
+                    id: Uuid::new_v4(), 
+                    show_modal: false, 
+                    stream: vec![],
+                    content: PaneContent::Starter,
+                    settings: PaneSettings::default(),
+                })
+            ),
+        };
         
         Self { 
-            panes,
+            panes: pane_grid::State::with_configuration(pane_config),
             focus: None,
             pane_lock: false,
             show_layout_modal: false,
+        }
+    }
+
+    pub fn from_config(panes: Configuration<PaneState>) -> Self {
+        Self {
+            panes: pane_grid::State::with_configuration(panes),
+            focus: None,
+            pane_lock: false,
+            show_layout_modal: false,
+        }
+    }
+
+    pub fn replace_new_pane(&mut self, pane: pane_grid::Pane) {
+        if let Some(pane) = self.panes.get_mut(pane) {
+            *pane = PaneState::new(Uuid::new_v4(), vec![], PaneSettings::default());
         }
     }
 
@@ -276,4 +351,142 @@ impl Dashboard {
 
         pane_streams
     }
+}
+
+impl Default for Dashboard {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SerializableDashboard {
+    pub pane: SerializablePane,
+}
+
+impl<'a> From<&'a Dashboard> for SerializableDashboard {
+    fn from(dashboard: &'a Dashboard) -> Self {
+        use pane_grid::Node;
+
+        fn from_layout(panes: &pane_grid::State<PaneState>, node: pane_grid::Node) -> SerializablePane {
+            match node {
+                Node::Split {
+                    axis, ratio, a, b, ..
+                } => SerializablePane::Split {
+                    axis: match axis {
+                        pane_grid::Axis::Horizontal => pane::Axis::Horizontal,
+                        pane_grid::Axis::Vertical => pane::Axis::Vertical,
+                    },
+                    ratio,
+                    a: Box::new(from_layout(panes, *a)),
+                    b: Box::new(from_layout(panes, *b)),
+                },
+                Node::Pane(pane) => panes
+                    .get(pane)
+                    .map(SerializablePane::from)
+                    .unwrap_or(SerializablePane::Starter),
+            }
+        }
+
+        let layout = dashboard.panes.layout().clone();
+
+        SerializableDashboard {
+            pane: from_layout(&dashboard.panes, layout),
+        }
+    }
+}
+
+impl Default for SerializableDashboard {
+    fn default() -> Self {
+        Self {
+            pane: SerializablePane::Starter,
+        }
+    }
+}
+
+pub struct SavedState {
+    pub layouts: HashMap<LayoutId, Dashboard>,
+    pub last_active_layout: LayoutId,
+    pub window_size: Option<(f32, f32)>,
+    pub window_position: Option<(f32, f32)>,
+}
+impl Default for SavedState {
+    fn default() -> Self {
+        let mut layouts = HashMap::new();
+        layouts.insert(LayoutId::Layout1, Dashboard::default());
+        layouts.insert(LayoutId::Layout2, Dashboard::default());
+        layouts.insert(LayoutId::Layout3, Dashboard::default());
+        layouts.insert(LayoutId::Layout4, Dashboard::default());
+        
+        SavedState {
+            layouts,
+            last_active_layout: LayoutId::Layout1,
+            window_size: None,
+            window_position: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+pub enum LayoutId {
+    Layout1,
+    Layout2,
+    Layout3,
+    Layout4,
+}
+impl std::fmt::Display for LayoutId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LayoutId::Layout1 => write!(f, "Layout 1"),
+            LayoutId::Layout2 => write!(f, "Layout 2"),
+            LayoutId::Layout3 => write!(f, "Layout 3"),
+            LayoutId::Layout4 => write!(f, "Layout 4"),
+        }
+    }
+}
+impl LayoutId {
+    pub const ALL: [LayoutId; 4] = [LayoutId::Layout1, LayoutId::Layout2, LayoutId::Layout3, LayoutId::Layout4];
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SerializableState {
+    pub layouts: HashMap<LayoutId, SerializableDashboard>,
+    pub last_active_layout: LayoutId,
+    pub window_size: Option<(f32, f32)>,
+    pub window_position: Option<(f32, f32)>,
+}
+impl SerializableState {
+    pub fn from_parts(
+        layouts: HashMap<LayoutId, SerializableDashboard>,
+        last_active_layout: LayoutId,
+        size: Option<Size>,
+        position: Option<Point>,
+    ) -> Self {
+        SerializableState {
+            layouts,
+            last_active_layout,
+            window_size: size.map(|s| (s.width, s.height)),
+            window_position: position.map(|p| (p.x, p.y)),
+        }
+    }
+}
+
+use std::fs::File;
+use std::io::Write;
+use std::path::Path;
+
+pub fn write_json_to_file(json: &str, file_path: &str) -> std::io::Result<()> {
+    let path = Path::new(file_path);
+    let mut file = File::create(path)?;
+    file.write_all(json.as_bytes())?;
+    Ok(())
+}
+
+pub fn read_layout_from_file(file_path: &str) -> Result<SerializableState, Box<dyn std::error::Error>> {
+    let path = Path::new(file_path);
+    let mut file = File::open(path)?;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)?;
+   
+    Ok(serde_json::from_str(&contents)?)
 }
