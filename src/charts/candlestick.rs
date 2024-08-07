@@ -425,6 +425,10 @@ impl canvas::Program<Message> for CandlestickChart {
 
             for (time, kline) in self.data_points.range(earliest..=latest) {
                 let x_position: f64 = ((time - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
+
+                if x_position.is_nan() {
+                    continue;
+                }
                 
                 let y_open = candlesticks_area_height - ((kline.open - lowest) / y_range * candlesticks_area_height);
                 let y_high = candlesticks_area_height - ((kline.high - lowest) / y_range * candlesticks_area_height);
@@ -489,6 +493,10 @@ impl canvas::Program<Message> for CandlestickChart {
 
                     let snap_ratio = (rounded_timestamp as f64 - earliest as f64) / (latest as f64 - earliest as f64);
                     let snap_x = snap_ratio * bounds.width as f64;
+
+                    if snap_x.is_nan() {
+                        return;
+                    }
 
                     let line = Path::line(
                         Point::new(snap_x as f32, 0.0), 
