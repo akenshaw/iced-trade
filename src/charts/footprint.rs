@@ -477,16 +477,34 @@ impl canvas::Program<Message> for FootprintChart {
         let heatmap_area_height: f32 = bounds.height - volume_area_height;
 
         let heatmap = chart.main_cache.draw(renderer, bounds.size(), |frame| {
+            let mut x_positions: Vec<f32> = Vec::new();
             let mut max_trade_qty: f32 = 0.0;
             let mut max_volume: f32 = 0.0;
+            let mut min_distance: f32 = f32::MAX;
+            let mut previous_x_position: Option<f32> = None;
 
-            for (_, (trades, kline)) in self.data_points.range(earliest..=latest) {
-                for trade in trades {            
+            for (time, (trades, kline)) in self.data_points.range(earliest..=latest) {
+                for trade in trades {
                     max_trade_qty = max_trade_qty.max(trade.1.0.max(trade.1.1));
                 }
                 max_volume = max_volume.max(kline.volume.0.max(kline.volume.1));
+
+                let x_position: f32 = ((time - earliest) as f32 / (latest - earliest) as f32) * bounds.width;
+                if !x_position.is_nan() && !x_position.is_infinite() {
+                    x_positions.push(x_position);
+
+                    if let Some(prev_x) = previous_x_position {
+                        let distance = x_position - prev_x;
+                        if distance < min_distance {
+                            min_distance = distance;
+                        }
+                    }
+                    previous_x_position = Some(x_position);
+                }
             }
-            
+
+            let max_bar_width = min_distance / 2.0;
+
             for (time, (trades, kline)) in self.data_points.range(earliest..=latest) {
                 let x_position: f32 = ((time - earliest) as f32 / (latest - earliest) as f32) * bounds.width;
 
@@ -498,7 +516,7 @@ impl canvas::Program<Message> for FootprintChart {
                 let y_high = heatmap_area_height - ((kline.high - lowest) / y_range * heatmap_area_height);
                 let y_low = heatmap_area_height - ((kline.low - lowest) / y_range * heatmap_area_height);
                 let y_close = heatmap_area_height - ((kline.close - lowest) / y_range * heatmap_area_height);
-                
+
                 let body_color = if kline.close >= kline.open { Color::from_rgba8(81, 205, 160, 0.8) } else { Color::from_rgba8(192, 80, 77, 0.8) };
                 let wick_color = if kline.close >= kline.open { Color::from_rgba8(81, 205, 160, 0.4) } else { Color::from_rgba8(192, 80, 77, 0.4) };
 
@@ -519,7 +537,7 @@ impl canvas::Program<Message> for FootprintChart {
                     let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
 
                     if trade.1.0 > 0.0 {
-                        let bar_width = (trade.1.0 / max_trade_qty) * bounds.width / 28.0 * chart.scaling;
+                        let bar_width = (trade.1.0 / max_trade_qty) * (max_bar_width*0.9);
                         let bar = Path::rectangle(
                             Point::new(x_position + (3.0 * chart.scaling), y_position), 
                             Size::new(bar_width, 1.0) 
@@ -527,13 +545,13 @@ impl canvas::Program<Message> for FootprintChart {
                         frame.fill(&bar, Color::from_rgba8(81, 205, 160, 1.0));
                     } 
                     if trade.1.1 > 0.0 {
-                        let bar_width = -(trade.1.1 / max_trade_qty) * bounds.width / 28.0 * chart.scaling;
+                        let bar_width = -(trade.1.1 / max_trade_qty) * (max_bar_width*0.9);
                         let bar = Path::rectangle(
                             Point::new(x_position - (3.0 * chart.scaling), y_position), 
                             Size::new(bar_width, 1.0) 
                         );
                         frame.fill(&bar, Color::from_rgba8(192, 80, 77, 1.0));
-                    };  
+                    }
                 }
 
                 if max_volume > 0.0 {
