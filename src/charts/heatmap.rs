@@ -620,6 +620,10 @@ impl canvas::Program<Message> for HeatmapChart {
 
                 let x_position = ((latest_timestamp - earliest) as f32 / (latest - earliest) as f32) * bounds.width;
 
+                if x_position.is_nan() {
+                    return;
+                }
+
                 for (price, qty) in &latest_bids {     
                     let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
 
