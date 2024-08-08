@@ -1,6 +1,6 @@
 use iced::widget::button::Status;
 use iced::widget::container::Style;
-use iced::{theme, Border, Color, Font, Theme, overlay};
+use iced::{Border, Color, Font, Theme, overlay};
 use iced::widget::pick_list;
 
 pub const ICON_BYTES: &[u8] = include_bytes!("fonts/icons.ttf");

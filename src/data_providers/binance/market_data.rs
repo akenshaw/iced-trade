@@ -1,7 +1,6 @@
-use hyper::client::conn;
 use iced::{futures, stream};  
 use futures::stream::{Stream, StreamExt};
-use serde::{de, Deserializer};
+use serde::{Deserializer};
 use futures::sink::SinkExt;
 
 use serde_json::Value;
@@ -9,13 +8,13 @@ use crate::{Ticker, Timeframe};
 
 use bytes::Bytes;
 
-use sonic_rs::{LazyValue, JsonValueTrait};
+use sonic_rs::{JsonValueTrait};
 use sonic_rs::{Deserialize, Serialize}; 
-use sonic_rs::{to_array_iter, to_object_iter_unchecked};
+use sonic_rs::{to_object_iter_unchecked};
 
 use anyhow::{Context, Result};
 
-use fastwebsockets::{Frame, FragmentCollector, OpCode};
+use fastwebsockets::{FragmentCollector, OpCode};
 use http_body_util::Empty;
 use hyper::header::{CONNECTION, UPGRADE};
 use hyper::upgrade::Upgraded;
@@ -691,7 +690,7 @@ pub async fn fetch_ticksize(ticker: Ticker) -> Result<f32, reqwest::Error> {
         Ticker::LTCUSDT => "LTCUSDT",
     };
 
-    let url = format!("https://fapi.binance.com/fapi/v1/exchangeInfo");
+    let url = "https://fapi.binance.com/fapi/v1/exchangeInfo".to_string();
 
     let response = reqwest::get(&url).await?;
     let text = response.text().await?;

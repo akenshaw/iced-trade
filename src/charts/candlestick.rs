@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use iced::{
-    alignment, mouse, widget::{button, canvas::{self, event::{self, Event}, stroke::Stroke, Cache, Canvas, Geometry, Path}}, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme
+    alignment, mouse, widget::{button, canvas::{self, event::{self, Event}, stroke::Stroke, Canvas, Geometry, Path}}, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme
 };
 use iced::widget::{Column, Row, Container, Text};
 use crate::data_providers::Kline;
@@ -505,7 +505,7 @@ impl canvas::Program<Message> for CandlestickChart {
                     frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(200, 200, 200, 0.6)).with_width(1.0));
 
                     if let Some((_, kline)) = self.data_points.iter()
-                        .find(|(time, _)| **time == rounded_timestamp as i64) {
+                        .find(|(time, _)| **time == rounded_timestamp) {
 
                         
                         let tooltip_text: String = if kline.volume.0 != -1.0 {

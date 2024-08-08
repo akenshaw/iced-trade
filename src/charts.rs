@@ -296,7 +296,7 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
                         let time_as_datetime = NaiveDateTime::from_timestamp(time / 1000, 0);
                         
                         let time_format: &str;
-                        if let Some(_) = self.timeframe {
+                        if self.timeframe.is_some() {
                             time_format = "%H:%M";
                         } else {
                             time_format = "%M:%S";

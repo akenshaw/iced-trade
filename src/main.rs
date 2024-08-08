@@ -334,7 +334,7 @@ impl State {
                 match dashboard.pane_change_timeframe(pane_id, timeframe) {
                     Ok(stream_type) => {
                         if let StreamType::Kline { exchange, ticker, timeframe } = stream_type {
-                            let stream = stream_type.clone();
+                            let stream = *stream_type;
             
                             match exchange {
                                 Exchange::BinanceFutures => {
@@ -444,9 +444,9 @@ impl State {
 
                                 self.pane_streams
                                     .entry(Exchange::BinanceFutures)
-                                    .or_insert_with(HashMap::new)
+                                    .or_default()
                                     .entry(ticker)
-                                    .or_insert_with(HashSet::new)
+                                    .or_default()
                                     .remove(&stream_type);
                             }
                         }
@@ -462,9 +462,9 @@ impl State {
 
                                 self.pane_streams
                                     .entry(Exchange::BinanceFutures)
-                                    .or_insert_with(HashMap::new)
+                                    .or_default()
                                     .entry(ticker)
-                                    .or_insert_with(HashSet::new)
+                                    .or_default()
                                     .remove(&stream_type);
                             }
                         }
@@ -487,9 +487,9 @@ impl State {
 
                                 self.pane_streams
                                     .entry(Exchange::BybitLinear)
-                                    .or_insert_with(HashMap::new)
+                                    .or_default()
                                     .entry(ticker)
-                                    .or_insert_with(HashSet::new)
+                                    .or_default()
                                     .remove(&stream_type);
                             }
                         }
@@ -505,9 +505,9 @@ impl State {
 
                                 self.pane_streams
                                     .entry(Exchange::BybitLinear)
-                                    .or_insert_with(HashMap::new)
+                                    .or_default()
                                     .entry(ticker)
-                                    .or_insert_with(HashSet::new)
+                                    .or_default()
                                     .remove(&stream_type);
                             }
                         }
@@ -754,7 +754,7 @@ impl State {
                 if content == "Footprint chart" || content == "Candlestick chart" || content == "Heatmap chart" {
                     for stream in pane_stream.iter() {
                         if let StreamType::Kline { exchange, ticker, timeframe } = stream {
-                            let stream_clone = stream.clone();
+                            let stream_clone = *stream;
                 
                             if content == "Candlestick chart" || content == "Footprint chart" {
                                 let fetch_klines = create_fetch_klines_task(exchange, ticker, timeframe, stream_clone, pane_id);
@@ -778,10 +778,10 @@ impl State {
                         StreamType::Kline { exchange, ticker, .. } | StreamType::DepthAndTrades { exchange, ticker } => {
                             self.pane_streams
                                 .entry(*exchange)
-                                .or_insert_with(HashMap::new)
+                                .or_default()
                                 .entry(*ticker)
-                                .or_insert_with(HashSet::new)
-                                .insert(stream.clone());
+                                .or_default()
+                                .insert(*stream);
                         }
                         _ => {}
                     }
@@ -822,8 +822,8 @@ impl State {
 
                 let ticksize_tasks = ticksize_fetch_all_task(&self.pane_streams);
 
-                tasks.extend(kline_tasks.into_iter());
-                tasks.extend(ticksize_tasks.into_iter());
+                tasks.extend(kline_tasks);
+                tasks.extend(ticksize_tasks);
 
                 Task::batch(tasks)
             }
@@ -900,7 +900,7 @@ impl State {
                         _ => None,
                     }
                 })
-            }).unwrap_or_else(|| None);
+            }).unwrap_or(None);
             
             let mut stream_info_element: Row<Message> = Row::new();
 
@@ -1302,11 +1302,11 @@ trait ChartView {
 
 impl ChartView for HeatmapChart {
     fn view(&self, pane: &PaneState) -> Element<Message> {
-        let underlay;
+        
 
         let pane_id = pane.id;
 
-        underlay = self.view().map(move |message| Message::ChartUserUpdate(message, pane_id));
+        let underlay = self.view().map(move |message| Message::ChartUserUpdate(message, pane_id));
 
         if pane.show_modal {
             let size_filter = &self.get_size_filter();
@@ -1360,11 +1360,11 @@ impl ChartView for FootprintChart {
 }
 impl ChartView for TimeAndSales {
     fn view(&self, pane: &PaneState) -> Element<Message> {
-        let underlay;
+        
 
         let pane_id = pane.id;
 
-        underlay = self.view();
+        let underlay = self.view();
 
         if pane.show_modal {
             let size_filter = &self.get_size_filter();
@@ -1436,9 +1436,9 @@ fn view_chart<'a, C: ChartView>(
     container.into()
 }
 
-fn view_starter<'a>(
-    pane: &'a PaneState,
-) -> Element<'a, Message> {
+fn view_starter(
+    pane: &PaneState,
+) -> Element<'_, Message> {
     let content_names = ["Heatmap chart", "Footprint chart", "Candlestick chart", "Time&Sales"];
     
     let content_selector = content_names.iter().fold(
@@ -1640,9 +1640,9 @@ fn klines_fetch_all_task(stream_types: &HashMap<Exchange, HashMap<Ticker, HashSe
         }
 
         for (ticker, timeframe) in kline_fetches {
-            let ticker = ticker.clone();
-            let timeframe = timeframe.clone();
-            let exchange = exchange.clone();
+            let ticker = ticker;
+            let timeframe = timeframe;
+            let exchange = *exchange;
 
             match exchange {
                 Exchange::BinanceFutures => {
@@ -1690,8 +1690,8 @@ fn ticksize_fetch_all_task(stream_types: &HashMap<Exchange, HashMap<Ticker, Hash
         }
 
         for ticker in ticksize_fetches {
-            let ticker = ticker.clone();
-            let exchange = exchange.clone();
+            let ticker = ticker;
+            let exchange = *exchange;
 
             match exchange {
                 Exchange::BinanceFutures => {
@@ -1739,7 +1739,7 @@ fn create_fetch_klines_task(
                 .map_err(|err| format!("{err}")),
             move |klines| Message::FetchEvent(klines, stream_clone, pane_id),
         ),
-        _ => return Task::none(),
+        _ => Task::none(),
     }
 }
 

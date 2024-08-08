@@ -278,7 +278,7 @@ impl Dashboard {
         let mut found_match = false;
 
         for (_, pane_state) in self.panes.iter_mut() {
-            if pane_state.matches_stream(&stream_type) {
+            if pane_state.matches_stream(stream_type) {
                 match stream_type {
                     StreamType::Kline { timeframe, .. } => {
                         let timeframe_u16 = timeframe.to_minutes();
@@ -317,7 +317,7 @@ impl Dashboard {
         let mut found_match = false;
 
         for (_, pane_state) in self.panes.iter_mut() {
-            if pane_state.matches_stream(&stream_type) {
+            if pane_state.matches_stream(stream_type) {
                 match &mut pane_state.content {
                     PaneContent::Footprint(_) => {
                         pane_state.settings.min_tick_size = Some(tick_sizes);
@@ -345,7 +345,7 @@ impl Dashboard {
         let mut found_match = false;
     
         for (_, pane_state) in self.panes.iter_mut() {
-            if pane_state.matches_stream(&stream_type) {
+            if pane_state.matches_stream(stream_type) {
                 match &mut pane_state.content {
                     PaneContent::Candlestick(chart) => chart.update_latest_kline(kline),
                     PaneContent::Footprint(chart) => chart.update_latest_kline(kline),
@@ -402,17 +402,17 @@ impl Dashboard {
             for stream_type in &pane_state.stream {
                 match stream_type {
                     StreamType::Kline { exchange, ticker, timeframe } => {
-                        let exchange = exchange.clone();
-                        let ticker = ticker.clone();
-                        let timeframe = timeframe.clone();
+                        let exchange = *exchange;
+                        let ticker = *ticker;
+                        let timeframe = *timeframe;
 
-                        let exchange_map = pane_streams.entry(exchange.clone()).or_insert(HashMap::new());
+                        let exchange_map = pane_streams.entry(exchange).or_insert(HashMap::new());
                         let ticker_map = exchange_map.entry(ticker).or_insert(HashSet::new());
                         ticker_map.insert(StreamType::Kline { exchange, ticker, timeframe });
                     },
                     StreamType::DepthAndTrades { exchange, ticker } => {
-                        let exchange = exchange.clone();
-                        let ticker = ticker.clone();
+                        let exchange = *exchange;
+                        let ticker = *ticker;
 
                         let exchange_map = pane_streams.entry(exchange).or_insert(HashMap::new());
                         let ticker_map = exchange_map.entry(ticker).or_insert(HashSet::new());

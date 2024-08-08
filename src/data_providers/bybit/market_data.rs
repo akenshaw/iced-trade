@@ -1,4 +1,3 @@
-use hyper::client::conn;
 use iced::{stream, futures};
 use futures::sink::SinkExt;
 use futures::stream::{Stream, StreamExt};
@@ -6,9 +5,9 @@ use futures::stream::{Stream, StreamExt};
 use serde_json::Value;
 use bytes::Bytes;
 
-use sonic_rs::{LazyValue, JsonValueTrait};
+use sonic_rs::{JsonValueTrait};
 use sonic_rs::{Deserialize, Serialize}; 
-use sonic_rs::{to_array_iter, to_object_iter_unchecked};
+use sonic_rs::{to_object_iter_unchecked};
 
 use anyhow::anyhow;
 use anyhow::{Context, Result};
@@ -189,7 +188,7 @@ fn feed_de(bytes: &Bytes) -> Result<StreamData> {
                 }
             }
         } else if k == "type" {
-            data_type = v.as_str().unwrap().to_owned();
+            v.as_str().unwrap().clone_into(&mut data_type);
         } else if k == "data" {
             match stream_type {
                 Some(StreamWrapper::Trade) => {
@@ -265,7 +264,7 @@ async fn connect(domain: &str) -> Result<FragmentCollector<TokioIo<Upgraded>>> {
 
 	let tls_stream: tokio_rustls::client::TlsStream<TcpStream> = tls_connector.connect(domain, tcp_stream).await?;
 
-    let url = format!("wss://stream.bybit.com/v5/public/linear");
+    let url = "wss://stream.bybit.com/v5/public/linear".to_string();
 
 	let req: Request<Empty<Bytes>> = Request::builder()
 	.method("GET")
@@ -373,7 +372,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                 for de_trade in de_trade_vec.iter() {
                                                     let trade = Trade {
                                                         time: de_trade.time as i64,
-                                                        is_sell: if de_trade.is_sell == "Sell" { true } else { false },
+                                                        is_sell: de_trade.is_sell == "Sell",
                                                         price: str_f32_parse(&de_trade.price),
                                                         qty: str_f32_parse(&de_trade.qty),
                                                     };
@@ -619,7 +618,7 @@ pub async fn fetch_klines(ticker: Ticker, timeframe: Timeframe) -> Result<Vec<Kl
         })
     }).collect();
 
-    Ok(klines?)
+    klines
 }
 
 pub async fn fetch_ticksize(ticker: Ticker) -> Result<f32> {
