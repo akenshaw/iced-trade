@@ -181,7 +181,7 @@ impl FootprintChart {
 
         let timestamp_latest = self.data_points.keys().last().unwrap_or(&0);
 
-        let latest: i64 = *timestamp_latest - ((chart.translation.x*1000.0)*(self.timeframe as f32)) as i64;
+        let latest: i64 = *timestamp_latest - ((chart.translation.x*800.0)*(self.timeframe as f32)) as i64;
         let earliest: i64 = latest - ((640000.0*self.timeframe as f32) / (chart.scaling / (chart.bounds.width/800.0))) as i64;
     
         let mut highest: f32 = 0.0;

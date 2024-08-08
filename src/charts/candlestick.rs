@@ -76,8 +76,10 @@ impl CandlestickChart {
 
     fn calculate_range(&self) -> (i64, i64, f32, f32) {
         let chart = self.get_common_data();
+
+        let timestamp_latest = self.data_points.keys().last().map_or(0, |time| *time);
     
-        let latest: i64 = self.data_points.keys().last().map_or(0, |time| time - ((chart.translation.x*10000.0)*(self.timeframe as f32)) as i64);
+        let latest: i64 = timestamp_latest - ((chart.translation.x*8000.0)*(self.timeframe as f32)) as i64;
         let earliest: i64 = latest - ((6400000.0*self.timeframe as f32) / (chart.scaling / (chart.bounds.width/800.0))) as i64;
     
         let visible_klines = self.data_points.range(earliest..=latest);

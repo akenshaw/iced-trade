@@ -26,7 +26,6 @@ pub struct HeatmapChart {
     chart: CommonChartData,
     data_points: BTreeMap<i64, (GroupedDepth, Vec<GroupedTrade>)>,
     tick_size: f32,
-    y_scaling: f32,
     size_filter: f32,
 }
 
@@ -50,7 +49,6 @@ impl HeatmapChart {
             chart: CommonChartData::default(),
             data_points: BTreeMap::new(),
             tick_size,
-            y_scaling: 0.0001,
             size_filter: 0.0,
         }
     }
@@ -146,7 +144,7 @@ impl HeatmapChart {
     fn calculate_range(&self) -> (i64, i64, f32, f32) {
         let timestamp_latest: &i64 = self.data_points.keys().last().unwrap_or(&0);
 
-        let latest: i64 = *timestamp_latest - (self.chart.translation.x*80.0) as i64;
+        let latest: i64 = *timestamp_latest - (self.chart.translation.x*60.0) as i64;
         let earliest: i64 = latest - (48000.0 / (self.chart.scaling / (self.chart.bounds.width/800.0))) as i64;
     
         let mut max_ask_price = f32::MIN;
@@ -366,11 +364,11 @@ impl canvas::Program<Message> for HeatmapChart {
                         Interaction::Drawing => None,
                         Interaction::Erasing => None,
                         Interaction::Panning { translation, start } => {
-                            Some(Message::Translated(
-                                translation
-                                    + (cursor_position - start)
-                                        * (1.0 / chart_state.scaling),
-                            ))
+                            Some(
+                                Message::Translated(
+                                    translation + (cursor_position - start) * (1.0 / chart_state.scaling),
+                                )
+                            )
                         }
                         Interaction::None => 
                             if chart_state.crosshair && cursor.is_over(bounds) {
@@ -388,49 +386,19 @@ impl canvas::Program<Message> for HeatmapChart {
                     (event_status, message)
                 }
                 mouse::Event::WheelScrolled { delta } => match delta {
-                    mouse::ScrollDelta::Lines { y, .. }
-                    | mouse::ScrollDelta::Pixels { y, .. } => {
+                    mouse::ScrollDelta::Lines { y, .. } | mouse::ScrollDelta::Pixels { y, .. } => {                        
                         if y < 0.0 && chart_state.scaling > Self::MIN_SCALING
-                            || y > 0.0 && chart_state.scaling < Self::MAX_SCALING
+                            || y > 0.0 && chart_state.scaling < Self::MAX_SCALING 
                         {
-                            //let old_scaling = self.scaling;
-
                             let scaling = (chart_state.scaling * (1.0 + y / 30.0))
-                                .clamp(
-                                    Self::MIN_SCALING, 
-                                    Self::MAX_SCALING,  
-                                );
+                                .clamp(Self::MIN_SCALING, Self::MAX_SCALING);
 
-                            //let translation =
-                            //    if let Some(cursor_to_center) =
-                            //        cursor.position_from(bounds.center())
-                            //    {
-                            //        let factor = scaling - old_scaling;
-
-                            //        Some(
-                            //            self.translation
-                            //                - Vector::new(
-                            //                    cursor_to_center.x * factor
-                            //                        / (old_scaling
-                            //                            * old_scaling),
-                            //                    cursor_to_center.y * factor
-                            //                        / (old_scaling
-                            //                            * old_scaling),
-                            //                ),
-                            //        )
-                            //    } else {
-                            //        None
-                            //    };
-
-                            (
-                                event::Status::Captured,
-                                Some(Message::Scaled(scaling, None)),
-                            )
+                            (event::Status::Captured, Some(Message::Scaled(scaling, None)))
                         } else {
                             (event::Status::Captured, None)
                         }
                     }
-                },
+                }
                 _ => (event::Status::Ignored, None),
             },
             _ => (event::Status::Ignored, None),
