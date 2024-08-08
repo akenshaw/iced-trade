@@ -517,14 +517,16 @@ impl canvas::Program<Message> for HeatmapChart {
                         let price = self.price_to_float(price_i64);
 
                         if price >= lowest {
-                            let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
-                            let color_alpha = (qty / max_depth_qty).min(1.0);
-
                             if let (Some(prev_price), Some(prev_qty), Some(prev_x)) = (prev_bid_price, prev_bid_qty, prev_x_position) {
+                                let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
+                                let color_alpha = (qty / max_depth_qty).min(1.0);
+
                                 if prev_price != price || prev_qty != qty {
-                                    let path = Path::line(Point::new(prev_x as f32, y_position), Point::new(x_position as f32, y_position));
-                                    let stroke = Stroke::default().with_color(Color::from_rgba8(0, 144, 144, color_alpha)).with_width(1.0);
-                                    frame.stroke(&path, stroke);
+                                    frame.fill_rectangle(
+                                        Point::new(prev_x as f32,y_position - 0.5),
+                                        Size::new((x_position - prev_x) as f32, 1.0),
+                                        Color::from_rgba8(0, 144, 144, color_alpha)
+                                    );
                                 }
                             }
                             prev_bid_price = Some(price);
@@ -536,14 +538,16 @@ impl canvas::Program<Message> for HeatmapChart {
                         let price = self.price_to_float(price_i64);
 
                         if price <= highest {
-                            let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
-                            let color_alpha = (qty / max_depth_qty).min(1.0);
-
                             if let (Some(prev_price), Some(prev_qty), Some(prev_x)) = (prev_ask_price, prev_ask_qty, prev_x_position) {
+                                let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
+                                let color_alpha = (qty / max_depth_qty).min(1.0);
+
                                 if prev_price != price || prev_qty != qty {
-                                    let path = Path::line(Point::new(prev_x as f32, y_position), Point::new(x_position as f32, y_position));
-                                    let stroke = Stroke::default().with_color(Color::from_rgba8(192, 0, 192, color_alpha)).with_width(1.0);
-                                    frame.stroke(&path, stroke);
+                                    frame.fill_rectangle(
+                                        Point::new(prev_x as f32, y_position - 0.5), 
+                                        Size::new((x_position - prev_x) as f32, 1.0), 
+                                        Color::from_rgba8(192, 0, 192, color_alpha)
+                                    );
                                 }
                             }
                             prev_ask_price = Some(price);
@@ -555,19 +559,18 @@ impl canvas::Program<Message> for HeatmapChart {
 
                     if max_volume > 0.0 {
                         let buy_bar_height = (buy_volume / max_volume) * volume_area_height;
-                        let sell_bar_height = (sell_volume / max_volume) * volume_area_height;
-
-                        let sell_bar = Path::rectangle(
-                            Point::new(x_position as f32, bounds.height - sell_bar_height), 
-                            Size::new(1.0, sell_bar_height)
-                        );
-                        frame.fill(&sell_bar, Color::from_rgb8(192, 80, 77)); 
-
-                        let buy_bar = Path::rectangle(
+                        frame.fill_rectangle(
                             Point::new(x_position as f32 + 2.0, bounds.height - buy_bar_height), 
-                            Size::new(1.0, buy_bar_height)
+                            Size::new(1.0, buy_bar_height), 
+                            Color::from_rgb8(81, 205, 160)
                         );
-                        frame.fill(&buy_bar, Color::from_rgb8(81, 205, 160));
+
+                        let sell_bar_height = (sell_volume / max_volume) * volume_area_height;
+                        frame.fill_rectangle(
+                            Point::new(x_position as f32, bounds.height - sell_bar_height), 
+                            Size::new(1.0, sell_bar_height), 
+                            Color::from_rgb8(192, 80, 77)
+                        );
                     }
                 };
             };
@@ -594,31 +597,36 @@ impl canvas::Program<Message> for HeatmapChart {
 
                 for (price, qty) in &latest_bids {     
                     let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
-
+                
                     let bar_width = (qty / max_qty) * depth_area_width;
-                    let bar = Path::rectangle(
+
+                    frame.fill_rectangle(
                         Point::new(x_position, y_position), 
-                        Size::new(bar_width, 1.0) 
+                        Size::new(bar_width, 1.0), 
+                        Color::from_rgba8(0, 144, 144, 0.5)
                     );
-                    frame.fill(&bar, Color::from_rgba8(0, 144, 144, 0.5));
                 }
+                
                 for (price, qty) in &latest_asks {
                     let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
+                
+                    let bar_width = (qty / max_qty) * depth_area_width;
 
-                    let bar_width = (qty / max_qty) * depth_area_width; 
-                    let bar = Path::rectangle(
+                    frame.fill_rectangle(
                         Point::new(x_position, y_position), 
-                        Size::new(bar_width, 1.0)
+                        Size::new(bar_width, 1.0), 
+                        Color::from_rgba8(192, 0, 192, 0.5)
                     );
-                    frame.fill(&bar, Color::from_rgba8(192, 0, 192, 0.5));
                 }
-
-                let line = Path::line(
+                
+                // the white bar to seperate the heatmap area
+                frame.fill_rectangle(
                     Point::new(x_position, 0.0), 
-                    Point::new(x_position, bounds.height)
+                    Size::new(1.0, bounds.height), 
+                    Color::from_rgba8(100, 100, 100, 0.1)
                 );
-                frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(100, 100, 100, 0.1)).with_width(1.0));
 
+                // max bid/ask quantity text
                 let text_size = 9.0;
                 let text_content = format!("{max_qty:.2}");
                 let text_position = Point::new(x_position + depth_area_width, 0.0);
