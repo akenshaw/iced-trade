@@ -8,11 +8,11 @@
 - 1m, 3m, 5m, 15m and 30m timeframe selections for candlestick and footprint charts. <sup>Tick based "timeframe" selections is planned</sup>
 - Tick size multipliers for price grouping on footprint and heatmap charts
 - Size filtering for trades in time&sales tables and heatmap charts
-- Each grid(pane) can have it's own ticker/exchange pair of stream. You can open up however many panes you want. There is no limit to it yet to test out the boundries, but performance/resource usage might be concern, if for example its filled out with many heatmap charts
+- Each grid(pane) can have its own ticker/exchange pair of stream. You can open up however many panes you want. There is no limit to it yet to test out the boundries, but performance/resource usage might be concern, when layout is filled out with many heatmap charts
 
 <div align="center">
-  <img height="300" width="400" alt="iced-trade" src="https://github.com/user-attachments/assets/89894672-4ad6-41a2-ab7f-84c5acdb76a9">
-  <img height="300" width="250" alt="iced-trade" src="https://github.com/user-attachments/assets/a93ff39f-e80a-4f87-a99b-d4582f4bb818">
+  <img height="200" width="300" alt="iced-trade" src="https://github.com/user-attachments/assets/89894672-4ad6-41a2-ab7f-84c5acdb76a9">
+  <img height="235" width="200" alt="iced-trade" src="https://github.com/user-attachments/assets/a93ff39f-e80a-4f87-a99b-d4582f4bb818">
 </div>
 
 ##### There is no server-side yet. User receives market data directly from exchange APIs
