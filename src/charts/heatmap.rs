@@ -75,12 +75,12 @@ impl HeatmapChart {
         let grouped_depth = GroupedDepth {
             time: depth.time,
             bids: depth.bids.iter().fold(BTreeMap::new(), |mut acc, order| {
-                let rounded_price = (order.price * (1.0 / self.tick_size)).round() as i64;
+                let rounded_price = ((order.price * (1.0 / self.tick_size)).floor()) as i64;
                 *acc.entry(rounded_price).or_insert(0.0) += order.qty;
                 acc
             }),
             asks: depth.asks.iter().fold(BTreeMap::new(), |mut acc, order| {
-                let rounded_price = (order.price * (1.0 / self.tick_size)).round() as i64;
+                let rounded_price = ((order.price * (1.0 / self.tick_size)).ceil()) as i64;
                 *acc.entry(rounded_price).or_insert(0.0) += order.qty;
                 acc
             }),
@@ -89,7 +89,7 @@ impl HeatmapChart {
         let grouped_trades: Vec<GroupedTrade> = trades_buffer
             .iter()
             .map(|trade| GroupedTrade {
-                time: trade.time,
+                time: depth_update,
                 is_sell: trade.is_sell,
                 price: (trade.price * (1.0 / self.tick_size)).round() as i64,
                 qty: trade.qty,
@@ -432,151 +432,16 @@ impl canvas::Program<Message> for HeatmapChart {
         
             let mut max_depth_qty: f32 = 0.0;
 
-            if self.data_points.len() > 1 {
-                for (_, (depth, trades)) in self.data_points.range(earliest..=latest) {
-                    let mut buy_volume: f32 = 0.0;
-                    let mut sell_volume: f32 = 0.0;
+            let mut bar_height: f32 = 1.0;
 
-                    for trade in trades.iter() {
-                        max_trade_qty = max_trade_qty.max(trade.qty);
-                        min_trade_qty = min_trade_qty.min(trade.qty);
-
-                        if trade.is_sell {
-                            sell_volume += trade.qty;
-                        } else {
-                            buy_volume += trade.qty;
-                        }
-                    }
-
-                    max_volume = max_volume.max(buy_volume).max(sell_volume);
-            
-                    for (&price_i64, &qty) in depth.asks.iter() {
-                        let price = self.price_to_float(price_i64);
-                        if price > highest {
-                            continue;
-                        };
-                        max_depth_qty = max_depth_qty.max(qty);
-                    }
-                
-                    for (&price_i64, &qty) in depth.bids.iter() {
-                        let price = self.price_to_float(price_i64);
-                        if price < lowest {
-                            continue;
-                        };
-                        max_depth_qty = max_depth_qty.max(qty);
-                    }   
-                };
-                
-                let mut prev_bid_price: Option<f32> = None;
-                let mut prev_bid_qty: Option<f32> = None;
-                let mut prev_ask_price: Option<f32> = None;
-                let mut prev_ask_qty: Option<f32> = None;
-
-                let mut prev_x_position: Option<f64> = None;
-
-                for (time, (depth, trades)) in self.data_points.range(earliest..=latest) {
-                    let x_position = ((time - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
-
-                    if x_position.is_nan() {
-                        continue;
-                    }
-
-                    let mut buy_volume: f32 = 0.0;
-                    let mut sell_volume: f32 = 0.0;
-
-                    for trade in trades.iter() {
-                        if trade.is_sell {
-                            sell_volume += trade.qty;
-                        } else {
-                            buy_volume += trade.qty;
-                        }
-
-                        let price = self.price_to_float(trade.price);
-
-                        if trade.qty * price > self.size_filter {
-                            let x_position = ((time - earliest) as f64 / (latest - earliest) as f64) * bounds.width as f64;
-                            let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
-
-                            let color = if trade.is_sell {
-                                Color::from_rgba8(192, 80, 77, 1.0)
-                            } else {
-                                Color::from_rgba8(81, 205, 160, 1.0)
-                            };
-
-                            let radius: f32 = match max_trade_qty == min_trade_qty {
-                                true => 1.0,
-                                false => 1.0 + (trade.qty - min_trade_qty) * (35.0 - 1.0) / (max_trade_qty - min_trade_qty),
-                            };
-
-                            let circle = Path::circle(Point::new(x_position as f32, y_position), radius);
-                            frame.fill(&circle, color);
-                        }
-                    }
-
-                    for (&price_i64, &qty) in depth.bids.iter() {
-                        let price = self.price_to_float(price_i64);
-
-                        if price >= lowest {
-                            if let (Some(prev_price), Some(prev_qty), Some(prev_x)) = (prev_bid_price, prev_bid_qty, prev_x_position) {
-                                let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
-                                let color_alpha = (qty / max_depth_qty).min(1.0);
-
-                                if prev_price != price || prev_qty != qty {
-                                    frame.fill_rectangle(
-                                        Point::new(prev_x as f32,y_position - 0.5),
-                                        Size::new((x_position - prev_x) as f32, 1.0),
-                                        Color::from_rgba8(0, 144, 144, color_alpha)
-                                    );
-                                }
-                            }
-                            prev_bid_price = Some(price);
-                            prev_bid_qty = Some(qty);
-                        }
-                    }
-
-                    for (&price_i64, &qty) in depth.asks.iter() {
-                        let price = self.price_to_float(price_i64);
-
-                        if price <= highest {
-                            if let (Some(prev_price), Some(prev_qty), Some(prev_x)) = (prev_ask_price, prev_ask_qty, prev_x_position) {
-                                let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
-                                let color_alpha = (qty / max_depth_qty).min(1.0);
-
-                                if prev_price != price || prev_qty != qty {
-                                    frame.fill_rectangle(
-                                        Point::new(prev_x as f32, y_position - 0.5), 
-                                        Size::new((x_position - prev_x) as f32, 1.0), 
-                                        Color::from_rgba8(192, 0, 192, color_alpha)
-                                    );
-                                }
-                            }
-                            prev_ask_price = Some(price);
-                            prev_ask_qty = Some(qty);
-                        }
-                    }
-
-                    prev_x_position = Some(x_position);
-
-                    if max_volume > 0.0 {
-                        let buy_bar_height = (buy_volume / max_volume) * volume_area_height;
-                        frame.fill_rectangle(
-                            Point::new(x_position as f32 + 2.0, bounds.height - buy_bar_height), 
-                            Size::new(1.0, buy_bar_height), 
-                            Color::from_rgb8(81, 205, 160)
-                        );
-
-                        let sell_bar_height = (sell_volume / max_volume) * volume_area_height;
-                        frame.fill_rectangle(
-                            Point::new(x_position as f32, bounds.height - sell_bar_height), 
-                            Size::new(1.0, sell_bar_height), 
-                            Color::from_rgb8(192, 80, 77)
-                        );
-                    }
-                };
-            };
-        
             // current orderbook as bars
             if let Some((&latest_timestamp, (grouped_depth, _))) = self.data_points.iter().last() {
+                let x_position = ((latest_timestamp - earliest) as f32 / (latest - earliest) as f32) * bounds.width;
+
+                if x_position.is_nan() {
+                    return;
+                }
+
                 let latest_bids: Vec<(f32, f32)> = grouped_depth.bids.iter()
                     .map(|(&price_i64, &qty)| (self.price_to_float(price_i64), qty))
                     .filter(|&(price, _)| price >= lowest)
@@ -587,13 +452,22 @@ impl canvas::Program<Message> for HeatmapChart {
                     .filter(|&(price, _)| price <= highest)
                     .collect();
 
-                let max_qty = latest_bids.iter().map(|(_, qty)| qty).chain(latest_asks.iter().map(|(_, qty)| qty)).fold(f32::MIN, |arg0: f32, other: &f32| f32::max(arg0, *other));
+                let highest_ask_visible = latest_asks.last()
+                    .map(|(price, _)| *price)
+                    .unwrap_or(highest);
+                let highest_ask_y_pos = heatmap_area_height - ((highest_ask_visible - lowest) / y_range * heatmap_area_height);
 
-                let x_position = ((latest_timestamp - earliest) as f32 / (latest - earliest) as f32) * bounds.width;
+                let lowest_bid_visible = latest_bids.first()
+                    .map(|(price, _)| *price)
+                    .unwrap_or(lowest); 
+                let lowest_bid_y_pos = heatmap_area_height - ((lowest_bid_visible - lowest) / y_range * heatmap_area_height);
+                
+                bar_height = (highest_ask_y_pos - lowest_bid_y_pos) / (latest_bids.len() + latest_asks.len()) as f32;
 
-                if x_position.is_nan() {
-                    return;
-                }
+                let max_qty = latest_bids.iter()
+                    .map(|(_, qty)| qty)
+                    .chain(latest_asks.iter().map(|(_, qty)| qty))
+                    .fold(f32::MIN, |price: f32, qty: &f32| f32::max(price, *qty));
 
                 for (price, qty) in &latest_bids {     
                     let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
@@ -602,7 +476,7 @@ impl canvas::Program<Message> for HeatmapChart {
 
                     frame.fill_rectangle(
                         Point::new(x_position, y_position), 
-                        Size::new(bar_width, 1.0), 
+                        Size::new(bar_width, bar_height), 
                         Color::from_rgba8(0, 144, 144, 0.5)
                     );
                 }
@@ -614,7 +488,7 @@ impl canvas::Program<Message> for HeatmapChart {
 
                     frame.fill_rectangle(
                         Point::new(x_position, y_position), 
-                        Size::new(bar_width, 1.0), 
+                        Size::new(bar_width, bar_height), 
                         Color::from_rgba8(192, 0, 192, 0.5)
                     );
                 }
@@ -663,6 +537,151 @@ impl canvas::Program<Message> for HeatmapChart {
                         ..canvas::Text::default()
                     });
                 }
+            };
+
+            if self.data_points.len() > 1 {
+                for (_, (depth, trades)) in self.data_points.range(earliest..=latest) {
+                    let mut buy_volume: f32 = 0.0;
+                    let mut sell_volume: f32 = 0.0;
+
+                    for trade in trades.iter() {
+                        max_trade_qty = max_trade_qty.max(trade.qty);
+                        min_trade_qty = min_trade_qty.min(trade.qty);
+
+                        if trade.is_sell {
+                            sell_volume += trade.qty;
+                        } else {
+                            buy_volume += trade.qty;
+                        }
+                    }
+
+                    max_volume = max_volume.max(buy_volume).max(sell_volume);
+            
+                    for (&price_i64, &qty) in depth.asks.iter() {
+                        let price = self.price_to_float(price_i64);
+                        if price > highest {
+                            continue;
+                        };
+                        max_depth_qty = max_depth_qty.max(qty);
+                    }
+                
+                    for (&price_i64, &qty) in depth.bids.iter() {
+                        let price = self.price_to_float(price_i64);
+                        if price < lowest {
+                            continue;
+                        };
+                        max_depth_qty = max_depth_qty.max(qty);
+                    }   
+                };
+                
+                let mut prev_bid_price: Option<f32> = None;
+                let mut prev_bid_qty: Option<f32> = None;
+                let mut prev_ask_price: Option<f32> = None;
+                let mut prev_ask_qty: Option<f32> = None;
+
+                let mut prev_x_position: Option<f32> = None;
+
+                for (time, (depth, trades)) in self.data_points.range(earliest..=latest) {
+                    let x_position = ((time - earliest) as f32 / (latest - earliest) as f32) * bounds.width;
+
+                    if x_position.is_nan() {
+                        continue;
+                    }
+
+                    for (&price_i64, &qty) in depth.bids.iter() {
+                        let price = self.price_to_float(price_i64);
+
+                        if price >= lowest {
+                            if let (Some(prev_price), Some(prev_qty), Some(prev_x)) = (prev_bid_price, prev_bid_qty, prev_x_position) {
+                                let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
+                                let color_alpha = (qty / max_depth_qty).min(1.0);
+
+                                if prev_price != price || prev_qty != qty {
+                                    frame.fill_rectangle(
+                                        Point::new(prev_x as f32,y_position - 0.5),
+                                        Size::new((x_position - prev_x) as f32, bar_height),
+                                        Color::from_rgba8(0, 144, 144, color_alpha)
+                                    );
+                                }
+                            }
+                            prev_bid_price = Some(price);
+                            prev_bid_qty = Some(qty);
+                        }
+                    }
+
+                    for (&price_i64, &qty) in depth.asks.iter() {
+                        let price = self.price_to_float(price_i64);
+
+                        if price <= highest {
+                            if let (Some(prev_price), Some(prev_qty), Some(prev_x)) = (prev_ask_price, prev_ask_qty, prev_x_position) {
+                                let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
+                                let color_alpha = (qty / max_depth_qty).min(1.0);
+
+                                if prev_price != price || prev_qty != qty {
+                                    frame.fill_rectangle(
+                                        Point::new(prev_x as f32, y_position - 0.5), 
+                                        Size::new((x_position - prev_x) as f32, bar_height), 
+                                        Color::from_rgba8(192, 0, 192, color_alpha)
+                                    );
+                                }
+                            }
+                            prev_ask_price = Some(price);
+                            prev_ask_qty = Some(qty);
+                        }
+                    }
+
+                    prev_x_position = Some(x_position);
+
+                    let mut buy_volume: f32 = 0.0;
+                    let mut sell_volume: f32 = 0.0;
+
+                    for trade in trades.iter() {
+                        if trade.is_sell {
+                            sell_volume += trade.qty;
+                        } else {
+                            buy_volume += trade.qty;
+                        }
+
+                        let price = self.price_to_float(trade.price);
+
+                        if trade.qty * price > self.size_filter {
+                            let x_position = (((time - 100) - earliest) as f32 / (latest - earliest) as f32) * bounds.width;
+                            let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
+
+                            let color = if trade.is_sell {
+                                Color::from_rgba8(192, 80, 77, 1.0)
+                            } else {
+                                Color::from_rgba8(81, 205, 160, 1.0)
+                            };
+
+                            let radius: f32 = match max_trade_qty == min_trade_qty {
+                                true => 1.0,
+                                false => 1.0 + (trade.qty - min_trade_qty) * (35.0 - 1.0) / (max_trade_qty - min_trade_qty),
+                            };
+
+                            frame.fill(
+                                &Path::circle(Point::new(x_position, y_position), radius), 
+                                color
+                            );
+                        }
+                    }
+
+                    if max_volume > 0.0 {
+                        let buy_bar_height = (buy_volume / max_volume) * volume_area_height;
+                        frame.fill_rectangle(
+                            Point::new(x_position as f32 + 2.0, bounds.height - buy_bar_height), 
+                            Size::new(1.0, buy_bar_height), 
+                            Color::from_rgb8(81, 205, 160)
+                        );
+
+                        let sell_bar_height = (sell_volume / max_volume) * volume_area_height;
+                        frame.fill_rectangle(
+                            Point::new(x_position as f32, bounds.height - sell_bar_height), 
+                            Size::new(1.0, sell_bar_height), 
+                            Color::from_rgb8(192, 80, 77)
+                        );
+                    }
+                };
             };
         });
 
