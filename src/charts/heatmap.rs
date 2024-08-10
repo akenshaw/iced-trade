@@ -91,7 +91,13 @@ impl HeatmapChart {
             .map(|trade| GroupedTrade {
                 time: depth_update,
                 is_sell: trade.is_sell,
-                price: (trade.price * (1.0 / self.tick_size)).round() as i64,
+                price: {
+                    if trade.is_sell {
+                        (trade.price * (1.0 / self.tick_size)).floor() as i64
+                    } else {
+                        (trade.price * (1.0 / self.tick_size)).ceil() as i64
+                    }
+                },
                 qty: trade.qty,
             })
             .collect();
@@ -475,7 +481,7 @@ impl canvas::Program<Message> for HeatmapChart {
                     let bar_width = (qty / max_qty) * depth_area_width;
 
                     frame.fill_rectangle(
-                        Point::new(x_position, y_position), 
+                        Point::new(x_position, y_position - bar_height/2.0), 
                         Size::new(bar_width, bar_height), 
                         Color::from_rgba8(0, 144, 144, 0.5)
                     );
@@ -487,7 +493,7 @@ impl canvas::Program<Message> for HeatmapChart {
                     let bar_width = (qty / max_qty) * depth_area_width;
 
                     frame.fill_rectangle(
-                        Point::new(x_position, y_position), 
+                        Point::new(x_position, y_position - bar_height/2.0), 
                         Size::new(bar_width, bar_height), 
                         Color::from_rgba8(192, 0, 192, 0.5)
                     );
@@ -598,7 +604,7 @@ impl canvas::Program<Message> for HeatmapChart {
 
                                 if prev_price != price || prev_qty != qty {
                                     frame.fill_rectangle(
-                                        Point::new(prev_x as f32,y_position - 0.5),
+                                        Point::new(prev_x as f32,y_position - bar_height/2.0),
                                         Size::new((x_position - prev_x) as f32, bar_height),
                                         Color::from_rgba8(0, 144, 144, color_alpha)
                                     );
@@ -619,7 +625,7 @@ impl canvas::Program<Message> for HeatmapChart {
 
                                 if prev_price != price || prev_qty != qty {
                                     frame.fill_rectangle(
-                                        Point::new(prev_x as f32, y_position - 0.5), 
+                                        Point::new(prev_x as f32, y_position - bar_height/2.0), 
                                         Size::new((x_position - prev_x) as f32, bar_height), 
                                         Color::from_rgba8(192, 0, 192, color_alpha)
                                     );
