@@ -26,6 +26,7 @@ pub struct HeatmapChart {
     chart: CommonChartData,
     data_points: BTreeMap<i64, (GroupedDepth, Vec<GroupedTrade>)>,
     tick_size: f32,
+    y_scaling: i32,
     size_filter: f32,
 }
 
@@ -49,6 +50,7 @@ impl HeatmapChart {
             chart: CommonChartData::default(),
             data_points: BTreeMap::new(),
             tick_size,
+            y_scaling: 20,
             size_filter: 0.0,
         }
     }
@@ -157,26 +159,36 @@ impl HeatmapChart {
         let mut min_bid_price = f32::MAX;
 
         for (_, (depth, _)) in self.data_points.range(earliest..=latest) {
-            if !depth.asks.is_empty() && !depth.bids.is_empty() {
-                let ask_price: f32 = self.price_to_float(
-                    *depth.asks.keys().nth(
-                        std::cmp::min(20, depth.asks.len() - 1)
-                    ).unwrap_or(&0)
+            if self.chart.autoscale {
+                max_ask_price = max_ask_price.max(
+                    self.price_to_float(
+                        *depth.asks.keys().last().unwrap_or(&0)
+                    )
                 );
-                let bid_price: f32 = self.price_to_float(
-                    *depth.bids.keys().nth(
-                        std::cmp::min(20, depth.bids.len() - 1)
-                    ).unwrap_or(&0)
+                min_bid_price = min_bid_price.min(
+                    self.price_to_float(
+                        *depth.bids.keys().next().unwrap_or(&0)
+                    )
                 );
-    
-                if ask_price > max_ask_price {
-                    max_ask_price = ask_price;
-                };
-                if bid_price < min_bid_price {
-                    min_bid_price = bid_price;
-                };
-            };
-        };
+            } else {
+                max_ask_price = max_ask_price.max(
+                    self.price_to_float(
+                        *depth.asks.keys().nth(self.y_scaling.try_into().unwrap_or(20))
+                            .unwrap_or(depth.asks.keys().last()
+                                .unwrap_or(&0)
+                            )
+                    )
+                );
+                min_bid_price = min_bid_price.min(
+                    self.price_to_float(
+                        *depth.bids.keys().nth_back(self.y_scaling.try_into().unwrap_or(20))
+                            .unwrap_or(depth.bids.keys().next()
+                                .unwrap_or(&0)
+                            )
+                    )
+                );
+            }
+        }
 
         (latest, earliest, max_ask_price, min_bid_price)
     }
@@ -230,7 +242,31 @@ impl HeatmapChart {
                     chart.x_crosshair_cache.clear();
                 }
             },
-            _ => {}
+            Message::YScaling(delta) => {
+                if self.chart.autoscale {
+                    self.chart.autoscale = false;
+                }
+
+                let last_depth_bids_len = self.data_points.last_key_value().map(|(_, (depth, _))| depth.bids.len()).unwrap_or(0);
+                let last_depth_asks_len = self.data_points.last_key_value().map(|(_, (depth, _))| depth.asks.len()).unwrap_or(0);
+
+                let max_len_depth: i32 = last_depth_bids_len.max(last_depth_asks_len).try_into().unwrap_or(0);
+
+                if last_depth_bids_len == 0 || last_depth_asks_len == 0 || max_len_depth == 0 {
+                    log::error!("No depth data available to y scaling");
+                    return
+                };
+
+                if *delta < 1.0 {
+                    if self.y_scaling < max_len_depth {
+                        self.y_scaling = (self.y_scaling + (delta * 10.0) as i32).min(max_len_depth);
+                    }
+                } else {
+                    if self.y_scaling > 10 {
+                        self.y_scaling = (self.y_scaling - (delta * 10.0) as i32).max(10);
+                    }
+                }
+            },
         }
     }
 
@@ -503,7 +539,7 @@ impl canvas::Program<Message> for HeatmapChart {
                     .unwrap_or(lowest); 
                 let lowest_bid_y_pos = heatmap_area_height - ((lowest_bid_visible - lowest) / y_range * heatmap_area_height);
                 
-                bar_height = (highest_ask_y_pos - lowest_bid_y_pos) / (latest_bids.len() + latest_asks.len()) as f32;
+                bar_height = (((lowest_bid_y_pos - highest_ask_y_pos) / (y_range / self.tick_size) as f32).floor()).max(1.0);
 
                 let max_qty = latest_bids.iter()
                     .map(|(_, qty)| qty)
@@ -516,7 +552,7 @@ impl canvas::Program<Message> for HeatmapChart {
                     let bar_width = (qty / max_qty) * depth_area_width;
 
                     frame.fill_rectangle(
-                        Point::new(x_position, y_position - bar_height/2.0), 
+                        Point::new(x_position, y_position - (bar_height/2.0)), 
                         Size::new(bar_width, bar_height), 
                         Color::from_rgba8(0, 144, 144, 0.5)
                     );
@@ -528,7 +564,7 @@ impl canvas::Program<Message> for HeatmapChart {
                     let bar_width = (qty / max_qty) * depth_area_width;
 
                     frame.fill_rectangle(
-                        Point::new(x_position, y_position - bar_height/2.0), 
+                        Point::new(x_position, y_position - (bar_height/2.0)), 
                         Size::new(bar_width, bar_height), 
                         Color::from_rgba8(192, 0, 192, 0.5)
                     );
@@ -605,8 +641,8 @@ impl canvas::Program<Message> for HeatmapChart {
 
                             if prev_price != price || prev_qty != qty {
                                 frame.fill_rectangle(
-                                    Point::new(prev_x as f32,y_position - bar_height/2.0),
-                                    Size::new((x_position - prev_x) as f32, bar_height),
+                                    Point::new(prev_x, y_position - (bar_height/2.0)),
+                                    Size::new(x_position - prev_x, bar_height),
                                     Color::from_rgba8(0, 144, 144, color_alpha)
                                 );
                             }
@@ -626,8 +662,8 @@ impl canvas::Program<Message> for HeatmapChart {
 
                             if prev_price != price || prev_qty != qty {
                                 frame.fill_rectangle(
-                                    Point::new(prev_x as f32, y_position - bar_height/2.0), 
-                                    Size::new((x_position - prev_x) as f32, bar_height), 
+                                    Point::new(prev_x, y_position - (bar_height/2.0)), 
+                                    Size::new(x_position - prev_x, bar_height), 
                                     Color::from_rgba8(192, 0, 192, color_alpha)
                                 );
                             }

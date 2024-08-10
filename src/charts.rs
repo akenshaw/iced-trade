@@ -416,10 +416,27 @@ impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
     fn update(
         &self,
         _interaction: &mut Interaction,
-        _event: Event,
-        _bounds: Rectangle,
-        _cursor: mouse::Cursor,
+        event: Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
     ) -> (event::Status, Option<Message>) {
+
+        if cursor.is_over(bounds) {
+            match event {
+                Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
+                    match delta {
+                        mouse::ScrollDelta::Lines { y, .. } => {
+                            let y_scaling = 1.0 + y * 0.1;
+                    
+                            return (event::Status::Captured, Some(Message::YScaling(y_scaling)));
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+
         (event::Status::Ignored, None)
     }
     
