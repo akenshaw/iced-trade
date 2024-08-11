@@ -10,6 +10,8 @@ use crate::{
     }, StreamType
 };
 
+use super::{Error, Notification};
+
 use std::{collections::{HashMap, HashSet}, io::Read, rc::Rc};
 use iced::{widget::pane_grid::{self, Configuration}, Point, Size};
 
@@ -106,13 +108,13 @@ impl Dashboard {
         }
     }
 
-    pub fn get_pane_settings_mut(&mut self, pane_id: Uuid) -> Result<&mut PaneSettings, &str> {
+    pub fn get_pane_settings_mut(&mut self, pane_id: Uuid) -> Result<&mut PaneSettings, Error> {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.id == pane_id {
                 return Ok(&mut pane_state.settings);
             }
         }
-        Err("No pane found")
+        Err(Error::UnknownError("No pane found".to_string()))
     }
 
     pub fn set_pane_content(&mut self, pane_id: Uuid, content: PaneContent) -> Result<(), &str> {
@@ -137,7 +139,7 @@ impl Dashboard {
         Err("No pane found")
     }
 
-    pub fn set_pane_ticksize(&mut self, pane_id: Uuid, new_tick_multiply: TickMultiplier) -> Result<(), &str> {
+    pub fn set_pane_ticksize(&mut self, pane_id: Uuid, new_tick_multiply: TickMultiplier) -> Result<(), Error> {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.id == pane_id {
                 pane_state.settings.tick_multiply = Some(new_tick_multiply);
@@ -159,18 +161,18 @@ impl Dashboard {
                             return Ok(());
                         },
                         _ => {
-                            return Err("No footprint chart found");
+                            return Err(Error::UnknownError("No chart found to change ticksize".to_string()));
                         }
                     }
                 } else {
-                    return Err("No min tick size found");
+                    return Err(Error::UnknownError("No min tick size found".to_string()));
                 }
             }
         }
-        Err("No pane found")
+        Err(Error::UnknownError("No pane found to change ticksize".to_string()))
     }
     
-    pub fn set_pane_timeframe(&mut self, pane_id: Uuid, new_timeframe: Timeframe) -> Result<&StreamType, &str> {
+    pub fn set_pane_timeframe(&mut self, pane_id: Uuid, new_timeframe: Timeframe) -> Result<&StreamType, Error> {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.id == pane_id {
                 pane_state.settings.selected_timeframe = Some(new_timeframe);
@@ -195,10 +197,10 @@ impl Dashboard {
                 }
             }
         }
-        Err("No pane found")
+        Err(Error::UnknownError("No pane found to change tiemframe".to_string()))
     }
 
-    pub fn set_pane_size_filter(&mut self, pane_id: Uuid, new_size_filter: f32) -> Result<(), &str> {
+    pub fn set_pane_size_filter(&mut self, pane_id: Uuid, new_size_filter: f32) -> Result<(), Error> {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.id == pane_id {
                 pane_state.settings.trade_size_filter = Some(new_size_filter);
@@ -215,12 +217,12 @@ impl Dashboard {
                         return Ok(());
                     },
                     _ => {
-                        return Err("No footprint chart found");
+                        return Err(Error::UnknownError("No chart found".to_string()));
                     }
                 }
             }
         }
-        Err("No pane found")
+        Err(Error::UnknownError("No pane found".to_string()))
     }
 
     pub fn find_and_insert_ticksizes(&mut self, stream_type: &StreamType, tick_sizes: f32) -> Result<(), &str> {
@@ -371,7 +373,7 @@ impl Dashboard {
         }
     }
 
-    pub fn update_chart_state(&mut self, pane_id: Uuid, message: Message) -> Result<(), &str> {
+    pub fn update_chart_state(&mut self, pane_id: Uuid, message: Message) -> Result<(), Error> {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.id == pane_id {
                 match pane_state.content {
@@ -391,12 +393,12 @@ impl Dashboard {
                         return Ok(());
                     },
                     _ => {
-                        return Err("No chart found");
+                        return Err(Error::UnknownError("No chart found".to_string()));
                     }
                 }
             }
         }
-        Err("No pane found")
+        Err(Error::UnknownError("No pane found to update its state".to_string()))
     }
 
     pub fn get_all_diff_streams(&self) -> HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>> {

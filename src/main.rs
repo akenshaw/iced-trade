@@ -7,8 +7,16 @@ mod screen;
 mod logger;
 
 use style::{ICON_FONT, ICON_BYTES, Icon};
-use screen::dashboard::{pane::{self, SerializablePane}, read_layout_from_file, write_json_to_file, Dashboard, LayoutId, PaneContent, PaneSettings, PaneState, SavedState, SerializableDashboard, SerializableState, Uuid};
-use data_providers::{binance, bybit, BinanceWsState, BybitWsState, UserWsState, Exchange, MarketEvents, TickMultiplier, Ticker, Timeframe, StreamType};
+
+use screen::{Notification, Error};
+use screen::dashboard::{
+    Dashboard,
+    pane::{self, SerializablePane}, Uuid, LayoutId,
+    PaneContent, PaneSettings, PaneState, 
+    SavedState, SerializableDashboard, SerializableState, 
+    read_layout_from_file, write_json_to_file, 
+};
+use data_providers::{binance, bybit, Exchange, MarketEvents, TickMultiplier, Ticker, Timeframe, StreamType};
 
 use charts::footprint::FootprintChart;
 use charts::heatmap::HeatmapChart;
@@ -17,7 +25,7 @@ use charts::timeandsales::TimeAndSales;
 
 use futures::TryFutureExt;
 
-use std::{collections::{HashMap, HashSet, VecDeque}, vec};
+use std::{collections::{HashMap, HashSet, VecDeque}, ops::Not, vec};
 
 use iced::{
     alignment, widget::{
@@ -25,9 +33,7 @@ use iced::{
     }, window::{self, Position}, Alignment, Color, Element, Length, Point, Renderer, Size, Subscription, Task, Theme
 };
 use iced::widget::pane_grid::{self, PaneGrid, Configuration};
-use iced::widget::{
-    container, row, scrollable, text
-};
+use iced::widget::{container, row, scrollable, text};
 
 fn main() -> iced::Result {
     logger::setup(false, false).expect("Failed to initialize logger");
@@ -176,7 +182,9 @@ pub enum Message {
     FetchDistributeKlines(StreamType, Result<Vec<data_providers::Kline>, std::string::String>),
     FetchDistributeTicks(StreamType, Result<f32, std::string::String>),
     Debug(String),
-    ErrorOccurred(String),
+    Notification(Notification),
+    ErrorOccurred(Error),
+    ClearNotification,
 
     ChartUserUpdate(charts::Message, Uuid),
     ShowLayoutModal,
@@ -226,22 +234,13 @@ pub enum Message {
 
 struct State {
     layouts: HashMap<LayoutId, Dashboard>,
-
     last_active_layout: LayoutId,
-
     exchange_latency: Option<(u32, u32)>,
-
     listen_key: Option<String>,
-
-    binance_ws_state: BinanceWsState,
-    bybit_ws_state: BybitWsState,
-    user_ws_state: UserWsState,
-
     ws_running: bool,
-
     feed_latency_cache: VecDeque<data_providers::FeedLatency>,
-
     pane_streams: HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>,
+    notification: Option<Notification>,
 }
 
 impl State {
@@ -269,13 +268,11 @@ impl State {
                 layouts: saved_state.layouts,
                 last_active_layout,
                 listen_key: None,
-                binance_ws_state: BinanceWsState::Disconnected,
-                bybit_ws_state: BybitWsState::Disconnected,
-                user_ws_state: UserWsState::Disconnected,
                 ws_running: false,
                 exchange_latency: None,
                 feed_latency_cache: VecDeque::new(),
                 pane_streams,
+                notification: None,
             },
             Task::batch(tasks)
         )
@@ -285,12 +282,14 @@ impl State {
         match message {
             Message::ChartUserUpdate(message, pane_id) => {
                 let dashboard = self.get_mut_dashboard();
-
+            
                 match dashboard.update_chart_state(pane_id, message) {
                     Ok(_) => Task::none(),
-                    Err(err) => {
-                        log::error!("{err}");
-                        Task::none()
+                    Err(err) => {      
+                        Task::perform(
+                            async { err },
+                            move |err: Error| Message::ErrorOccurred(err)
+                        )
                     }
                 }
             },
@@ -304,9 +303,10 @@ impl State {
                         Task::none()
                     },
                     Err(err) => {
-                        log::error!("Failed to set min tick size: {err}");
-
-                        Task::none()
+                        Task::perform(
+                            async { err },
+                            move |err: Error| Message::ErrorOccurred(err)
+                        )
                     }
                 }
             },
@@ -320,9 +320,10 @@ impl State {
                         Task::none()
                     },
                     Err(err) => {
-                        log::error!("{err}");
-
-                        Task::none()
+                        Task::perform(
+                            async { err },
+                            move |err: Error| Message::ErrorOccurred(err)
+                        )
                     }
                 }
             },
@@ -356,15 +357,18 @@ impl State {
                                     tasks.push(fetch_klines);
                                 },
                             }
+
+                            self.pane_streams = dashboard.get_all_diff_streams();
                         }
                     },
                     Err(err) => {
-                        log::error!("Failed to change timeframe: {err}");
+                        tasks.push(Task::perform(
+                            async { err },
+                            move |err: Error| Message::ErrorOccurred(err)
+                        ));
                     }
                 }
 
-                self.pane_streams = dashboard.get_all_diff_streams();
-            
                 Task::batch(tasks)
             },
             Message::ExchangeSelected(exchange, pane_id) => {
@@ -377,9 +381,10 @@ impl State {
                         Task::none()
                     },
                     Err(err) => {
-                        log::error!("{err}");
-
-                        Task::none()
+                        Task::perform(
+                            async { err },
+                            move |err: Error| Message::ErrorOccurred(err)
+                        )
                     }
                 }
             },
@@ -388,14 +393,13 @@ impl State {
                 
                 match dashboard.set_pane_ticksize(pane_id, tick_multiply) {
                     Ok(_) => {
-                        log::info!("Ticksize changed");
-            
                         Task::none()
                     },
-                    Err(err) => {
-                        log::error!("Failed to change ticksize: {err}");
-            
-                        Task::none()
+                    Err(err) => {            
+                        Task::perform(
+                            async { err },
+                            move |err: Error| Message::ErrorOccurred(err)
+                        )
                     }
                 }
             },
@@ -406,26 +410,27 @@ impl State {
                     Ok(klines) => {
                         if let StreamType::Kline { .. } = pane_stream {
                             dashboard.insert_klines_vec(&pane_stream, &klines, pane_id);
+
+                            Task::none()
+                        } else {
+                            log::error!("Invalid stream type for klines: {pane_stream:?}");
+
+                            Task::none()
                         }
                     },
                     Err(err) => {
-                        log::error!("{err}");
+                        Task::perform(
+                            async { err },
+                            move |err: String| Message::ErrorOccurred(Error::FetchError(err))
+                        )
                     }
                 }
-
-                Task::none()
             },
             Message::MarketWsEvent(event) => {
                 let dashboard = self.get_mut_dashboard();
 
                 match event {
                     MarketEvents::Binance(event) => match event {
-                        binance::market_data::Event::Connected(connection) => {
-                            self.binance_ws_state = BinanceWsState::Connected(connection);
-                        }
-                        binance::market_data::Event::Disconnected => {
-                            self.binance_ws_state = BinanceWsState::Disconnected;
-                        }
                         binance::market_data::Event::DepthReceived(ticker, feed_latency, depth_update_t, depth, trades_buffer) => {                            
                             let stream_type = StreamType::DepthAndTrades {
                                 exchange: Exchange::BinanceFutures,
@@ -461,14 +466,11 @@ impl State {
                                     .remove(&stream_type);
                             }
                         }
+                        _ => {
+                            log::warn!("{event:?}");
+                        }
                     },
                     MarketEvents::Bybit(event) => match event {
-                        bybit::market_data::Event::Connected(connection) => {
-                            self.bybit_ws_state = BybitWsState::Connected(connection);
-                        }
-                        bybit::market_data::Event::Disconnected => {
-                            self.bybit_ws_state = BybitWsState::Disconnected;
-                        }
                         bybit::market_data::Event::DepthReceived(ticker, feed_latency, depth_update_t, depth, trades_buffer) => {
                             let stream_type = StreamType::DepthAndTrades {
                                 exchange: Exchange::BybitLinear,
@@ -503,6 +505,9 @@ impl State {
                                     .or_default()
                                     .remove(&stream_type);
                             }
+                        }
+                        _ => {
+                            log::warn!("{event:?}");
                         }
                     },
                 }
@@ -679,9 +684,10 @@ impl State {
                         Task::none()
                     }
                     Err(err) => {
-                        log::error!("{err}");
-                        
-                        Task::none()
+                        Task::perform(
+                            async { err },
+                            move |err: Error| Message::ErrorOccurred(err)
+                        )
                     }
                 }
             },
@@ -701,8 +707,71 @@ impl State {
                 dashboard.show_layout_modal = false;
                 Task::none()
             },
+            Message::Notification(notification) => {
+                self.notification = Some(notification);
+
+                Task::perform(
+                    async { tokio::time::sleep(tokio::time::Duration::from_millis(4000)).await },
+                    move |_| Message::ClearNotification
+                )
+            },
             Message::ErrorOccurred(err) => {
-                log::error!("{err}");
+                match err {
+                    Error::FetchError(err) => {
+                        log::error!("{err}");
+
+                        Task::perform(
+                            async {},
+                            move |_| Message::Notification(
+                                Notification::Error(format!("Error: Failed to fetch data: {err}"))
+                            )
+                        )
+                    },
+                    Error::PaneSetError(err) => {
+                        log::error!("{err}");
+
+                        Task::perform(
+                            async {},
+                            move |_| Message::Notification(
+                                Notification::Error(format!("Error: Failed to set pane: {err}"))
+                            )
+                        )
+                    },
+                    Error::ParseError(err) => {
+                        log::error!("{err}");
+
+                        Task::perform(
+                            async {},
+                            move |_| Message::Notification(
+                                Notification::Error(format!("Error: Failed to parse data: {err}"))
+                            )
+                        )
+                    },
+                    Error::StreamError(err) => {
+                        log::error!("{err}");
+
+                        Task::perform(
+                            async {},
+                            move |_| Message::Notification(
+                                Notification::Error(format!("Error: Failed to fetch stream: {err}"))
+                            )
+                        )
+                    },
+                    Error::UnknownError(err) => {
+                        log::error!("{err}");
+
+                        Task::perform(
+                            async {},
+                            move |_| Message::Notification(
+                                Notification::Error(format!("Error: {err}"))
+                            )
+                        )
+                    },
+                }
+            },
+            Message::ClearNotification => {
+                self.notification = None;
+
                 Task::none()
             },
             Message::PaneContentSelected(content, pane_id, pane_stream) => {
@@ -795,7 +864,12 @@ impl State {
 
                 self.layouts.insert(self.last_active_layout, new_dashboard);
 
-                Task::none()
+                Task::perform(
+                    async {},
+                    move |_| Message::Notification(
+                        Notification::Info("Layout reset".to_string())
+                    )
+                )
             },
             Message::LayoutSelected(layout_id) => {
                 self.last_active_layout = layout_id;
@@ -988,6 +1062,25 @@ impl State {
         let mut ws_controls = Row::new()
             .spacing(10)
             .align_y(Alignment::Center);
+
+        if let Some(notification) = &self.notification {
+            match notification {
+                Notification::Info(string) => {
+                    ws_controls = ws_controls.push(
+                        Text::new(string)
+                            .size(14)
+                            .color(Color::WHITE)
+                    );
+                },
+                Notification::Error(string) => {
+                    ws_controls = ws_controls.push(
+                        Text::new(string)
+                            .size(14)
+                            .color(Color::from_rgb8(255, 0, 0))
+                    );
+                },
+            }
+        }
 
         if self.ws_running {
             let exchange_latency_tooltip: String;
@@ -1751,14 +1844,14 @@ fn create_fetch_ticksize_task(
             binance::market_data::fetch_ticksize(*ticker),
             move |result| match result {
                 Ok(ticksize) => Message::SetMinTickSize(ticksize, pane_id),
-                Err(err) => Message::ErrorOccurred(err.to_string()),
+                Err(err) => Message::ErrorOccurred(Error::FetchError(err.to_string())),
             },
         ),
         Exchange::BybitLinear => Task::perform(
             bybit::market_data::fetch_ticksize(*ticker),
             move |result| match result {
                 Ok(ticksize) => Message::SetMinTickSize(ticksize, pane_id),
-                Err(err) => Message::ErrorOccurred(err.to_string()),
+                Err(err) => Message::ErrorOccurred(Error::FetchError(err.to_string())),
             },
         ),
     }
@@ -1779,7 +1872,7 @@ pub fn events() -> Subscription<Event> {
 
 fn filtered_events(
     event: iced::Event,
-    status: iced::event::Status,
+    _status: iced::event::Status,
     window: window::Id,
 ) -> Option<Event> {
     match &event {
