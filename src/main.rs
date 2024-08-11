@@ -236,7 +236,6 @@ struct State {
     last_active_layout: LayoutId,
     exchange_latency: Option<(u32, u32)>,
     listen_key: Option<String>,
-    ws_running: bool,
     feed_latency_cache: VecDeque<data_providers::FeedLatency>,
     pane_streams: HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>,
     notification: Option<Notification>,
@@ -267,7 +266,6 @@ impl State {
                 layouts: saved_state.layouts,
                 last_active_layout,
                 listen_key: None,
-                ws_running: false,
                 exchange_latency: None,
                 feed_latency_cache: VecDeque::new(),
                 pane_streams,
@@ -710,7 +708,7 @@ impl State {
                 Task::perform(
                     async {},
                     move |_| Message::Notification(
-                        Notification::Warn("gonna have to reimplement this".to_string())
+                        Notification::Warn("gonna have to reimplement that".to_string())
                     )
                 )
             },
@@ -742,7 +740,7 @@ impl State {
                         Task::perform(
                             async {},
                             move |_| Message::Notification(
-                                Notification::Error(format!("Error: Failed to fetch data: {err}"))
+                                Notification::Error(format!("Failed to fetch data: {err}"))
                             )
                         )
                     },
@@ -752,7 +750,7 @@ impl State {
                         Task::perform(
                             async {},
                             move |_| Message::Notification(
-                                Notification::Error(format!("Error: Failed to set pane: {err}"))
+                                Notification::Error(format!("Failed to set pane: {err}"))
                             )
                         )
                     },
@@ -762,7 +760,7 @@ impl State {
                         Task::perform(
                             async {},
                             move |_| Message::Notification(
-                                Notification::Error(format!("Error: Failed to parse data: {err}"))
+                                Notification::Error(format!("Failed to parse data: {err}"))
                             )
                         )
                     },
@@ -772,7 +770,7 @@ impl State {
                         Task::perform(
                             async {},
                             move |_| Message::Notification(
-                                Notification::Error(format!("Error: Failed to fetch stream: {err}"))
+                                Notification::Error(format!("Failed to fetch stream: {err}"))
                             )
                         )
                     },
@@ -782,7 +780,7 @@ impl State {
                         Task::perform(
                             async {},
                             move |_| Message::Notification(
-                                Notification::Error(format!("Error: {err}"))
+                                Notification::Error(format!("{err}"))
                             )
                         )
                     },
@@ -867,6 +865,15 @@ impl State {
                             _ => {}
                         }
                     }
+
+                    tasks.push(
+                        Task::perform(
+                            async {},
+                            move |_| Message::Notification(
+                                Notification::Info(format!("Fetching data for the {}...", content.to_lowercase()))
+                            )
+                        )
+                    );
                 }
                 
                 Task::batch(tasks)
@@ -900,7 +907,7 @@ impl State {
                 tasks.push(
                     Task::perform(
                         async {},
-                        move |_| Message::Notification(Notification::Info("Fetching data for new layout...".to_string()))
+                        move |_| Message::Notification(Notification::Info("Fetching data...".to_string()))
                     )
                 );
 
@@ -1071,7 +1078,7 @@ impl State {
             .spacing(10)
             .align_y(Alignment::Center)
             .push(
-                tooltip(add_pane_button, "Manage Panes", tooltip::Position::Bottom).style(style::tooltip)
+                tooltip(add_pane_button, "Manage Layout", tooltip::Position::Bottom).style(style::tooltip)
             )
             .push(
                 tooltip(layout_lock_button, "Layout Lock", tooltip::Position::Bottom).style(style::tooltip)
@@ -1085,75 +1092,41 @@ impl State {
             match notification {
                 Notification::Info(string) => {
                     ws_controls = ws_controls.push(
-                        Text::new(string)
-                            .size(14)
-                            .color(Color::WHITE)
+                        container(
+                            Column::new()
+                                .padding(4)
+                                .push(
+                                    Text::new(format!("{string}"))
+                                        .size(14)
+                                )
+                        ).style(style::notification)
                     );
                 },
                 Notification::Error(string) => {
                     ws_controls = ws_controls.push(
-                        Text::new(string)
-                            .size(14)
-                            .color(Color::from_rgb8(255, 0, 0))
+                        container(
+                            Column::new()
+                                .padding(4)
+                                .push(
+                                    Text::new(format!("err: {string}"))
+                                        .size(14)
+                                )
+                        ).style(style::notification)
                     );
                 },
                 Notification::Warn(string) => {
                     ws_controls = ws_controls.push(
-                        Text::new(string)
-                            .size(14)
-                            .color(Color::from_rgb8(255, 255, 0))
+                        container(
+                            Column::new()
+                                .padding(4)
+                                .push(
+                                    Text::new(format!("warn: {string}"))
+                                        .size(14)
+                                )
+                        ).style(style::notification)
                     );
                 },
             }
-        }
-
-        if self.ws_running {
-            let exchange_latency_tooltip: String;
-            let mut highest_latency: i32 = 0;
-
-            if let Some((depth_latency, trade_latency)) = self.exchange_latency {
-                exchange_latency_tooltip = format!(
-                    "Feed Latencies\n->Depth: {depth_latency} ms\n->Trade: {trade_latency} ms",
-                );
-
-                highest_latency = std::cmp::max(depth_latency as i32, trade_latency as i32);
-            } else {
-                exchange_latency_tooltip = "No latency data".to_string();
-
-                highest_latency = 0;
-            }
-
-            let exchange_latency_tooltip = Text::new(exchange_latency_tooltip).size(12);
-
-            let latency_emoji: &str = if highest_latency > 250 {
-                "🔴"
-            } else if highest_latency > 100 {
-                "🟠"
-            } else {
-                "🟢"
-            };
-                
-            let exchange_info = Row::new()
-                .spacing(5)
-                .align_y(Alignment::Center)
-                .push(
-                    Text::new(latency_emoji)
-                        .shaping(text::Shaping::Advanced).size(8)
-                )
-                .push(
-                    Column::new()
-                        .align_x(Alignment::Start)
-                        .push(
-                            Text::new(format!("{} ms", highest_latency)).size(10)
-                        )
-                );
-            
-            ws_controls = ws_controls.push(
-                Row::new()
-                    .spacing(10)
-                    .align_y(Alignment::Center)
-                    .push(tooltip(exchange_info, exchange_latency_tooltip, tooltip::Position::Bottom).style(style::tooltip))
-            );
         }
 
         let content = Column::new()
