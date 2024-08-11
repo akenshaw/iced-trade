@@ -4,6 +4,7 @@ pub mod dashboard;
 pub enum Notification {
     Error(String),
     Info(String),
+    Warn(String),
 }
 
 #[derive(Debug, Clone)]

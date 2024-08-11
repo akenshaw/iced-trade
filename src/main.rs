@@ -25,7 +25,7 @@ use charts::timeandsales::TimeAndSales;
 
 use futures::TryFutureExt;
 
-use std::{collections::{HashMap, HashSet, VecDeque}, ops::Not, vec};
+use std::{collections::{HashMap, HashSet, VecDeque}, vec};
 
 use iced::{
     alignment, widget::{
@@ -229,7 +229,6 @@ pub enum Message {
 
     ResetCurrentLayout,
     LayoutSelected(LayoutId),
-    RefreshStreams,
 }
 
 struct State {
@@ -339,24 +338,31 @@ impl State {
             
                             match exchange {
                                 Exchange::BinanceFutures => {
-                                    let fetch_klines = Task::perform(
-                                        binance::market_data::fetch_klines(*ticker, *timeframe)
-                                            .map_err(|err| format!("{err}")),
-                                        move |klines| Message::FetchEvent(klines, stream, pane_id)
+                                    tasks.push(
+                                        Task::perform(
+                                            binance::market_data::fetch_klines(*ticker, *timeframe)
+                                                .map_err(|err| format!("{err}")),
+                                            move |klines| Message::FetchEvent(klines, stream, pane_id)
+                                        )
                                     );
-            
-                                    tasks.push(fetch_klines);
                                 },
-                                Exchange::BybitLinear => {
-                                    let fetch_klines = Task::perform(
-                                        bybit::market_data::fetch_klines(*ticker, *timeframe)
-                                            .map_err(|err| format!("{err}")),
-                                        move |klines| Message::FetchEvent(klines, stream, pane_id)
+                                Exchange::BybitLinear => {                                    
+                                    tasks.push(
+                                        Task::perform(
+                                            bybit::market_data::fetch_klines(*ticker, *timeframe)
+                                                .map_err(|err| format!("{err}")),
+                                            move |klines| Message::FetchEvent(klines, stream, pane_id)
+                                        )
                                     );
-                                    
-                                    tasks.push(fetch_klines);
                                 },
                             }
+
+                            tasks.push(
+                                Task::perform(
+                                    async {},
+                                    move |_| Message::Notification(Notification::Info("Fetching for klines...".to_string()))
+                                )
+                            );
 
                             self.pane_streams = dashboard.get_all_diff_streams();
                         }
@@ -404,6 +410,15 @@ impl State {
                 }
             },
             Message::FetchEvent(klines, pane_stream, pane_id) => {
+                if let Some(notification) = &self.notification {
+                    match notification {
+                        Notification::Info(_) => {
+                            self.notification = None;
+                        },
+                        _ => {}
+                    }
+                }
+               
                 let dashboard = self.get_mut_dashboard();
 
                 match klines {
@@ -692,8 +707,12 @@ impl State {
                 }
             },
             Message::SyncWithHeatmap(sync) => {   
-            
-                Task::none()
+                Task::perform(
+                    async {},
+                    move |_| Message::Notification(
+                        Notification::Warn("gonna have to reimplement this".to_string())
+                    )
+                )
             },
             Message::ShowLayoutModal => {
                 let dashboard = self.get_mut_dashboard();
@@ -833,9 +852,9 @@ impl State {
                 if ["Footprint chart", "Candlestick chart", "Heatmap chart"].contains(&content.as_str()) {
                     for stream in pane_stream.iter() {
                         match stream {
-                            StreamType::Kline { exchange, ticker, timeframe } => {
+                            StreamType::Kline { exchange, ticker, .. } => {
                                 if ["Candlestick chart", "Footprint chart"].contains(&content.as_str()) {
-                                    tasks.push(create_fetch_klines_task(exchange, ticker, timeframe, *stream, pane_id));
+                                    tasks.push(create_fetch_klines_task(*stream, pane_id));
                                     
                                     if content == "Footprint chart" {
                                         tasks.push(create_fetch_ticksize_task(exchange, ticker, pane_id));
@@ -874,26 +893,26 @@ impl State {
             Message::LayoutSelected(layout_id) => {
                 self.last_active_layout = layout_id;
             
-                Task::perform(
-                    async { tokio::time::sleep(tokio::time::Duration::from_millis(200)).await; },
-                    |_| Message::RefreshStreams
-                )
-            },
-            Message::RefreshStreams => {
                 let mut tasks = vec![];
 
                 self.pane_streams = self.get_dashboard().get_all_diff_streams();
 
-                let kline_tasks = klines_fetch_all_task(&self.pane_streams);
+                tasks.push(
+                    Task::perform(
+                        async {},
+                        move |_| Message::Notification(Notification::Info("Fetching data for new layout...".to_string()))
+                    )
+                );
 
-                let ticksize_tasks = ticksize_fetch_all_task(&self.pane_streams);
-
-                tasks.extend(kline_tasks);
-                tasks.extend(ticksize_tasks);
+                tasks.extend(
+                    klines_fetch_all_task(&self.pane_streams)
+                );
+                tasks.extend(
+                    ticksize_fetch_all_task(&self.pane_streams)
+                );
 
                 Task::batch(tasks)
-            }
-        
+            },
             Message::FetchDistributeKlines(stream_type, klines) => {
                 let dashboard = self.get_mut_dashboard();
 
@@ -909,8 +928,7 @@ impl State {
                 }
 
                 Task::none()
-            }
-            
+            },  
             Message::FetchDistributeTicks(stream_type, min_tick_size) => {
                 let dashboard = self.get_mut_dashboard();
 
@@ -926,7 +944,7 @@ impl State {
                 }
 
                 Task::none()
-            }
+            },
         }
     }
 
@@ -1077,6 +1095,13 @@ impl State {
                         Text::new(string)
                             .size(14)
                             .color(Color::from_rgb8(255, 0, 0))
+                    );
+                },
+                Notification::Warn(string) => {
+                    ws_controls = ws_controls.push(
+                        Text::new(string)
+                            .size(14)
+                            .color(Color::from_rgb8(255, 255, 0))
                     );
                 },
             }
@@ -1813,23 +1838,24 @@ fn ticksize_fetch_all_task(stream_types: &HashMap<Exchange, HashMap<Ticker, Hash
 }
 
 fn create_fetch_klines_task(
-    exchange: &Exchange,
-    ticker: &Ticker,
-    timeframe: &Timeframe,
-    stream_clone: StreamType,
+    stream: StreamType,
     pane_id: Uuid,
 ) -> Task<Message> {
-    match exchange {
-        Exchange::BinanceFutures => Task::perform(
-            binance::market_data::fetch_klines(*ticker, *timeframe)
-                .map_err(|err| format!("{err}")),
-            move |klines| Message::FetchEvent(klines, stream_clone, pane_id),
-        ),
-        Exchange::BybitLinear => Task::perform(
-            bybit::market_data::fetch_klines(*ticker, *timeframe)
-                .map_err(|err| format!("{err}")),
-            move |klines| Message::FetchEvent(klines, stream_clone, pane_id),
-        ),
+    match stream {
+        StreamType::Kline { exchange, ticker, timeframe } => {
+            match exchange {
+                Exchange::BinanceFutures => Task::perform(
+                    binance::market_data::fetch_klines(ticker, timeframe)
+                        .map_err(|err| format!("{err}")),
+                    move |klines| Message::FetchEvent(klines, stream, pane_id),
+                ),
+                Exchange::BybitLinear => Task::perform(
+                    bybit::market_data::fetch_klines(ticker, timeframe)
+                        .map_err(|err| format!("{err}")),
+                    move |klines| Message::FetchEvent(klines, stream, pane_id),
+                ),
+            }
+        },
         _ => Task::none(),
     }
 }
