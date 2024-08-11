@@ -331,7 +331,7 @@ impl State {
 
                 let dashboard = self.get_mut_dashboard();
             
-                match dashboard.pane_change_timeframe(pane_id, timeframe) {
+                match dashboard.set_pane_timeframe(pane_id, timeframe) {
                     Ok(stream_type) => {
                         if let StreamType::Kline { exchange, ticker, timeframe } = stream_type {
                             let stream = *stream_type;
@@ -386,7 +386,7 @@ impl State {
             Message::TicksizeSelected(tick_multiply, pane_id) => {
                 let dashboard = self.get_mut_dashboard();
                 
-                match dashboard.pane_change_ticksize(pane_id, tick_multiply) {
+                match dashboard.set_pane_ticksize(pane_id, tick_multiply) {
                     Ok(_) => {
                         log::info!("Ticksize changed");
             
@@ -404,15 +404,8 @@ impl State {
 
                 match klines {
                     Ok(klines) => {
-                        match pane_stream {
-                            StreamType::Kline { exchange, ticker, timeframe } => {
-                                dashboard.insert_klines_vec(&StreamType::Kline {
-                                    exchange,
-                                    ticker,
-                                    timeframe,
-                                }, &klines, pane_id);
-                            },
-                            _ => {}
+                        if let StreamType::Kline { .. } = pane_stream {
+                            dashboard.insert_klines_vec(&pane_stream, &klines, pane_id);
                         }
                     },
                     Err(err) => {
@@ -679,23 +672,15 @@ impl State {
             Message::SliderChanged(pane_id, value) => {
                 let dashboard = self.get_mut_dashboard();
 
-                match dashboard.pane_set_size_filter(pane_id, value) {
+                match dashboard.set_pane_size_filter(pane_id, value) {
                     Ok(_) => {
-                        match dashboard.get_pane_settings_mut(pane_id) {
-                            Ok(pane_settings) => {
-                                pane_settings.trade_size_filter = Some(value);
-        
-                                Task::none()
-                            },
-                            Err(err) => {
-                                log::error!("Failed to set size filter: {err}");
-        
-                                Task::none()
-                            }
-                        }
+                        log::info!("Size filter set to {value}");
+
+                        Task::none()
                     }
                     Err(err) => {
                         log::error!("{err}");
+                        
                         Task::none()
                     }
                 }
@@ -724,55 +709,41 @@ impl State {
                 let dashboard = self.get_mut_dashboard();
 
                 let mut tasks = vec![];
-                
+                    
                 let pane_content = match content.as_str() {
-                    "Heatmap chart" => PaneContent::Heatmap(HeatmapChart::new(1.0)),
+                    "Heatmap chart" => PaneContent::Heatmap(
+                        HeatmapChart::new(1.0)
+                    ),
                     "Footprint chart" => {
-                        let footprint_chart = FootprintChart::new(1, 1.0, vec![], vec![]);
-                        PaneContent::Footprint(footprint_chart)
+                        PaneContent::Footprint(
+                            FootprintChart::new(1, 1.0, vec![], vec![])
+                        )
                     },
                     "Candlestick chart" => {
-                        let candlestick_chart = CandlestickChart::new(vec![], 1);
-                        PaneContent::Candlestick(candlestick_chart)
+                        PaneContent::Candlestick(
+                            CandlestickChart::new(vec![], 1)
+                        )
                     },
-                    "Time&Sales" => PaneContent::TimeAndSales(TimeAndSales::new()),
+                    "Time&Sales" => PaneContent::TimeAndSales(
+                        TimeAndSales::new()
+                    ),
                     _ => return Task::none(),
                 };
-                
-                if let Ok(vec_streams) = dashboard.get_pane_stream_mut(pane_id) {
-                    *vec_streams = pane_stream.to_vec();
-                } else {
-                    log::error!("No pane found for stream update");
-                }
-            
+
+                // set pane's stream and content identifiers
                 if let Err(err) = dashboard.set_pane_content(pane_id, pane_content) {
                     log::error!("Failed to set pane content: {}", err);
                 } else {
                     log::info!("Pane content set: {content}");
                 }
                 
-                if content == "Footprint chart" || content == "Candlestick chart" || content == "Heatmap chart" {
-                    for stream in pane_stream.iter() {
-                        if let StreamType::Kline { exchange, ticker, timeframe } = stream {
-                            let stream_clone = *stream;
-                
-                            if content == "Candlestick chart" || content == "Footprint chart" {
-                                let fetch_klines = create_fetch_klines_task(exchange, ticker, timeframe, stream_clone, pane_id);
-                                tasks.push(fetch_klines);
-
-                                if content == "Footprint chart" {
-                                    let fetch_ticksize = create_fetch_ticksize_task(exchange, ticker, pane_id);
-                                    tasks.push(fetch_ticksize);
-                                }
-                            }
-                        
-                        } else if let StreamType::DepthAndTrades { exchange, ticker } = stream {
-                            let fetch_ticksize = create_fetch_ticksize_task(exchange, ticker, pane_id);
-                            tasks.push(fetch_ticksize);
-                        }
-                    }
+                if let Err(err) = dashboard.set_pane_stream(pane_id, pane_stream.to_vec()) {
+                    log::error!("Failed to set pane stream: {err}");
+                } else {
+                    log::info!("Pane stream set: {pane_stream:?}");
                 }
             
+                // prepare unique streams for websocket
                 for stream in pane_stream.iter() {
                     match stream {
                         StreamType::Kline { exchange, ticker, .. } | StreamType::DepthAndTrades { exchange, ticker } => {
@@ -788,6 +759,27 @@ impl State {
                 }
             
                 log::info!("{:?}", &self.pane_streams);
+
+                // get fetch tasks for pane's content
+                if ["Footprint chart", "Candlestick chart", "Heatmap chart"].contains(&content.as_str()) {
+                    for stream in pane_stream.iter() {
+                        match stream {
+                            StreamType::Kline { exchange, ticker, timeframe } => {
+                                if ["Candlestick chart", "Footprint chart"].contains(&content.as_str()) {
+                                    tasks.push(create_fetch_klines_task(exchange, ticker, timeframe, *stream, pane_id));
+                                    
+                                    if content == "Footprint chart" {
+                                        tasks.push(create_fetch_ticksize_task(exchange, ticker, pane_id));
+                                    }
+                                }
+                            },
+                            StreamType::DepthAndTrades { exchange, ticker } => {
+                                tasks.push(create_fetch_ticksize_task(exchange, ticker, pane_id));
+                            },
+                            _ => {}
+                        }
+                    }
+                }
                 
                 Task::batch(tasks)
             },
@@ -1452,10 +1444,16 @@ fn view_starter(
                     );
 
                     let pane_stream: Vec<StreamType> = match label {
-                        "Heatmap chart" => vec![StreamType::DepthAndTrades { exchange, ticker }],
-                        "Footprint chart" => vec![StreamType::DepthAndTrades { exchange, ticker }, StreamType::Kline { exchange, ticker, timeframe }],
-                        "Candlestick chart" => vec![StreamType::Kline { exchange, ticker, timeframe }],
-                        "Time&Sales" => vec![StreamType::DepthAndTrades { exchange, ticker }],
+                        "Heatmap chart" | "Time&Sales" => vec![
+                            StreamType::DepthAndTrades { exchange, ticker }
+                        ],
+                        "Footprint chart" => vec![
+                            StreamType::DepthAndTrades { exchange, ticker }, 
+                            StreamType::Kline { exchange, ticker, timeframe }
+                        ],
+                        "Candlestick chart" => vec![
+                            StreamType::Kline { exchange, ticker, timeframe }
+                        ],
                         _ => vec![]
                     };
                 

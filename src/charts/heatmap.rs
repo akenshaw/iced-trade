@@ -50,7 +50,7 @@ impl HeatmapChart {
             chart: CommonChartData::default(),
             data_points: BTreeMap::new(),
             tick_size,
-            y_scaling: 20,
+            y_scaling: 100,
             size_filter: 0.0,
         }
     }
@@ -62,12 +62,60 @@ impl HeatmapChart {
         self.size_filter
     }
 
+    fn price_to_float(&self, price: i64) -> f32 {
+        price as f32 * self.tick_size
+    }
+
     pub fn change_tick_size(&mut self, tick_size: f32) {
         self.tick_size = tick_size;
 
         self.data_points.clear();
         self.chart.x_labels_cache.clear();
         self.chart.y_labels_cache.clear();
+    }
+
+    fn calculate_range(&self) -> (i64, i64, f32, f32) {
+        let timestamp_latest: &i64 = self.data_points.keys().last().unwrap_or(&0);
+
+        let latest: i64 = *timestamp_latest - (self.chart.translation.x*60.0) as i64;
+        let earliest: i64 = latest - (48000.0 / (self.chart.scaling / (self.chart.bounds.width/800.0))) as i64;
+    
+        let mut max_ask_price = f32::MIN;
+        let mut min_bid_price = f32::MAX;
+
+        for (_, (depth, _)) in self.data_points.range(earliest..=latest) {
+            if self.chart.autoscale {
+                max_ask_price = max_ask_price.max(
+                    self.price_to_float(
+                        *depth.asks.keys().last().unwrap_or(&0)
+                    )
+                );
+                min_bid_price = min_bid_price.min(
+                    self.price_to_float(
+                        *depth.bids.keys().next().unwrap_or(&0)
+                    )
+                );
+            } else {
+                max_ask_price = max_ask_price.max(
+                    self.price_to_float(
+                        *depth.asks.keys().nth(self.y_scaling.try_into().unwrap_or(20))
+                            .unwrap_or(depth.asks.keys().last()
+                                .unwrap_or(&0)
+                            )
+                    )
+                );
+                min_bid_price = min_bid_price.min(
+                    self.price_to_float(
+                        *depth.bids.keys().nth_back(self.y_scaling.try_into().unwrap_or(20))
+                            .unwrap_or(depth.bids.keys().next()
+                                .unwrap_or(&0)
+                            )
+                    )
+                );
+            }
+        }
+
+        (latest, earliest, max_ask_price, min_bid_price)
     }
 
     pub fn insert_datapoint(&mut self, trades_buffer: &[Trade], depth_update: i64, depth: Rc<Depth>) {
@@ -149,50 +197,6 @@ impl HeatmapChart {
         chart_state.main_cache.clear();   
     }
 
-    fn calculate_range(&self) -> (i64, i64, f32, f32) {
-        let timestamp_latest: &i64 = self.data_points.keys().last().unwrap_or(&0);
-
-        let latest: i64 = *timestamp_latest - (self.chart.translation.x*60.0) as i64;
-        let earliest: i64 = latest - (48000.0 / (self.chart.scaling / (self.chart.bounds.width/800.0))) as i64;
-    
-        let mut max_ask_price = f32::MIN;
-        let mut min_bid_price = f32::MAX;
-
-        for (_, (depth, _)) in self.data_points.range(earliest..=latest) {
-            if self.chart.autoscale {
-                max_ask_price = max_ask_price.max(
-                    self.price_to_float(
-                        *depth.asks.keys().last().unwrap_or(&0)
-                    )
-                );
-                min_bid_price = min_bid_price.min(
-                    self.price_to_float(
-                        *depth.bids.keys().next().unwrap_or(&0)
-                    )
-                );
-            } else {
-                max_ask_price = max_ask_price.max(
-                    self.price_to_float(
-                        *depth.asks.keys().nth(self.y_scaling.try_into().unwrap_or(20))
-                            .unwrap_or(depth.asks.keys().last()
-                                .unwrap_or(&0)
-                            )
-                    )
-                );
-                min_bid_price = min_bid_price.min(
-                    self.price_to_float(
-                        *depth.bids.keys().nth_back(self.y_scaling.try_into().unwrap_or(20))
-                            .unwrap_or(depth.bids.keys().next()
-                                .unwrap_or(&0)
-                            )
-                    )
-                );
-            }
-        }
-
-        (latest, earliest, max_ask_price, min_bid_price)
-    }
-
     pub fn update(&mut self, message: &Message) {
         match message {
             Message::Translated(translation) => {
@@ -268,10 +272,6 @@ impl HeatmapChart {
                 }
             },
         }
-    }
-
-    fn price_to_float(&self, price: i64) -> f32 {
-        price as f32 * self.tick_size
     }
 
     pub fn view(&self) -> Element<Message> {

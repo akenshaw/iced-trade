@@ -106,43 +106,6 @@ impl Dashboard {
         }
     }
 
-    pub fn update_chart_state(&mut self, pane_id: Uuid, message: Message) -> Result<(), &str> {
-        for (_, pane_state) in self.panes.iter_mut() {
-            if pane_state.id == pane_id {
-                match pane_state.content {
-                    PaneContent::Heatmap(ref mut chart) => {
-                        chart.update(&message);
-
-                        return Ok(());
-                    },
-                    PaneContent::Footprint(ref mut chart) => {
-                        chart.update(&message);
-
-                        return Ok(());
-                    },
-                    PaneContent::Candlestick(ref mut chart) => {
-                        chart.update(&message);
-
-                        return Ok(());
-                    },
-                    _ => {
-                        return Err("No chart found");
-                    }
-                }
-            }
-        }
-        Err("No pane found")
-    }
-
-    pub fn get_pane_stream_mut(&mut self, pane_id: Uuid) -> Result<&mut Vec<StreamType>, &str> {
-        for (_, pane_state) in self.panes.iter_mut() {
-            if pane_state.id == pane_id {
-                return Ok(&mut pane_state.stream);
-            }
-        }
-        Err("No pane found")
-    }
-
     pub fn get_pane_settings_mut(&mut self, pane_id: Uuid) -> Result<&mut PaneSettings, &str> {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.id == pane_id {
@@ -163,7 +126,18 @@ impl Dashboard {
         Err("No pane found")
     }
 
-    pub fn pane_change_ticksize(&mut self, pane_id: Uuid, new_tick_multiply: TickMultiplier) -> Result<(), &str> {
+    pub fn set_pane_stream(&mut self, pane_id: Uuid, stream: Vec<StreamType>) -> Result<(), &str> {
+        for (_, pane_state) in self.panes.iter_mut() {
+            if pane_state.id == pane_id {
+                pane_state.stream = stream;
+
+                return Ok(());
+            }
+        }
+        Err("No pane found")
+    }
+
+    pub fn set_pane_ticksize(&mut self, pane_id: Uuid, new_tick_multiply: TickMultiplier) -> Result<(), &str> {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.id == pane_id {
                 pane_state.settings.tick_multiply = Some(new_tick_multiply);
@@ -196,7 +170,7 @@ impl Dashboard {
         Err("No pane found")
     }
     
-    pub fn pane_change_timeframe(&mut self, pane_id: Uuid, new_timeframe: Timeframe) -> Result<&StreamType, &str> {
+    pub fn set_pane_timeframe(&mut self, pane_id: Uuid, new_timeframe: Timeframe) -> Result<&StreamType, &str> {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.id == pane_id {
                 pane_state.settings.selected_timeframe = Some(new_timeframe);
@@ -224,13 +198,15 @@ impl Dashboard {
         Err("No pane found")
     }
 
-    pub fn pane_set_size_filter(&mut self, pane_id: Uuid, new_size_filter: f32) -> Result<(), &str> {
+    pub fn set_pane_size_filter(&mut self, pane_id: Uuid, new_size_filter: f32) -> Result<(), &str> {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.id == pane_id {
+                pane_state.settings.trade_size_filter = Some(new_size_filter);
+
                 match pane_state.content {
                     PaneContent::Heatmap(ref mut chart) => {
                         chart.set_size_filter(new_size_filter);
-                        
+
                         return Ok(());
                     },
                     PaneContent::TimeAndSales(ref mut chart) => {
@@ -247,30 +223,31 @@ impl Dashboard {
         Err("No pane found")
     }
 
-    pub fn insert_klines_vec(&mut self, stream_type: &StreamType, klines: &Vec<Kline>, pane_id: Uuid) {
+    pub fn find_and_insert_ticksizes(&mut self, stream_type: &StreamType, tick_sizes: f32) -> Result<(), &str> {
+        let mut found_match = false;
+
         for (_, pane_state) in self.panes.iter_mut() {
-            if pane_state.id == pane_id {
-                match stream_type {
-                    StreamType::Kline { timeframe, .. } => {
-                        let timeframe_u16 = timeframe.to_minutes();
+            if pane_state.matches_stream(stream_type) {
+                match &mut pane_state.content {
+                    PaneContent::Footprint(_) => {
+                        pane_state.settings.min_tick_size = Some(tick_sizes);
 
-                        match &mut pane_state.content {
-                            PaneContent::Candlestick(chart) => {
-                                *chart = CandlestickChart::new(klines.to_vec(), timeframe_u16);
-                            },
-                            PaneContent::Footprint(chart) => {
-                                let raw_trades = chart.get_raw_trades();
+                        found_match = true;
+                    },
+                    PaneContent::Heatmap(_) => {
+                        pane_state.settings.min_tick_size = Some(tick_sizes);
 
-                                let tick_size = chart.get_tick_size();
-
-                                *chart = FootprintChart::new(timeframe_u16, tick_size, klines.to_vec(), raw_trades);
-                            },
-                            _ => {}
-                        }
+                        found_match = true;
                     },
                     _ => {}
                 }
             }
+        }
+
+        if found_match {
+            Ok(())
+        } else {
+            Err("No matching pane found for the stream")
         }
     }
 
@@ -313,31 +290,30 @@ impl Dashboard {
         }
     }
 
-    pub fn find_and_insert_ticksizes(&mut self, stream_type: &StreamType, tick_sizes: f32) -> Result<(), &str> {
-        let mut found_match = false;
-
+    pub fn insert_klines_vec(&mut self, stream_type: &StreamType, klines: &Vec<Kline>, pane_id: Uuid) {
         for (_, pane_state) in self.panes.iter_mut() {
-            if pane_state.matches_stream(stream_type) {
-                match &mut pane_state.content {
-                    PaneContent::Footprint(_) => {
-                        pane_state.settings.min_tick_size = Some(tick_sizes);
+            if pane_state.id == pane_id {
+                match stream_type {
+                    StreamType::Kline { timeframe, .. } => {
+                        let timeframe_u16 = timeframe.to_minutes();
 
-                        found_match = true;
-                    },
-                    PaneContent::Heatmap(_) => {
-                        pane_state.settings.min_tick_size = Some(tick_sizes);
+                        match &mut pane_state.content {
+                            PaneContent::Candlestick(chart) => {
+                                *chart = CandlestickChart::new(klines.to_vec(), timeframe_u16);
+                            },
+                            PaneContent::Footprint(chart) => {
+                                let raw_trades = chart.get_raw_trades();
 
-                        found_match = true;
+                                let tick_size = chart.get_tick_size();
+
+                                *chart = FootprintChart::new(timeframe_u16, tick_size, klines.to_vec(), raw_trades);
+                            },
+                            _ => {}
+                        }
                     },
                     _ => {}
                 }
             }
-        }
-
-        if found_match {
-            Ok(())
-        } else {
-            Err("No matching pane found for the stream")
         }
     }
 
@@ -393,6 +369,34 @@ impl Dashboard {
         } else {
             Err("No matching pane found for the stream")
         }
+    }
+
+    pub fn update_chart_state(&mut self, pane_id: Uuid, message: Message) -> Result<(), &str> {
+        for (_, pane_state) in self.panes.iter_mut() {
+            if pane_state.id == pane_id {
+                match pane_state.content {
+                    PaneContent::Heatmap(ref mut chart) => {
+                        chart.update(&message);
+
+                        return Ok(());
+                    },
+                    PaneContent::Footprint(ref mut chart) => {
+                        chart.update(&message);
+
+                        return Ok(());
+                    },
+                    PaneContent::Candlestick(ref mut chart) => {
+                        chart.update(&message);
+
+                        return Ok(());
+                    },
+                    _ => {
+                        return Err("No chart found");
+                    }
+                }
+            }
+        }
+        Err("No pane found")
     }
 
     pub fn get_all_diff_streams(&self) -> HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>> {
