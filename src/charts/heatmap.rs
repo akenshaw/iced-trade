@@ -84,33 +84,25 @@ impl HeatmapChart {
         let mut min_bid_price = f32::MAX;
 
         for (_, (depth, _)) in self.data_points.range(earliest..=latest) {
+            let mid_price = (self.price_to_float(
+                *depth.asks.keys().next().unwrap_or(&0)
+            ) + self.price_to_float(
+                *depth.bids.keys().last().unwrap_or(&0)
+            )) / 2.0;
+
             if self.chart.autoscale {
                 max_ask_price = max_ask_price.max(
-                    self.price_to_float(
-                        *depth.asks.keys().last().unwrap_or(&0)
-                    )
+                    mid_price + (100.0 * self.tick_size)
                 );
                 min_bid_price = min_bid_price.min(
-                    self.price_to_float(
-                        *depth.bids.keys().next().unwrap_or(&0)
-                    )
+                    mid_price - (100.0 * self.tick_size)
                 );
             } else {
                 max_ask_price = max_ask_price.max(
-                    self.price_to_float(
-                        *depth.asks.keys().nth(self.y_scaling.try_into().unwrap_or(20))
-                            .unwrap_or(depth.asks.keys().last()
-                                .unwrap_or(&0)
-                            )
-                    )
+                    mid_price + (self.y_scaling as f32 * self.tick_size)
                 );
                 min_bid_price = min_bid_price.min(
-                    self.price_to_float(
-                        *depth.bids.keys().nth_back(self.y_scaling.try_into().unwrap_or(20))
-                            .unwrap_or(depth.bids.keys().next()
-                                .unwrap_or(&0)
-                            )
-                    )
+                    mid_price - (self.y_scaling as f32 * self.tick_size)
                 );
             }
         }
@@ -171,7 +163,7 @@ impl HeatmapChart {
     pub fn render_start(&mut self) {  
         let (latest, earliest, highest, lowest) = self.calculate_range();
 
-        if latest == 0 || highest == 0.0 {
+        if latest == 0 || highest == 0.0 || lowest == 0.0 {
             return;
         }
 
@@ -251,19 +243,9 @@ impl HeatmapChart {
                     self.chart.autoscale = false;
                 }
 
-                let last_depth_bids_len = self.data_points.last_key_value().map(|(_, (depth, _))| depth.bids.len()).unwrap_or(0);
-                let last_depth_asks_len = self.data_points.last_key_value().map(|(_, (depth, _))| depth.asks.len()).unwrap_or(0);
-
-                let max_len_depth: i32 = last_depth_bids_len.max(last_depth_asks_len).try_into().unwrap_or(0);
-
-                if last_depth_bids_len == 0 || last_depth_asks_len == 0 || max_len_depth == 0 {
-                    log::error!("No depth data available to y scaling");
-                    return
-                };
-
                 if *delta < 1.0 {
-                    if self.y_scaling < max_len_depth {
-                        self.y_scaling = (self.y_scaling + (delta * 10.0) as i32).min(max_len_depth);
+                    if self.y_scaling < 500 {
+                        self.y_scaling = (self.y_scaling + (delta * 10.0) as i32).min(500);
                     }
                 } else {
                     if self.y_scaling > 10 {

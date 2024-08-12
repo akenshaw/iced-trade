@@ -323,7 +323,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
             };
 
             let stream_1 = format!("publicTrade.{symbol_str}");
-            let stream_2 = format!("orderbook.200.{symbol_str}");
+            let stream_2 = format!("orderbook.500.{symbol_str}");
 
             let mut orderbook: LocalDepthCache = LocalDepthCache::new();
 

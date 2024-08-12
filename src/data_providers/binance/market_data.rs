@@ -1,6 +1,6 @@
 use iced::{futures, stream};  
-use futures::stream::{Stream, StreamExt};
-use serde::{Deserializer};
+use futures::stream::Stream;
+use serde::Deserializer;
 use futures::sink::SinkExt;
 
 use serde_json::Value;
@@ -8,9 +8,8 @@ use crate::{Ticker, Timeframe};
 
 use bytes::Bytes;
 
-use sonic_rs::{JsonValueTrait};
-use sonic_rs::{Deserialize, Serialize}; 
-use sonic_rs::{to_object_iter_unchecked};
+use sonic_rs::{Deserialize, Serialize, JsonValueTrait}; 
+use sonic_rs::to_object_iter_unchecked;
 
 use anyhow::{Context, Result};
 
@@ -151,7 +150,7 @@ impl StreamName {
         if let Some(after_at) = stream_type.split('@').nth(1) {
             match after_at {
                 _ if after_at.starts_with("dep") => StreamName::Depth,
-                _ if after_at.starts_with("tra") => StreamName::Trade,
+                _ if after_at.starts_with("agg") => StreamName::Trade,
                 _ if after_at.starts_with("kli") => StreamName::Kline,
                 _ => StreamName::Unknown,
             }
@@ -314,7 +313,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                 Ticker::LTCUSDT => "ltcusdt",
             };
 
-            let stream_1 = format!("{symbol_str}@trade");
+            let stream_1 = format!("{symbol_str}@aggTrade");
             let stream_2 = format!("{symbol_str}@depth@100ms");
 
             let mut orderbook: LocalDepthCache = LocalDepthCache::new();
