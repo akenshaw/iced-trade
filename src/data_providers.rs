@@ -95,8 +95,8 @@ impl LocalDepthCache {
             }
         });
 
-        let highest: f32 = best_ask_price * 1.001;
-        let lowest: f32 = best_bid_price * 0.999;
+        let highest: f32 = best_ask_price * 1.01;
+        let lowest: f32 = best_bid_price * 0.99;
 
         self.update_depth_cache(&new_depth.bids, &new_depth.asks);
 
