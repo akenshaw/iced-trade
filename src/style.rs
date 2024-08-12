@@ -50,6 +50,21 @@ pub fn tooltip(theme: &Theme) -> Style {
     }
 }
 
+pub fn notification(theme: &Theme) -> Style {
+    let palette = theme.extended_palette();
+
+    Style {
+        text_color: Some(palette.background.weak.text),
+        background: Some(Color::BLACK.into()),
+        border: Border {
+            width: 1.0,
+            color: palette.background.weak.color,
+            radius: 2.0.into(),
+        },
+        ..Default::default()
+    }
+}
+
 pub fn title_bar_active(theme: &Theme) -> Style {
     let palette = theme.extended_palette();
 

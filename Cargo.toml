@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-iced = { git = "https://github.com/iced-rs/iced.git", features = ["canvas", "tokio", "lazy", "image", "advanced"] }
+iced = { git = "https://github.com/iced-rs/iced.git", features = ["canvas", "tokio"] }
 chrono = "0.4.37"
 tokio = { version = "1.37.0", features = ["full", "macros"] }
 tokio-tungstenite = "0.21.0"
