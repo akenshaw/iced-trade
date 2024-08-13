@@ -1,7 +1,7 @@
-use std::{collections::BTreeMap, rc::Rc};
+use std::{collections::BTreeMap, rc::Rc, time::Instant};
 use chrono::NaiveDateTime;
 use iced::{
-    alignment, mouse, widget::{button, canvas::{self, event::{self, Event}, stroke::Stroke, Canvas, Geometry, Path}}, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme
+    alignment, mouse, widget::{button, canvas::{self, event::{self, Event}, stroke::Stroke, Canvas, Geometry, Path}}, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector
 };
 use iced::widget::{Column, Row, Container, Text};
 
@@ -77,7 +77,7 @@ impl HeatmapChart {
     fn calculate_range(&self) -> (i64, i64, f32, f32) {
         let timestamp_latest: &i64 = self.data_points.keys().last().unwrap_or(&0);
 
-        let latest: i64 = *timestamp_latest - (self.chart.translation.x*60.0) as i64;
+        let latest: i64 = *timestamp_latest - ((self.chart.translation.x - (self.chart.bounds.width/20.0)) * 60.0) as i64;
         let earliest: i64 = latest - (48000.0 / (self.chart.scaling / (self.chart.bounds.width/800.0))) as i64;
     
         let mut max_ask_price = f32::MIN;
@@ -224,6 +224,12 @@ impl HeatmapChart {
             },
             Message::AutoscaleToggle => {
                 self.chart.autoscale = !self.chart.autoscale;
+
+                if self.chart.autoscale {
+                    self.chart.translation = Vector::default();
+
+                    self.chart.scaling = 1.0;
+                }
             },
             Message::CrosshairToggle => {
                 self.chart.crosshair = !self.chart.crosshair;
@@ -450,12 +456,12 @@ impl canvas::Program<Message> for HeatmapChart {
         let depth_area_width: f32 = bounds.width / 20.0;
 
         let heatmap = chart.main_cache.draw(renderer, bounds.size(), |frame| {
-            // visible quantity scaling calculations
+            //let start = Instant::now();
+
+            // visible quantity for scaling calculations
             let (mut min_trade_qty, mut max_trade_qty) = (f32::MAX, 0.0f32);
 
-            let mut max_aggr_volume: f32 = 0.0;
-        
-            let mut max_depth_qty: f32 = 0.0;
+            let (mut max_aggr_volume, mut max_depth_qty) = (0.0f32, 0.0f32);
 
             for (_, (depth, trades)) in self.data_points.range(earliest..=latest) {
                 let mut buy_volume: f32 = 0.0;
@@ -571,11 +577,12 @@ impl canvas::Program<Message> for HeatmapChart {
                     ..canvas::Text::default()
                 });
 
+                // max aggregated volume text
                 let text_content = format!("{max_aggr_volume:.2}");
                 if x_position > bounds.width {      
                     let text_width = (text_content.len() as f32 * text_size) / 1.5;
 
-                    let text_position = Point::new(bounds.width - text_width, bounds.height - (volume_area_height + bar_height));
+                    let text_position = Point::new(bounds.width - text_width, bounds.height - (volume_area_height - bar_height));
                     
                     frame.fill_text(canvas::Text {
                         content: text_content,
@@ -586,7 +593,7 @@ impl canvas::Program<Message> for HeatmapChart {
                     });
 
                 } else {
-                    let text_position = Point::new(x_position + 5.0, bounds.height - (volume_area_height + bar_height));
+                    let text_position = Point::new(x_position + 5.0, bounds.height - (volume_area_height - bar_height));
 
                     frame.fill_text(canvas::Text {
                         content: text_content,
@@ -669,6 +676,10 @@ impl canvas::Program<Message> for HeatmapChart {
 
                     let price = self.price_to_float(trade.price);
 
+                    if price < lowest || price > highest {
+                        continue;
+                    }
+
                     if trade.qty * price > self.size_filter {
                         let x_position = (((time - 100) - earliest) as f32 / (latest - earliest) as f32) * bounds.width;
                         let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
@@ -692,14 +703,14 @@ impl canvas::Program<Message> for HeatmapChart {
                 }
 
                 if max_aggr_volume > 0.0 {
-                    let buy_bar_height = (buy_volume / max_aggr_volume) * (volume_area_height + bar_height);
+                    let buy_bar_height = (buy_volume / max_aggr_volume) * (volume_area_height - bar_height);
                     frame.fill_rectangle(
                         Point::new(x_position as f32 + 2.0, bounds.height - buy_bar_height), 
                         Size::new(1.0, buy_bar_height), 
                         Color::from_rgb8(81, 205, 160)
                     );
 
-                    let sell_bar_height = (sell_volume / max_aggr_volume) * (volume_area_height + bar_height);
+                    let sell_bar_height = (sell_volume / max_aggr_volume) * (volume_area_height - bar_height);
                     frame.fill_rectangle(
                         Point::new(x_position as f32, bounds.height - sell_bar_height), 
                         Size::new(1.0, sell_bar_height), 
@@ -707,6 +718,8 @@ impl canvas::Program<Message> for HeatmapChart {
                     );
                 }
             };
+
+            //log::info!("Heatmap draw time: {:?}us", start.elapsed().as_micros());
         });
 
         if chart.crosshair {
