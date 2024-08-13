@@ -246,8 +246,8 @@ impl HeatmapChart {
                 }
 
                 if *delta < 1.0 {
-                    if self.y_scaling < 500 {
-                        self.y_scaling = (self.y_scaling + (delta * 10.0) as i32).min(500);
+                    if self.y_scaling < 200 {
+                        self.y_scaling = (self.y_scaling + (delta * 10.0) as i32).min(200);
                     }
                 } else {
                     if self.y_scaling > 10 {
@@ -525,10 +525,11 @@ impl canvas::Program<Message> for HeatmapChart {
                 
                 bar_height = (((lowest_bid_y_pos - highest_ask_y_pos) / (y_range / self.tick_size) as f32).floor()).max(1.0);
 
-                let max_qty = latest_bids.iter()
+                let mut max_qty = latest_bids.iter()
                     .map(|(_, qty)| qty)
                     .chain(latest_asks.iter().map(|(_, qty)| qty))
                     .fold(f32::MIN, |price: f32, qty: &f32| f32::max(price, *qty));
+                max_qty = (max_qty / 5.0).ceil() * 5.0;
 
                 for (price, qty) in &latest_bids {     
                     let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
@@ -558,18 +559,18 @@ impl canvas::Program<Message> for HeatmapChart {
                 frame.fill_rectangle(
                     Point::new(x_position, 0.0), 
                     Size::new(1.0, bounds.height), 
-                    Color::from_rgba8(100, 100, 100, 0.1)
+                    Color::from_rgba8(100, 100, 100, 0.2)
                 );
 
                 // max bid/ask quantity text
                 let text_size = 9.0;
-                let text_content = format!("{max_qty:.2}");
+                let text_content = format!("{max_qty:.0}");
                 let text_position = Point::new(x_position + depth_area_width, 0.0);
                 frame.fill_text(canvas::Text {
                     content: text_content,
                     position: text_position,
                     size: iced::Pixels(text_size),
-                    color: Color::from_rgba8(81, 81, 81, 1.0),
+                    color: Color::from_rgba8(121, 121, 121, 1.0),
                     ..canvas::Text::default()
                 });
 
@@ -584,7 +585,7 @@ impl canvas::Program<Message> for HeatmapChart {
                         content: text_content,
                         position: text_position,
                         size: iced::Pixels(text_size),
-                        color: Color::from_rgba8(81, 81, 81, 1.0),
+                        color: Color::from_rgba8(121, 121, 121, 1.0),
                         ..canvas::Text::default()
                     });
 
@@ -595,7 +596,7 @@ impl canvas::Program<Message> for HeatmapChart {
                         content: text_content,
                         position: text_position,
                         size: iced::Pixels(text_size),
-                        color: Color::from_rgba8(81, 81, 81, 1.0),
+                        color: Color::from_rgba8(121, 121, 121, 1.0),
                         ..canvas::Text::default()
                     });
                 }

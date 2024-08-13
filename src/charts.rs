@@ -276,7 +276,7 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
         let latest_in_millis = self.max; 
         let earliest_in_millis = self.min; 
 
-        let x_labels_can_fit = (bounds.width / 120.0) as i32;
+        let x_labels_can_fit = (bounds.width / 192.0) as i32;
 
         let (time_step, rounded_earliest) = calculate_time_step(earliest_in_millis, latest_in_millis, x_labels_can_fit, self.timeframe);
         
