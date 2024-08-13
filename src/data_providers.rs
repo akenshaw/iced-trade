@@ -26,8 +26,8 @@ pub struct Order {
 #[derive(Debug, Clone, Default)]
 pub struct Depth {
     pub time: i64,
-    pub bids: Box<[Order]>,
-    pub asks: Box<[Order]>,
+    pub bids: Vec<Order>,
+    pub asks: Vec<Order>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -77,7 +77,7 @@ impl LocalDepthCache {
         }
     }
 
-    pub fn update_levels(&mut self, new_depth: LocalDepthCache) -> (Box<[Order]>, Box<[Order]>) {
+    pub fn update_levels(&mut self, new_depth: LocalDepthCache) -> (Vec<Order>, Vec<Order>) {
         self.last_update_id = new_depth.last_update_id;
         self.time = new_depth.time;
 
@@ -113,12 +113,8 @@ impl LocalDepthCache {
                 local_asks.push(*order);
             }
         }
-
-        // first sort by price
-        local_bids.sort_by(|a, b| b.price.partial_cmp(&a.price).unwrap());
-        local_asks.sort_by(|a, b| a.price.partial_cmp(&b.price).unwrap());
-
-        (local_bids.into_boxed_slice(), local_asks.into_boxed_slice())
+        
+        (local_bids, local_asks)
     }
 
     pub fn get_fetch_id(&self) -> i64 {
