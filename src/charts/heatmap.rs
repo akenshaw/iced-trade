@@ -145,15 +145,11 @@ impl HeatmapChart {
             .collect();
         
         self.data_points.insert(rounded_depth_update, (grouped_depth, grouped_trades));
-        
-        while self.data_points.len() > 3600 {
-            if let Some((&key_to_remove, _)) = self.data_points.first_key_value() {
-                self.data_points.remove(&key_to_remove);
-                if self.data_points.len() <= 3000 {
-                    break;
-                }
-            } else {
-                break;
+    
+        if self.data_points.len() > 2400 {
+            let keys_to_remove: Vec<_> = self.data_points.keys().take(600).cloned().collect();
+            for key in keys_to_remove {
+                self.data_points.remove(&key);
             }
         }
         
