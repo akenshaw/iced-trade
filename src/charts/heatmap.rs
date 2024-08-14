@@ -1,6 +1,5 @@
-use std::{collections::{BTreeMap, HashMap}, rc::Rc, time::Instant};
+use std::{collections::{BTreeMap, HashMap, VecDeque}, rc::Rc, time::Instant};
 use chrono::NaiveDateTime;
-use hmac::digest::typenum::Or;
 use iced::{
     alignment, mouse, widget::{button, canvas::{self, event::{self, Event}, stroke::Stroke, Canvas, Geometry, Path}}, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector
 };
@@ -31,7 +30,7 @@ struct QtyScale {
 
 pub struct HeatmapChart {
     chart: CommonChartData,
-    data_points: BTreeMap<i64, (GroupedDepth, Vec<GroupedTrade>)>,
+    data_points: VecDeque<(i64, (GroupedDepth, Vec<GroupedTrade>))>,
     tick_size: f32,
     y_scaling: i32,
     size_filter: f32,
@@ -56,7 +55,7 @@ impl HeatmapChart {
     pub fn new(tick_size: f32) -> Self {
         HeatmapChart {
             chart: CommonChartData::default(),
-            data_points: BTreeMap::new(),
+            data_points: VecDeque::new(),
             tick_size,
             y_scaling: 100,
             size_filter: 0.0,
@@ -117,7 +116,7 @@ impl HeatmapChart {
             }
         };
 
-        let grouped_trades = trades_buffer
+        let grouped_trades: Vec<GroupedTrade> = trades_buffer
             .iter()
             .map(|trade| GroupedTrade {
                 is_sell: trade.is_sell,
@@ -132,12 +131,11 @@ impl HeatmapChart {
             })
             .collect();
         
-        self.data_points.insert(rounded_depth_update, (grouped_depth, grouped_trades));
+        self.data_points.push_back((rounded_depth_update, (grouped_depth, grouped_trades)));
     
         if self.data_points.len() > 2400 {
-            let keys_to_remove: Vec<_> = self.data_points.keys().take(600).cloned().collect();
-            for key in keys_to_remove {
-                self.data_points.remove(&key);
+            while self.data_points.len() > 2000 {
+                self.data_points.pop_front();
             }
         }
         
@@ -147,7 +145,7 @@ impl HeatmapChart {
     fn calculate_scales(&self) -> (i64, i64, f32, f32, QtyScale) {
         let start = Instant::now();
 
-        let timestamp_latest: &i64 = self.data_points.keys().last().unwrap_or(&0);
+        let timestamp_latest: &i64 = self.data_points.back().map(|(timestamp, _)| timestamp).unwrap_or(&0);
 
         let latest: i64 = *timestamp_latest - ((self.chart.translation.x - (self.chart.bounds.width/20.0)) * 60.0) as i64;
         let earliest: i64 = latest - (48000.0 / (self.chart.scaling / (self.chart.bounds.width/800.0))) as i64;
@@ -160,7 +158,11 @@ impl HeatmapChart {
         let (autoscale, y_scaling) = (self.chart.autoscale, self.y_scaling as f32);
         let tick_size = self.tick_size;
 
-        for (_, (depth, trades)) in self.data_points.range(earliest..=latest) {
+        for (time, (depth, _)) in self.data_points.iter() {
+            if *time < earliest || *time > latest {
+                continue;
+            }
+
             let mid_price = (
                 depth.bids.last().map(|order| order.price).unwrap_or(0.0) 
                 + depth.asks.first().map(|order| order.price).unwrap_or(0.0)
@@ -180,6 +182,12 @@ impl HeatmapChart {
                 lowest = lowest.min(
                     mid_price - (y_scaling * tick_size)
                 );
+            }
+        }
+
+        for (time, (depth, trades)) in self.data_points.iter() {
+            if *time < earliest || *time > latest {
+                continue;
             }
 
             let (mut buy_volume, mut sell_volume) = (0.0, 0.0);
@@ -533,7 +541,7 @@ impl canvas::Program<Message> for HeatmapChart {
             let (min_trade_qty, max_trade_qty) = (self.qty_scales.min_trade_qty, self.qty_scales.max_trade_qty);
 
             // draw: current depth as bars on the right side
-            if let Some((&latest_timestamp, (grouped_depth, _))) = self.data_points.last_key_value() {
+            if let Some((latest_timestamp, (grouped_depth, _))) = self.data_points.back() {
                 let x_position = ((latest_timestamp - earliest) as f32 / (latest - earliest) as f32) * bounds.width;
 
                 if x_position.is_nan() {
@@ -647,7 +655,10 @@ impl canvas::Program<Message> for HeatmapChart {
 
             let mut prev_x_position: Option<f32> = None;
 
-            for (time, (depth, trades)) in self.data_points.range(earliest..=latest) {
+            for (time, (depth, trades)) in self.data_points.iter() {
+                if *time < earliest || *time > latest {
+                    continue;
+                }
                 let x_position = ((time - earliest) as f32 / (latest - earliest) as f32) * bounds.width;
 
                 if x_position.is_nan() {
