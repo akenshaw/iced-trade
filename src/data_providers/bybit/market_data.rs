@@ -390,21 +390,19 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                 let depth_update = LocalDepthCache {
                                                     last_update_id: de_depth.update_id as i64,
                                                     time,
-                                                    bids: de_depth.bids.iter().map(|x| Order { price: str_f32_parse(&x.price), qty: str_f32_parse(&x.qty) }).collect(),
-                                                    asks: de_depth.asks.iter().map(|x| Order { price: str_f32_parse(&x.price), qty: str_f32_parse(&x.qty) }).collect(),
+                                                    bids: de_depth.bids.iter().map(
+                                                        |x| Order { price: str_f32_parse(&x.price), qty: str_f32_parse(&x.qty) }
+                                                    ).collect(),
+                                                    asks: de_depth.asks.iter().map(
+                                                        |x| Order { price: str_f32_parse(&x.price), qty: str_f32_parse(&x.qty) }
+                                                    ).collect(),
                                                 };
 
                                                 if (data_type == "snapshot") || (depth_update.last_update_id == 1) {
                                                     orderbook.fetched(depth_update);
 
                                                 } else if data_type == "delta" {
-                                                    let (local_bids, local_asks) = orderbook.update_levels(depth_update);
-
-                                                    let current_depth = Depth {
-                                                        time,
-                                                        bids: local_bids,
-                                                        asks: local_asks,
-                                                    };
+                                                    orderbook.update_depth_cache(depth_update);
 
                                                     let avg_trade_latency = if !trade_latencies.is_empty() {
                                                         let avg = trade_latencies.iter().sum::<i64>() / trade_latencies.len() as i64;
@@ -424,7 +422,7 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                             selected_ticker,
                                                             feed_latency,
                                                             time, 
-                                                            current_depth,
+                                                            orderbook.get_depth(),
                                                             std::mem::take(&mut trades_buffer)
                                                         )
                                                     ).await;
