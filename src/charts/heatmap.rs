@@ -143,7 +143,7 @@ impl HeatmapChart {
     }
 
     fn calculate_scales(&self) -> (i64, i64, f32, f32, QtyScale) {
-        let start = Instant::now();
+        //let start = Instant::now();
 
         let timestamp_latest: &i64 = self.data_points.back().map(|(timestamp, _)| timestamp).unwrap_or(&0);
 
@@ -213,7 +213,7 @@ impl HeatmapChart {
             }
         }
 
-        log::info!("Heatmap scales calculation time: {:?}us", start.elapsed().as_micros());
+        //log::info!("Heatmap scales calculation time: {:?}us", start.elapsed().as_micros());
 
         (
             latest, 
@@ -533,7 +533,7 @@ impl canvas::Program<Message> for HeatmapChart {
         let depth_area_width: f32 = bounds.width / 20.0;
 
         let heatmap = chart.main_cache.draw(renderer, bounds.size(), |frame| {
-            let start = Instant::now();
+            //let start = Instant::now();
             let mut bar_height: f32 = 1.0;
 
             let max_aggr_volume = self.qty_scales.max_aggr_volume;
@@ -760,7 +760,7 @@ impl canvas::Program<Message> for HeatmapChart {
                 }
             };
 
-            log::info!("Heatmap draw time: {:?}us", start.elapsed().as_micros());
+            //log::info!("Heatmap draw time: {:?}us", start.elapsed().as_micros());
         });
 
         if chart.crosshair {
