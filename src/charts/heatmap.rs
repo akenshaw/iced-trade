@@ -22,12 +22,21 @@ pub struct GroupedTrade {
     pub qty: f32,
 }
 
+#[derive(Default)]
+struct QtyScale {
+    max_trade_qty: f32,
+    min_trade_qty: f32,
+    max_aggr_volume: f32,
+    max_depth_qty: f32,
+}
+
 pub struct HeatmapChart {
     chart: CommonChartData,
     data_points: BTreeMap<i64, (GroupedDepth, Vec<GroupedTrade>)>,
     tick_size: f32,
     y_scaling: i32,
     size_filter: f32,
+    qty_scales: QtyScale,
 }
 
 impl Chart for HeatmapChart {
@@ -52,6 +61,7 @@ impl HeatmapChart {
             tick_size,
             y_scaling: 100,
             size_filter: 0.0,
+            qty_scales: QtyScale::default(),
         }
     }
 
@@ -72,42 +82,6 @@ impl HeatmapChart {
         self.data_points.clear();
         self.chart.x_labels_cache.clear();
         self.chart.y_labels_cache.clear();
-    }
-
-    fn calculate_range(&self) -> (i64, i64, f32, f32) {
-        let timestamp_latest: &i64 = self.data_points.keys().last().unwrap_or(&0);
-
-        let latest: i64 = *timestamp_latest - ((self.chart.translation.x - (self.chart.bounds.width/20.0)) * 60.0) as i64;
-        let earliest: i64 = latest - (48000.0 / (self.chart.scaling / (self.chart.bounds.width/800.0))) as i64;
-    
-        let mut max_ask_price = f32::MIN;
-        let mut min_bid_price = f32::MAX;
-
-        for (_, (depth, _)) in self.data_points.range(earliest..=latest) {
-            let mid_price = (self.price_to_float(
-                *depth.asks.keys().next().unwrap_or(&0)
-            ) + self.price_to_float(
-                *depth.bids.keys().last().unwrap_or(&0)
-            )) / 2.0;
-
-            if self.chart.autoscale {
-                max_ask_price = max_ask_price.max(
-                    mid_price + (100.0 * self.tick_size)
-                );
-                min_bid_price = min_bid_price.min(
-                    mid_price - (100.0 * self.tick_size)
-                );
-            } else {
-                max_ask_price = max_ask_price.max(
-                    mid_price + (self.y_scaling as f32 * self.tick_size)
-                );
-                min_bid_price = min_bid_price.min(
-                    mid_price - (self.y_scaling as f32 * self.tick_size)
-                );
-            }
-        }
-
-        (latest, earliest, max_ask_price, min_bid_price)
     }
 
     pub fn insert_datapoint(&mut self, trades_buffer: &[Trade], depth_update: i64, depth: Rc<Depth>) {
@@ -156,12 +130,95 @@ impl HeatmapChart {
         self.render_start();
     }
 
-    pub fn render_start(&mut self) {  
-        let (latest, earliest, highest, lowest) = self.calculate_range();
+    fn calculate_scales(&self) -> (i64, i64, f32, f32, QtyScale) {
+        let timestamp_latest: &i64 = self.data_points.keys().last().unwrap_or(&0);
+
+        let latest: i64 = *timestamp_latest - ((self.chart.translation.x - (self.chart.bounds.width/20.0)) * 60.0) as i64;
+        let earliest: i64 = latest - (48000.0 / (self.chart.scaling / (self.chart.bounds.width/800.0))) as i64;
+    
+        let (mut highest, mut lowest) = (0.0f32, f32::MAX);
+
+        let (mut min_trade_qty, mut max_trade_qty) = (f32::MAX, 0.0f32);
+        let (mut max_aggr_volume, mut max_depth_qty) = (0.0f32, 0.0f32);
+
+        let (autoscale, y_scaling) = (self.chart.autoscale, self.y_scaling as f32);
+        let tick_size = self.tick_size;
+
+        for (_, (depth, trades)) in self.data_points.range(earliest..=latest) {
+            let (mut buy_volume, mut sell_volume) = (0.0, 0.0);
+
+            for trade in trades.iter() {
+                max_trade_qty = max_trade_qty.max(trade.qty);
+                min_trade_qty = min_trade_qty.min(trade.qty);
+
+                if trade.is_sell {
+                    sell_volume += trade.qty;
+                } else {
+                    buy_volume += trade.qty;
+                }
+            }
+
+            max_aggr_volume = max_aggr_volume.max(buy_volume).max(sell_volume);
+
+            for (&price_i64, &qty) in depth.asks.iter().chain(depth.bids.iter()) {
+                let price = self.price_to_float(price_i64);
+                if price > highest || price < lowest {
+                    continue;
+                }
+                max_depth_qty = max_depth_qty.max(qty);
+            }
+
+            let mid_price = (self.price_to_float(
+                *depth.asks.keys().next().unwrap_or(&0)
+            ) + self.price_to_float(
+                *depth.bids.keys().last().unwrap_or(&0)
+            )) / 2.0;
+
+            if autoscale {
+                highest = highest.max(
+                    mid_price + (100.0 * tick_size)
+                );
+                lowest = lowest.min(
+                    mid_price - (100.0 * tick_size)
+                );
+            } else {
+                highest = highest.max(
+                    mid_price + (y_scaling * tick_size)
+                );
+                lowest = lowest.min(
+                    mid_price - (y_scaling * tick_size)
+                );
+            }
+        }
+
+        (
+            latest, 
+            earliest, 
+            highest, 
+            lowest, 
+            QtyScale {
+                max_trade_qty,
+                min_trade_qty,
+                max_aggr_volume,
+                max_depth_qty
+            }
+        )
+    }
+
+    fn render_start(&mut self) {  
+        let (
+            latest, 
+            earliest, 
+            highest, 
+            lowest, 
+            visible_qty_scales
+        ) = self.calculate_scales();
 
         if latest == 0 || highest == 0.0 || lowest == 0.0 {
             return;
         }
+
+        self.qty_scales = visible_qty_scales;
 
         let chart_state = self.get_common_data_mut();
 
@@ -453,47 +510,11 @@ impl canvas::Program<Message> for HeatmapChart {
 
         let heatmap = chart.main_cache.draw(renderer, bounds.size(), |frame| {
             //let start = Instant::now();
-
-            // visible quantity for scaling calculations
-            let (mut min_trade_qty, mut max_trade_qty) = (f32::MAX, 0.0f32);
-
-            let (mut max_aggr_volume, mut max_depth_qty) = (0.0f32, 0.0f32);
-
-            for (_, (depth, trades)) in self.data_points.range(earliest..=latest) {
-                let mut buy_volume: f32 = 0.0;
-                let mut sell_volume: f32 = 0.0;
-
-                for trade in trades.iter() {
-                    max_trade_qty = max_trade_qty.max(trade.qty);
-                    min_trade_qty = min_trade_qty.min(trade.qty);
-
-                    if trade.is_sell {
-                        sell_volume += trade.qty;
-                    } else {
-                        buy_volume += trade.qty;
-                    }
-                }
-
-                max_aggr_volume = max_aggr_volume.max(buy_volume).max(sell_volume);
-        
-                for (&price_i64, &qty) in depth.asks.iter() {
-                    let price = self.price_to_float(price_i64);
-                    if price > highest {
-                        continue;
-                    };
-                    max_depth_qty = max_depth_qty.max(qty);
-                }
-            
-                for (&price_i64, &qty) in depth.bids.iter() {
-                    let price = self.price_to_float(price_i64);
-                    if price < lowest {
-                        continue;
-                    };
-                    max_depth_qty = max_depth_qty.max(qty);
-                }   
-            };
-
             let mut bar_height: f32 = 1.0;
+
+            let max_aggr_volume = self.qty_scales.max_aggr_volume;
+            let max_depth_qty = self.qty_scales.max_depth_qty;
+            let (min_trade_qty, max_trade_qty) = (self.qty_scales.min_trade_qty, self.qty_scales.max_trade_qty);
 
             // draw: current depth as bars on the right side
             if let Some((&latest_timestamp, (grouped_depth, _))) = self.data_points.iter().last() {
