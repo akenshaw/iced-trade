@@ -11,8 +11,8 @@ use super::{Chart, CommonChartData, Message, chart_button, Interaction, AxisLabe
 
 #[derive(Debug, Clone, Default)]
 pub struct GroupedDepth {
-    pub bids: Vec<Order>, 
-    pub asks: Vec<Order>,
+    pub bids: Box<[Order]>,
+    pub asks: Box<[Order]>,
 }
 pub struct GroupedTrade {
     pub is_sell: bool,
@@ -30,7 +30,7 @@ struct QtyScale {
 
 pub struct HeatmapChart {
     chart: CommonChartData,
-    data_points: VecDeque<(i64, (GroupedDepth, Vec<GroupedTrade>))>,
+    data_points: VecDeque<(i64, (GroupedDepth, Box<[GroupedTrade]>))>,
     tick_size: f32,
     y_scaling: i32,
     size_filter: f32,
@@ -63,7 +63,7 @@ impl HeatmapChart {
         }
     }
 
-    fn group_by_price(&self, orders: &[Order], is_bid: bool) -> Vec<Order> {
+    fn group_by_price(&self, orders: &[Order], is_bid: bool) -> Box<[Order]> {
         let mut grouped: HashMap<i64, f32> = HashMap::new();
 
         for &order in orders {
@@ -140,6 +140,13 @@ impl HeatmapChart {
         self.render_start();
     }
 
+    fn visible_data_iter(
+        &self, 
+        earliest: i64, latest: i64
+    ) -> impl Iterator<Item = &(i64, (GroupedDepth, Box<[GroupedTrade]>))> {
+        self.data_points.iter().filter(move |(time, _)| *time >= earliest && *time <= latest)
+    }
+
     fn calculate_scales(&self) -> (i64, i64, f32, f32, QtyScale) {
         //let start = Instant::now();
 
@@ -156,38 +163,22 @@ impl HeatmapChart {
         let (autoscale, y_scaling) = (self.chart.autoscale, self.y_scaling as f32);
         let tick_size = self.tick_size;
 
-        for (time, (depth, _)) in self.data_points.iter() {
-            if *time < earliest || *time > latest {
-                continue;
-            }
-
+        for (_, (depth, _)) in self.visible_data_iter(earliest, latest) {
             let mid_price = (
-                depth.bids.last().map(|order| order.price).unwrap_or(0.0) 
+                depth.bids.last().map(|order| order.price).unwrap_or(0.0)
                 + depth.asks.first().map(|order| order.price).unwrap_or(0.0)
             ) / 2.0;
-
+    
             if autoscale {
-                highest = highest.max(
-                    mid_price + (100.0 * tick_size)
-                );
-                lowest = lowest.min(
-                    mid_price - (100.0 * tick_size)
-                );
+                highest = highest.max(mid_price + (100.0 * tick_size));
+                lowest = lowest.min(mid_price - (100.0 * tick_size));
             } else {
-                highest = highest.max(
-                    mid_price + (y_scaling * tick_size)
-                );
-                lowest = lowest.min(
-                    mid_price - (y_scaling * tick_size)
-                );
+                highest = highest.max(mid_price + (y_scaling * tick_size));
+                lowest = lowest.min(mid_price - (y_scaling * tick_size));
             }
         }
 
-        for (time, (depth, trades)) in self.data_points.iter() {
-            if *time < earliest || *time > latest {
-                continue;
-            }
-
+        for (_, (depth, trades)) in self.visible_data_iter(earliest, latest) {
             let (mut buy_volume, mut sell_volume) = (0.0, 0.0);
 
             for trade in trades.iter() {
@@ -653,10 +644,7 @@ impl canvas::Program<Message> for HeatmapChart {
 
             let mut prev_x_position: Option<f32> = None;
 
-            for (time, (depth, trades)) in self.data_points.iter() {
-                if *time < earliest || *time > latest {
-                    continue;
-                }
+            for (time, (depth, trades)) in self.visible_data_iter(earliest, latest) {
                 let x_position = ((time - earliest) as f32 / (latest - earliest) as f32) * bounds.width;
 
                 if x_position.is_nan() {
