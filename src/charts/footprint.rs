@@ -474,9 +474,9 @@ impl canvas::Program<Message> for FootprintChart {
         let y_range: f32 = highest - lowest;
 
         let volume_area_height: f32 = bounds.height / 8.0; 
-        let heatmap_area_height: f32 = bounds.height - volume_area_height;
+        let footprint_area_height: f32 = bounds.height - volume_area_height;
 
-        let heatmap = chart.main_cache.draw(renderer, bounds.size(), |frame| {
+        let footprint = chart.main_cache.draw(renderer, bounds.size(), |frame| {
             let mut x_positions: Vec<f32> = Vec::new();
             let mut max_trade_qty: f32 = 0.0;
             let mut max_volume: f32 = 0.0;
@@ -505,52 +505,63 @@ impl canvas::Program<Message> for FootprintChart {
 
             let max_bar_width = min_distance / 2.0;
 
+            let bar_height = ((footprint_area_height / (y_range / self.tick_size) as f32).floor()).max(1.0);
+
             for (time, (trades, kline)) in self.data_points.range(earliest..=latest) {
                 let x_position: f32 = ((time - earliest) as f32 / (latest - earliest) as f32) * bounds.width;
 
-                if x_position.is_nan() || x_position.is_infinite() {
+                if x_position.is_nan() {
                     continue;
                 }
 
-                let y_open = heatmap_area_height - ((kline.open - lowest) / y_range * heatmap_area_height);
-                let y_high = heatmap_area_height - ((kline.high - lowest) / y_range * heatmap_area_height);
-                let y_low = heatmap_area_height - ((kline.low - lowest) / y_range * heatmap_area_height);
-                let y_close = heatmap_area_height - ((kline.close - lowest) / y_range * heatmap_area_height);
+                let y_open = footprint_area_height - ((kline.open - lowest) / y_range * footprint_area_height);
+                let y_high = footprint_area_height - ((kline.high - lowest) / y_range * footprint_area_height);
+                let y_low = footprint_area_height - ((kline.low - lowest) / y_range * footprint_area_height);
+                let y_close = footprint_area_height - ((kline.close - lowest) / y_range * footprint_area_height);
 
-                let body_color = if kline.close >= kline.open { Color::from_rgba8(81, 205, 160, 0.8) } else { Color::from_rgba8(192, 80, 77, 0.8) };
-                let wick_color = if kline.close >= kline.open { Color::from_rgba8(81, 205, 160, 0.4) } else { Color::from_rgba8(192, 80, 77, 0.4) };
-
-                let wick = Path::line(
-                    Point::new(x_position, y_high), 
-                    Point::new(x_position, y_low)
-                );
-                frame.stroke(&wick, Stroke::default().with_color(wick_color).with_width(1.0));
-
-                let body = Path::rectangle(
+                let body_color = 
+                    if kline.close >= kline.open { 
+                        Color::from_rgba8(81, 205, 160, 0.8) 
+                    } else { Color::from_rgba8(192, 80, 77, 0.8) 
+                };
+                frame.fill_rectangle(
                     Point::new(x_position - chart.scaling, y_open.min(y_close)), 
-                    Size::new(2.0 * chart.scaling, (y_open - y_close).abs())
-                );                    
-                frame.fill(&body, body_color);
+                    Size::new(2.0 * chart.scaling, (y_open - y_close).abs()), 
+                    body_color
+                );
+
+                let wick_color = 
+                    if kline.close >= kline.open { 
+                        Color::from_rgba8(81, 205, 160, 0.4) 
+                    } else { Color::from_rgba8(192, 80, 77, 0.4) 
+                };
+                frame.fill_rectangle(
+                    Point::new(x_position - 1.0, y_high),
+                    Size::new(1.0, (y_high - y_low).abs()),
+                    wick_color
+                );
 
                 for trade in trades {
                     let price = (*trade.0 as f32) / (1.0 / self.tick_size);
-                    let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
+                    let y_position = footprint_area_height - ((price - lowest) / y_range * footprint_area_height);
 
                     if trade.1.0 > 0.0 {
                         let bar_width = (trade.1.0 / max_trade_qty) * (max_bar_width*0.9);
-                        let bar = Path::rectangle(
+
+                        frame.fill_rectangle(
                             Point::new(x_position + (3.0 * chart.scaling), y_position), 
-                            Size::new(bar_width, 1.0) 
+                            Size::new(bar_width, bar_height) , 
+                            Color::from_rgba8(81, 205, 160, 1.0)
                         );
-                        frame.fill(&bar, Color::from_rgba8(81, 205, 160, 1.0));
                     } 
                     if trade.1.1 > 0.0 {
                         let bar_width = -(trade.1.1 / max_trade_qty) * (max_bar_width*0.9);
-                        let bar = Path::rectangle(
+
+                        frame.fill_rectangle(
                             Point::new(x_position - (3.0 * chart.scaling), y_position), 
-                            Size::new(bar_width, 1.0) 
+                            Size::new(bar_width, bar_height), 
+                            Color::from_rgba8(192, 80, 77, 1.0)
                         );
-                        frame.fill(&bar, Color::from_rgba8(192, 80, 77, 1.0));
                     }
                 }
 
@@ -559,28 +570,35 @@ impl canvas::Program<Message> for FootprintChart {
                         let buy_bar_height = (kline.volume.0 / max_volume) * volume_area_height;
                         let sell_bar_height = (kline.volume.1 / max_volume) * volume_area_height;
 
-                        let sell_bar_width = 8.0 * chart.scaling;
-                        let sell_bar_x_position = x_position - (5.0*chart.scaling) - sell_bar_width;
-                        let sell_bar = Path::rectangle(
-                            Point::new(sell_bar_x_position, bounds.height - sell_bar_height), 
-                            Size::new(sell_bar_width, sell_bar_height)
-                        );
-                        frame.fill(&sell_bar, Color::from_rgb8(192, 80, 77)); 
+                        let bar_width = 8.0 * chart.scaling;
+                        let sell_bar_x_position = x_position - (5.0*chart.scaling) - bar_width;
 
-                        let buy_bar = Path::rectangle(
-                            Point::new(x_position + (5.0*chart.scaling), bounds.height - buy_bar_height), 
-                            Size::new(8.0 * chart.scaling, buy_bar_height)
+                        frame.fill_rectangle(
+                            Point::new(sell_bar_x_position, bounds.height - sell_bar_height), 
+                            Size::new(bar_width, sell_bar_height),
+                            Color::from_rgb8(192, 80, 77)
                         );
-                        frame.fill(&buy_bar, Color::from_rgb8(81, 205, 160));
+
+                        frame.fill_rectangle(
+                            Point::new(x_position + (5.0*chart.scaling), bounds.height - buy_bar_height), 
+                            Size::new(bar_width, buy_bar_height),
+                            Color::from_rgb8(81, 205, 160)
+                        );
+
                     } else {
                         let bar_height = (kline.volume.1 / max_volume) * volume_area_height;
-                        let bar = Path::rectangle(
-                            Point::new(x_position - (3.0*chart.scaling), bounds.height - bar_height), 
-                            Size::new(6.0 * chart.scaling, bar_height)
-                        );
-                        let color = if kline.close >= kline.open { Color::from_rgba8(81, 205, 160, 0.8) } else { Color::from_rgba8(192, 80, 77, 0.8) };
 
-                        frame.fill(&bar, color);
+                        let color = 
+                            if kline.close >= kline.open { 
+                                Color::from_rgba8(81, 205, 160, 0.8) 
+                            } else { Color::from_rgba8(192, 80, 77, 0.8) 
+                        };
+
+                        frame.fill_rectangle(
+                            Point::new(x_position - (3.0*chart.scaling), bounds.height - bar_height), 
+                            Size::new(6.0 * chart.scaling, bar_height),
+                            color
+                        );
                     }
                 }
             } 
@@ -649,9 +667,9 @@ impl canvas::Program<Message> for FootprintChart {
                 }
             });
 
-            vec![crosshair, heatmap]
+            vec![crosshair, footprint]
         }   else {
-            vec![heatmap]
+            vec![footprint]
         }
     }
 
