@@ -525,8 +525,8 @@ impl canvas::Program<Message> for FootprintChart {
                     } else { Color::from_rgba8(192, 80, 77, 0.8) 
                 };
                 frame.fill_rectangle(
-                    Point::new(x_position - chart.scaling, y_open.min(y_close)), 
-                    Size::new(2.0 * chart.scaling, (y_open - y_close).abs()), 
+                    Point::new(x_position - (2.0 * chart.scaling), y_open.min(y_close)), 
+                    Size::new(4.0 * chart.scaling, (y_open - y_close).abs()), 
                     body_color
                 );
 
@@ -536,8 +536,8 @@ impl canvas::Program<Message> for FootprintChart {
                     } else { Color::from_rgba8(192, 80, 77, 0.4) 
                 };
                 frame.fill_rectangle(
-                    Point::new(x_position - 1.0, y_high),
-                    Size::new(1.0, (y_high - y_low).abs()),
+                    Point::new(x_position - chart.scaling, y_high),
+                    Size::new(2.0 * chart.scaling, (y_high - y_low).abs()),
                     wick_color
                 );
 
