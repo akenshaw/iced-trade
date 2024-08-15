@@ -11,12 +11,12 @@ use super::{Chart, CommonChartData, Message, chart_button, Interaction, AxisLabe
 
 #[derive(Debug, Clone, Default)]
 pub struct GroupedDepth {
-    pub bids: Vec<Order>, // price -> quantity
-    pub asks: Vec<Order>, // price -> quantity
+    pub bids: Vec<Order>, 
+    pub asks: Vec<Order>,
 }
 pub struct GroupedTrade {
     pub is_sell: bool,
-    pub price: i64,
+    pub price: f32,
     pub qty: f32,
 }
 
@@ -76,7 +76,10 @@ impl HeatmapChart {
         }
 
         grouped.into_iter().map(
-            |(price, qty)| Order { price: self.price_to_float(price), qty }
+            |(price, qty)| Order {
+                price: price as f32 * self.tick_size, 
+                qty 
+            }
         ).collect()
     }
 
@@ -87,16 +90,10 @@ impl HeatmapChart {
         self.size_filter
     }
 
-    fn price_to_float(&self, price: i64) -> f32 {
-        price as f32 * self.tick_size
-    }
-
     pub fn change_tick_size(&mut self, tick_size: f32) {
         self.tick_size = tick_size;
 
         self.data_points.clear();
-        self.chart.x_labels_cache.clear();
-        self.chart.y_labels_cache.clear();
     }
 
     pub fn insert_datapoint(&mut self, trades_buffer: &[Trade], depth_update: i64, depth: Rc<Depth>) {
@@ -116,16 +113,17 @@ impl HeatmapChart {
             }
         };
 
-        let grouped_trades: Vec<GroupedTrade> = trades_buffer
+        let grouped_trades = trades_buffer
             .iter()
             .map(|trade| GroupedTrade {
                 is_sell: trade.is_sell,
                 price: {
-                    if trade.is_sell {
-                        (trade.price * (1.0 / self.tick_size)).floor() as i64
+                    let grouped_price = if trade.is_sell {
+                        (trade.price * (1.0 / self.tick_size)).floor()
                     } else {
-                        (trade.price * (1.0 / self.tick_size)).ceil() as i64
-                    }
+                        (trade.price * (1.0 / self.tick_size)).ceil()
+                    };
+                    grouped_price as f32 * self.tick_size
                 },
                 qty: trade.qty,
             })
@@ -715,15 +713,13 @@ impl canvas::Program<Message> for HeatmapChart {
                         buy_volume += trade.qty;
                     }
 
-                    let price = self.price_to_float(trade.price);
-
-                    if price < lowest || price > highest {
+                    if trade.price < lowest || trade.price > highest {
                         continue;
                     }
 
-                    if trade.qty * price > self.size_filter {
+                    if trade.qty *  trade.price > self.size_filter {
                         let x_position = (((time - 100) - earliest) as f32 / (latest - earliest) as f32) * bounds.width;
-                        let y_position = heatmap_area_height - ((price - lowest) / y_range * heatmap_area_height);
+                        let y_position = heatmap_area_height - ((trade.price - lowest) / y_range * heatmap_area_height);
 
                         let color = if trade.is_sell {
                             Color::from_rgba8(192, 80, 77, 1.0)
