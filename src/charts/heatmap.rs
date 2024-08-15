@@ -30,7 +30,7 @@ struct QtyScale {
 
 pub struct HeatmapChart {
     chart: CommonChartData,
-    data_points: VecDeque<(i64, (GroupedDepth, Box<[GroupedTrade]>))>,
+    data_points: Vec<(i64, (GroupedDepth, Box<[GroupedTrade]>))>,
     tick_size: f32,
     y_scaling: i32,
     size_filter: f32,
@@ -38,7 +38,7 @@ pub struct HeatmapChart {
 }
 
 impl Chart for HeatmapChart {
-    type DataPoint = BTreeMap<i64, (Depth, Box<[Trade]>)>;
+    type DataPoint = Vec<(i64, (GroupedDepth, Box<[GroupedTrade]>))>;
 
     fn get_common_data(&self) -> &CommonChartData {
         &self.chart
@@ -55,7 +55,7 @@ impl HeatmapChart {
     pub fn new(tick_size: f32) -> Self {
         HeatmapChart {
             chart: CommonChartData::default(),
-            data_points: VecDeque::new(),
+            data_points: Vec::new(),
             tick_size,
             y_scaling: 100,
             size_filter: 0.0,
@@ -129,12 +129,10 @@ impl HeatmapChart {
             })
             .collect();
         
-        self.data_points.push_back((rounded_depth_update, (grouped_depth, grouped_trades)));
+        self.data_points.push((rounded_depth_update, (grouped_depth, grouped_trades)));
     
         if self.data_points.len() > 2400 {
-            while self.data_points.len() > 2000 {
-                self.data_points.pop_front();
-            }
+            self.data_points.drain(0..400);
         }
         
         self.render_start();
@@ -150,7 +148,7 @@ impl HeatmapChart {
     fn calculate_scales(&self) -> (i64, i64, f32, f32, QtyScale) {
         //let start = Instant::now();
 
-        let timestamp_latest: &i64 = self.data_points.back().map(|(timestamp, _)| timestamp).unwrap_or(&0);
+        let timestamp_latest: &i64 = self.data_points.last().map(|(timestamp, _)| timestamp).unwrap_or(&0);
 
         let latest: i64 = *timestamp_latest - ((self.chart.translation.x - (self.chart.bounds.width/20.0)) * 60.0) as i64;
         let earliest: i64 = latest - (48000.0 / (self.chart.scaling / (self.chart.bounds.width/800.0))) as i64;
@@ -530,7 +528,7 @@ impl canvas::Program<Message> for HeatmapChart {
             let (min_trade_qty, max_trade_qty) = (self.qty_scales.min_trade_qty, self.qty_scales.max_trade_qty);
 
             // draw: current depth as bars on the right side
-            if let Some((latest_timestamp, (grouped_depth, _))) = self.data_points.back() {
+            if let Some((latest_timestamp, (grouped_depth, _))) = self.data_points.last() {
                 let x_position = ((latest_timestamp - earliest) as f32 / (latest - earliest) as f32) * bounds.width;
 
                 if x_position.is_nan() {
