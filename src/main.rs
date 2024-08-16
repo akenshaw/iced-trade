@@ -6,6 +6,7 @@ mod style;
 mod screen;
 mod logger;
 
+use hyper::client::conn;
 use style::{ICON_FONT, ICON_BYTES, Icon};
 
 use screen::{Notification, Error};
@@ -444,6 +445,12 @@ impl State {
 
                 match event {
                     MarketEvents::Binance(event) => match event {
+                        binance::market_data::Event::Connected(connection) => {
+                            log::info!("a stream connected to Binance WS: {connection:?}");
+                        }
+                        binance::market_data::Event::Disconnected(event) => {
+                            log::info!("a stream disconnected from Binance WS: {event:?}");
+                        }
                         binance::market_data::Event::DepthReceived(ticker, feed_latency, depth_update_t, depth, trades_buffer) => {                            
                             let stream_type = StreamType::DepthAndTrades {
                                 exchange: Exchange::BinanceFutures,
@@ -479,11 +486,14 @@ impl State {
                                     .remove(&stream_type);
                             }
                         }
-                        _ => {
-                            log::warn!("{event:?}");
-                        }
                     },
                     MarketEvents::Bybit(event) => match event {
+                        bybit::market_data::Event::Connected(_) => {
+                            log::info!("a stream connected to Bybit WS");
+                        }
+                        bybit::market_data::Event::Disconnected(event) => {
+                            log::info!("a stream disconnected from Bybit WS: {event:?}");
+                        }
                         bybit::market_data::Event::DepthReceived(ticker, feed_latency, depth_update_t, depth, trades_buffer) => {
                             let stream_type = StreamType::DepthAndTrades {
                                 exchange: Exchange::BybitLinear,
@@ -518,9 +528,6 @@ impl State {
                                     .or_default()
                                     .remove(&stream_type);
                             }
-                        }
-                        _ => {
-                            log::warn!("{event:?}");
                         }
                     },
                 }

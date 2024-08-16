@@ -55,7 +55,8 @@ fn monitor_file_size(file_path: &str, max_size_bytes: u64) {
                 }
             }
             Err(err) => {
-                eprintln!("Error reading file metadata: {}", err);
+                eprintln!("Error reading log file metadata: {}", err);
+                process::exit(1);
             }
         }
         std::thread::sleep(std::time::Duration::from_secs(30));

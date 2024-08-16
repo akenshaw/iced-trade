@@ -36,7 +36,7 @@ enum State {
 #[derive(Debug, Clone)]
 pub enum Event {
     Connected(Connection),
-    Disconnected,
+    Disconnected(String),
     DepthReceived(Ticker, FeedLatency, i64, Depth, Vec<Trade>),
     KlineReceived(Ticker, Kline, Timeframe),
 }
@@ -348,7 +348,10 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                             asks: depth.asks,
                                         }
                                     },
-                                    Err(_) => return,
+                                    Err(e) => {
+                                        log::error!("Failed to fetch depth for {}, error: {}", symbol_str, e);
+                                        return;
+                                    }
                                 };
 
                                 let _ = tx.send(depth);
@@ -356,15 +359,22 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                             match rx.await {
                                 Ok(depth) => {
                                     orderbook.fetched(depth);
+
                                     state = State::Connected(websocket);
+                                    let _ = output.send(Event::Connected(Connection)).await;                                 
                                 },
-                                Err(_) => output.send(Event::Disconnected).await.expect("Trying to send disconnect event..."),
+                                Err(e) => {
+                                    let _ = output.send(Event::Disconnected(
+                                        format!("Failed to send fetched depth for {}, error: {}", symbol_str, e)
+                                    )).await.expect("Trying to send disconnect event...");
+                                }
                             }
-                            
                         } else {
-                            tokio::time::sleep(tokio::time::Duration::from_secs(1))
-                           .await;
-                           let _ = output.send(Event::Disconnected).await;
+                            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+                            let _ = output.send(Event::Disconnected(
+                                "Failed to connect to websocket".to_string()
+                            )).await;
                         }
                     },
                     State::Connected(ws) => {
@@ -422,7 +432,10 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                                     asks: depth.asks,
                                                                 }
                                                             },
-                                                            Err(_) => return,
+                                                            Err(e) => {
+                                                                log::error!("Failed to fetch depth for {}, error: {}", symbol_str, e);
+                                                                return;
+                                                            }
                                                         };
     
                                                         let _ = tx.send(depth);
@@ -431,10 +444,12 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                                         Ok(depth) => {
                                                             orderbook.fetched(depth)
                                                         },
-                                                        Err(_) => {
+                                                        Err(e) => {
                                                             state = State::Disconnected;
-                                                            output.send(Event::Disconnected).await.expect("Trying to send disconnect event...");
-                                                        },
+                                                            let _ = output.send(Event::Disconnected(
+                                                                format!("Failed to send fetched depth for {}, error: {}", symbol_str, e)
+                                                            )).await.expect("Trying to send disconnect event...");
+                                                        }
                                                     }
                                                     already_fetching = false;
                                                 }
@@ -492,13 +507,18 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
                                     }
                                 }
                                 OpCode::Close => {
-                                    log::error!("Connection closed");
-                                    let _ = output.send(Event::Disconnected).await;
+                                    state = State::Disconnected;
+                                    let _ = output.send(
+                                        Event::Disconnected("Connection closed".to_string())
+                                    ).await;
                                 }
                                 _ => {}
                             },
-                            Err(e) => {
-                                log::error!("Error reading frame: {}", e);
+                            Err(e) => {    
+                                state = State::Disconnected;           
+                                let _ = output.send(
+                                    Event::Disconnected("Error reading frame: ".to_string() + &e.to_string())
+                                ).await;
                             }
                         };
                     }
@@ -542,11 +562,14 @@ pub fn connect_kline_stream(streams: Vec<(Ticker, Timeframe)>) -> impl Stream<It
                             domain, streams
                         )
                         .await {
-                           state = State::Connected(websocket);
+                            state = State::Connected(websocket);
+                            let _ = output.send(Event::Connected(Connection)).await;        
                         } else {
-                            tokio::time::sleep(tokio::time::Duration::from_secs(1))
-                           .await;
-                           let _ = output.send(Event::Disconnected).await;
+                            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+                            let _ = output.send(Event::Disconnected(
+                                "Failed to connect to websocket".to_string()
+                            )).await;
                         }
                     },
                     State::Connected(ws) => {
@@ -575,10 +598,19 @@ pub fn connect_kline_stream(streams: Vec<(Ticker, Timeframe)>) -> impl Stream<It
                                         log::error!("\nUnknown data: {:?}", &json_bytes);
                                     }
                                 }
+                                OpCode::Close => {
+                                    state = State::Disconnected;
+                                    let _ = output.send(
+                                        Event::Disconnected("Connection closed".to_string())
+                                    ).await;
+                                }
                                 _ => {}
                             }, 
-                            Err(e) => {
-                                log::error!("Error reading frame: {}", e);
+                            Err(e) => {      
+                                state = State::Disconnected;        
+                                let _ = output.send(
+                                    Event::Disconnected("Error reading frame: ".to_string() + &e.to_string())
+                                ).await;  
                             }
                         }
                     }
