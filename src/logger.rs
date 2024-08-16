@@ -1,6 +1,7 @@
-use fern::Dispatch;
 use chrono::Local;
-use std::fs::File;
+use std::{fs::{self, File}, process};
+
+const MAX_LOG_FILE_SIZE: u64 = 10_000_000; // 10 MB
 
 pub fn setup(is_debug: bool, log_trace: bool) -> Result<(), anyhow::Error> {
     let log_level = if log_trace {
@@ -9,7 +10,7 @@ pub fn setup(is_debug: bool, log_trace: bool) -> Result<(), anyhow::Error> {
         log::LevelFilter::Info
     };
 
-    let mut logger = Dispatch::new()
+    let mut logger = fern::Dispatch::new()
         .format(|out, message, record| {
             out.finish(format_args!(
                 "{}:{} [{}:{}] -- {}",
@@ -27,7 +28,11 @@ pub fn setup(is_debug: bool, log_trace: bool) -> Result<(), anyhow::Error> {
     } else {
         let log_file_path = "output.log";
         let log_file = File::create(log_file_path)?;
-        log_file.set_len(0)?; 
+        log_file.set_len(0)?;
+
+        std::thread::spawn(move || {
+            monitor_file_size(log_file_path, MAX_LOG_FILE_SIZE);
+        });
 
         let log_file = fern::log_file(log_file_path)?;
         logger = logger.chain(log_file);
@@ -35,4 +40,24 @@ pub fn setup(is_debug: bool, log_trace: bool) -> Result<(), anyhow::Error> {
 
     logger.apply()?;
     Ok(())
+}
+
+fn monitor_file_size(file_path: &str, max_size_bytes: u64) {
+    loop {
+        match fs::metadata(file_path) {
+            Ok(metadata) => {
+                if metadata.len() > max_size_bytes {
+                    eprintln!(
+                        "Things went south. Log file size caused panic exceeding {} MB",
+                        metadata.len() / 1_000_000, 
+                    );
+                    process::exit(1);
+                }
+            }
+            Err(err) => {
+                eprintln!("Error reading file metadata: {}", err);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(30));
+    }
 }
