@@ -19,7 +19,7 @@ pub enum Message {
     AutoscaleToggle,
     CrosshairToggle,
     CrosshairMoved(Point),
-    YScaling(f32),
+    YScaling(f32, bool),
 }
 struct CommonChartData {
     main_cache: Cache,
@@ -86,8 +86,7 @@ trait Chart {
 #[derive(Debug, Clone, Copy)]
 pub enum Interaction {
     None,
-    Drawing,
-    Erasing,
+    Zoomin { last_position: Point },
     Panning { translation: Vector, start: Point },
 }
 impl Default for Interaction {
@@ -117,7 +116,7 @@ fn chart_button(theme: &Theme, _status: button::Status, is_active: bool) -> butt
     }
 }
 
-// price steps, to be used for y-axis labels on all charts
+// price steps, to be used for y-axis labels across all charts
 const PRICE_STEPS: [f32; 15] = [
     1000.0,
     500.0,
@@ -391,9 +390,8 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
         match interaction {
-            Interaction::Drawing => mouse::Interaction::Crosshair,
-            Interaction::Erasing => mouse::Interaction::Crosshair,
-            Interaction::Panning { .. } => mouse::Interaction::ResizingHorizontally,
+            Interaction::Panning { .. } => mouse::Interaction::None,
+            Interaction::Zoomin { .. } => mouse::Interaction::ResizingHorizontally,
             Interaction::None if cursor.is_over(bounds) => {
                 mouse::Interaction::ResizingHorizontally
             }
@@ -415,28 +413,62 @@ impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
 
     fn update(
         &self,
-        _interaction: &mut Interaction,
+        interaction: &mut Interaction,
         event: Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> (event::Status, Option<Message>) {
-
-        if cursor.is_over(bounds) {
-            match event {
-                Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
-                    match delta {
-                        mouse::ScrollDelta::Lines { y, .. } => {
-                            let y_scaling = 1.0 + y * 0.1;
-                    
-                            return (event::Status::Captured, Some(Message::YScaling(y_scaling)));
+        if let Event::Mouse(mouse::Event::ButtonReleased(_)) = event {
+            *interaction = Interaction::None;
+            return (event::Status::Ignored, None);
+        }
+    
+        let Some(cursor_position) = cursor.position_in(bounds) else {
+            return (event::Status::Ignored, None);
+        };
+    
+        if !cursor.is_over(bounds) {
+            return (event::Status::Ignored, None);
+        }
+    
+        match event {
+            Event::Mouse(mouse_event) => match mouse_event {
+                mouse::Event::ButtonPressed(button) => {
+                    if let mouse::Button::Left = button {
+                        *interaction = Interaction::Zoomin {
+                            last_position: cursor_position,
+                        };
+                        return (event::Status::Captured, None);
+                    }
+                }
+                mouse::Event::CursorMoved { .. } => {
+                    if let Interaction::Zoomin { ref mut last_position } = *interaction {
+                        let difference_y = last_position.y - cursor_position.y;
+    
+                        if difference_y.abs() > 1.0 {
+                            let y_scaling = 1.0 + (difference_y / bounds.height);
+                            *last_position = cursor_position;
+                            return (
+                                event::Status::Captured,
+                                Some(Message::YScaling((y_scaling * 1000.0).round() / 1000.0, false)),
+                            );
                         }
-                        _ => {}
+                    }
+                }
+                mouse::Event::WheelScrolled { delta } => {
+                    if let mouse::ScrollDelta::Lines { y, .. } = delta {
+                        let y_scaling = 1.0 + y * 0.1;
+                        return (
+                            event::Status::Captured,
+                            Some(Message::YScaling((y_scaling * 1000.0).round() / 1000.0, true)),
+                        );
                     }
                 }
                 _ => {}
-            }
+            },
+            _ => {}
         }
-
+    
         (event::Status::Ignored, None)
     }
     
@@ -523,9 +555,8 @@ impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
         match interaction {
-            Interaction::Drawing => mouse::Interaction::Crosshair,
-            Interaction::Erasing => mouse::Interaction::Crosshair,
-            Interaction::Panning { .. } => mouse::Interaction::ResizingVertically,
+            Interaction::Zoomin { .. } => mouse::Interaction::ResizingVertically,
+            Interaction::Panning { .. } => mouse::Interaction::None,
             Interaction::None if cursor.is_over(bounds) => {
                 mouse::Interaction::ResizingVertically
             }

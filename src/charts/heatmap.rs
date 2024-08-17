@@ -308,18 +308,24 @@ impl HeatmapChart {
                     chart.x_crosshair_cache.clear();
                 }
             },
-            Message::YScaling(delta) => {
+            Message::YScaling(delta, is_wheel_scroll) => {
                 if self.chart.autoscale {
                     self.chart.autoscale = false;
                 }
 
+                let scaling_factor = if *is_wheel_scroll {
+                    10.0
+                } else {
+                    2.0
+                };
+
                 if *delta < 1.0 {
                     if self.y_scaling < 200 {
-                        self.y_scaling = (self.y_scaling + (delta * 10.0) as i32).min(200);
+                        self.y_scaling = (self.y_scaling + (delta * scaling_factor) as i32).min(200);
                     }
                 } else {
-                    if self.y_scaling > 10 {
-                        self.y_scaling = (self.y_scaling - (delta * 10.0) as i32).max(10);
+                    if self.y_scaling > 20 {
+                        self.y_scaling = (self.y_scaling - (delta * scaling_factor) as i32).max(20);
                     }
                 }
             },
@@ -437,10 +443,6 @@ impl canvas::Program<Message> for HeatmapChart {
             Event::Mouse(mouse_event) => match mouse_event {
                 mouse::Event::ButtonPressed(button) => {
                     let message = match button {
-                        mouse::Button::Right => {
-                            *interaction = Interaction::Drawing;
-                            None
-                        }
                         mouse::Button::Left => {
                             *interaction = Interaction::Panning {
                                 translation: chart_state.translation,
@@ -455,8 +457,6 @@ impl canvas::Program<Message> for HeatmapChart {
                 }
                 mouse::Event::CursorMoved { .. } => {
                     let message = match *interaction {
-                        Interaction::Drawing => None,
-                        Interaction::Erasing => None,
                         Interaction::Panning { translation, start } => {
                             Some(
                                 Message::Translated(
@@ -470,6 +470,7 @@ impl canvas::Program<Message> for HeatmapChart {
                             } else {
                                 None
                             },
+                        _ => None,
                     };
 
                     let event_status = match interaction {
@@ -784,9 +785,8 @@ impl canvas::Program<Message> for HeatmapChart {
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
         match interaction {
-            Interaction::Drawing => mouse::Interaction::Crosshair,
-            Interaction::Erasing => mouse::Interaction::Crosshair,
             Interaction::Panning { .. } => mouse::Interaction::Grabbing,
+            Interaction::Zoomin { .. } => mouse::Interaction::ZoomIn,
             Interaction::None if cursor.is_over(bounds) => {
                 if self.chart.crosshair {
                     mouse::Interaction::Crosshair

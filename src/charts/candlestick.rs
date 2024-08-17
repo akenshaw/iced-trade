@@ -268,10 +268,6 @@ impl canvas::Program<Message> for CandlestickChart {
             Event::Mouse(mouse_event) => match mouse_event {
                 mouse::Event::ButtonPressed(button) => {
                     let message = match button {
-                        mouse::Button::Right => {
-                            *interaction = Interaction::Drawing;
-                            None
-                        }
                         mouse::Button::Left => {
                             *interaction = Interaction::Panning {
                                 translation: chart_state.translation,
@@ -286,8 +282,6 @@ impl canvas::Program<Message> for CandlestickChart {
                 }
                 mouse::Event::CursorMoved { .. } => {
                     let message = match *interaction {
-                        Interaction::Drawing => None,
-                        Interaction::Erasing => None,
                         Interaction::Panning { translation, start } => {
                             Some(Message::Translated(
                                 translation
@@ -301,6 +295,7 @@ impl canvas::Program<Message> for CandlestickChart {
                             } else {
                                 None
                             },
+                        _ => None,
                     };
 
                     let event_status = match interaction {
@@ -547,9 +542,8 @@ impl canvas::Program<Message> for CandlestickChart {
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
         match interaction {
-            Interaction::Drawing => mouse::Interaction::Crosshair,
-            Interaction::Erasing => mouse::Interaction::Crosshair,
             Interaction::Panning { .. } => mouse::Interaction::Grabbing,
+            Interaction::Zoomin { .. } => mouse::Interaction::ZoomIn,
             Interaction::None if cursor.is_over(bounds) => {
                 if self.chart.crosshair {
                     mouse::Interaction::Crosshair
