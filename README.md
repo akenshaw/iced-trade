@@ -1,6 +1,6 @@
 <div align="center">
-  <img height="297" width="480" alt="iced-trade" src="https://github.com/user-attachments/assets/79bd0f07-d97c-4186-921f-2e726dcb2c00">
-  <img height="297" width="480" alt="iced-trade" src="https://github.com/user-attachments/assets/c862ba41-71f9-411d-bfe4-97f716c36b56">
+  <img height="247" width="400" alt="iced-trade" src="https://github.com/user-attachments/assets/79bd0f07-d97c-4186-921f-2e726dcb2c00">
+  <img height="247" width="400" alt="iced-trade" src="https://github.com/user-attachments/assets/c862ba41-71f9-411d-bfe4-97f716c36b56">
 </div>
 
 ### Currently features:
