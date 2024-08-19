@@ -1,5 +1,6 @@
 <div align="center">
-  <img height="400" alt="iced-trade" src="https://github.com/user-attachments/assets/9300b283-03fd-498a-a076-7f540f1f96ab">
+  <img height="297" width="480" alt="iced-trade" src="https://github.com/user-attachments/assets/79bd0f07-d97c-4186-921f-2e726dcb2c00">
+  <img height="297" width="480" alt="iced-trade" src="https://github.com/user-attachments/assets/c862ba41-71f9-411d-bfe4-97f716c36b56">
 </div>
 
 ### Currently features:
@@ -7,8 +8,8 @@
 - 4 crypto tickers, from Binance and Bybit; BTCUSDT, ETHUSDT, SOLUSDT, LTCUSDT (perpetual swaps)
 - 1m, 3m, 5m, 15m and 30m timeframe selections for candlestick and footprint charts. <sup>Tick based "timeframe" selections is planned</sup>
 - Tick size multipliers for price grouping on footprint and heatmap charts
-- Size filtering for trades in time&sales tables and heatmap charts
-- Each grid(pane) can have its own ticker/exchange pair of stream. You can open up however many panes you want. There is no limit to it yet to test out the boundries, but performance/resource usage might be concern, when layout is filled out with many heatmap charts
+- Size filtering for trades showing up in time&sales tables and heatmap charts
+- Each grid (pane) can have its own ticker/exchange pair of streams. You can open up however many panes you want. Though, if for example the layout is filled with more than a reasonable amount of heatmap charts, via the most cpu time demanding chart instance between renders, then performance/resource usage might become a slight concern. But there is no limit to it yet to test out the boundries
 
 <div align="center">
   <img height="200" width="300" alt="iced-trade" src="https://github.com/user-attachments/assets/89894672-4ad6-41a2-ab7f-84c5acdb76a9">
@@ -16,7 +17,7 @@
 </div>
 
 ##### There is no server-side yet. User receives market data directly from exchange APIs
-- As historical data, currently it can only fetch OHLCV data. So, for example, the footprint chart gets populated via candlesticks, but not trades. Trades gets inserted to these populated data points, as we receive them from related websocket stream in real-time
+- As historical data, currently it can only fetch OHLCV. So, the footprint chart gets populated via candlesticks but not historical trades. Trades gets inserted to the latest candlestick as we receive them from related websocket stream in real-time
 
 ## Build from source
 The releases might not be up-to-date with newest features.<sup>or bugs :)</sup>
@@ -37,14 +38,7 @@ cd iced-trade
 cargo build --release
 cargo run --release
 ```
-***
-> 
-<p align="center">
-  <img src="https://github.com/akenshaw/iced-trade/assets/63060680/e7b55751-b547-4548-ac95-5348c6c60385" width="404,5" />
-</p>
 
-> Starting this project, my intention was to create a lightweight/minimal GUI just for trading, while trying to learn Rust on the way. This idea evolved to "trading on the chart", but while I was experimenting with it and seeing the possibilities, it turned out to be a tool to track market activity. Currently still trying to stabilize charting features, and hoping that fully utilized trading would be easier to implement later on
->>  Also starting out, there were some heavy inspirations from Cryptowatch, as it was my "daily driver" for charting, which was discontinued. Funnily enough, I had no idea back then, but recently heard that Cryptowatch was also made with the same GUI library this app made of, Iced. It was quite a surprise for me, so thanks to Iced, for making all this possible!
 <a href="https://github.com/iced-rs/iced">
   <img src="https://gist.githubusercontent.com/hecrj/ad7ecd38f6e47ff3688a38c79fd108f0/raw/74384875ecbad02ae2a926425e9bcafd0695bade/color.svg" width="130px">
 </a>
