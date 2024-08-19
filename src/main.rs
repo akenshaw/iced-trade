@@ -9,7 +9,7 @@ mod logger;
 use hyper::client::conn;
 use style::{ICON_FONT, ICON_BYTES, Icon};
 
-use screen::{Notification, Error};
+use screen::{dashboard, Error, Notification};
 use screen::dashboard::{
     Dashboard,
     pane::{self, SerializablePane}, Uuid, LayoutId,
@@ -190,6 +190,8 @@ pub enum Message {
     ChartUserUpdate(charts::Message, Uuid),
     ShowLayoutModal,
     HideLayoutModal,
+    ShowPanesModal,
+    HidePanesModal,
 
     // Market&User data stream
     UserKeySucceed(String),
@@ -200,13 +202,6 @@ pub enum Message {
     FetchEvent(Result<Vec<data_providers::Kline>, std::string::String>, StreamType, Uuid),
     
     // Pane grid
-    Split(pane_grid::Axis, pane_grid::Pane),
-    Clicked(pane_grid::Pane),
-    Dragged(pane_grid::DragEvent),
-    Resized(pane_grid::ResizeEvent),
-    Maximize(pane_grid::Pane),
-    Restore,
-    Close(pane_grid::Pane),
     ToggleLayoutLock,
     PaneContentSelected(String, Uuid, Vec<StreamType>),
     ReplacePane(pane_grid::Pane),
@@ -230,11 +225,13 @@ pub enum Message {
 
     ResetCurrentLayout,
     LayoutSelected(LayoutId),
+    Dashboard(dashboard::Message),
 }
 
 struct State {
     layouts: HashMap<LayoutId, Dashboard>,
     last_active_layout: LayoutId,
+    show_layout_modal: bool,
     exchange_latency: Option<(u32, u32)>,
     listen_key: Option<String>,
     feed_latency_cache: VecDeque<data_providers::FeedLatency>,
@@ -266,6 +263,7 @@ impl State {
             Self { 
                 layouts: saved_state.layouts,
                 last_active_layout,
+                show_layout_modal: false,
                 listen_key: None,
                 exchange_latency: None,
                 feed_latency_cache: VecDeque::new(),
@@ -542,74 +540,10 @@ impl State {
                 log::error!("Check API keys");
                 Task::none()
             },
-            Message::Split(axis, pane) => {
-                let dashboard = self.get_mut_dashboard();
-
-                let focus_pane = if let Some((new_pane, _)) = 
-                    dashboard.panes.split(axis, pane, PaneState::new(Uuid::new_v4(), vec![], PaneSettings::default())) {
-                            Some(new_pane)
-                        } else {
-                            None
-                        };
-
-                if Some(focus_pane).is_some() {
-                    dashboard.focus = focus_pane;
-                }
-
-                Task::none()
-            },
-            Message::Clicked(pane) => {
-                let dashboard = self.get_mut_dashboard();
-
-                dashboard.focus = Some(pane);
-                Task::none()
-            },
-            Message::Resized(pane_grid::ResizeEvent { split, ratio }) => {
-                let dashboard = self.get_mut_dashboard();
-
-                dashboard.panes.resize(split, ratio);
-                Task::none()
-            },
-            Message::Dragged(pane_grid::DragEvent::Dropped {
-                pane,
-                target,
-            }) => {
-                let dashboard = self.get_mut_dashboard();
-
-                dashboard.panes.drop(pane, target);
-
-                dashboard.focus = None;
-
-                Task::none()
-            },
-            Message::Dragged(_) => {
-                Task::none()
-            },
-            Message::Maximize(pane) => {
-                let dashboard = self.get_mut_dashboard();
-
-                dashboard.panes.maximize(pane);
-                Task::none()
-            },
-            Message::Restore => {
-                let dashboard = self.get_mut_dashboard();
-
-                dashboard.panes.restore();
-                Task::none()
-            },
-            Message::Close(pane) => {    
-                let dashboard = self.get_mut_dashboard();
-
-                if let Some((_, sibling)) = dashboard.panes.close(pane) {
-                    dashboard.focus = Some(sibling);
-                }
-                
-                Task::none()
-            },
             Message::ToggleLayoutLock => {
                 let dashboard = self.get_mut_dashboard();
 
-                dashboard.pane_lock = !dashboard.pane_lock;
+                dashboard.layout_lock = !dashboard.layout_lock;
 
                 dashboard.focus = None;
 
@@ -722,13 +656,31 @@ impl State {
             Message::ShowLayoutModal => {
                 let dashboard = self.get_mut_dashboard();
 
-                dashboard.show_layout_modal = true;
+                if dashboard.show_panes_modal {
+                    dashboard.show_panes_modal = false;
+                }
+
+                self.show_layout_modal = true;
                 iced::widget::focus_next()
             },
             Message::HideLayoutModal => {
+                self.show_layout_modal = false;
+                Task::none()
+            },
+            Message::ShowPanesModal => {
+                if self.show_layout_modal {
+                    self.show_layout_modal = false;
+                }
+
                 let dashboard = self.get_mut_dashboard();
 
-                dashboard.show_layout_modal = false;
+                dashboard.show_panes_modal = true;
+                iced::widget::focus_next()
+            },
+            Message::HidePanesModal => {
+                let dashboard = self.get_mut_dashboard();
+
+                dashboard.show_panes_modal = false;
                 Task::none()
             },
             Message::Notification(notification) => {
@@ -959,111 +911,26 @@ impl State {
 
                 Task::none()
             },
+            Message::Dashboard(message) => {
+                let dashboard = self.get_mut_dashboard();
+                
+                let command = dashboard.update(
+                    message,
+                );
+
+                Task::batch(vec![
+                    command.map(Message::Dashboard),
+                ])
+            }
         }
     }
 
     fn view(&self) -> Element<'_, Message> {
         let dashboard = self.get_dashboard();
 
-        let focus = dashboard.focus;
-
-        let pane_grid = PaneGrid::new(&dashboard.panes, |id, pane, is_maximized| {
-            let is_focused;
-            
-            if dashboard.pane_lock {
-                is_focused = false;
-            } else {
-                is_focused = focus == Some(id);
-            }
-        
-            let chart_type = &dashboard.panes.get(id).unwrap().content;
-
-            let stream_info = pane.stream.iter().find_map(|stream: &StreamType| {
-                match stream {
-                    StreamType::Kline { exchange, ticker, timeframe } => {
-                        Some(
-                            Some((exchange, format!("{} {}", ticker, timeframe)))
-                        )
-                    }
-                    _ => None,
-                }
-            }).or_else(|| {
-                pane.stream.iter().find_map(|stream: &StreamType| {
-                    match stream {
-                        StreamType::DepthAndTrades { exchange, ticker } => {
-                            Some(
-                                Some((exchange, ticker.to_string()))
-                            )
-                        }
-                        _ => None,
-                    }
-                })
-            }).unwrap_or(None);
-            
-            let mut stream_info_element: Row<Message> = Row::new();
-
-            if let Some((exchange, info)) = stream_info {
-                stream_info_element = Row::new()
-                    .spacing(3)
-                    .push(
-                        match exchange {
-                            Exchange::BinanceFutures => text(char::from(Icon::BinanceLogo).to_string()).font(ICON_FONT),
-                            Exchange::BybitLinear => text(char::from(Icon::BybitLogo).to_string()).font(ICON_FONT),
-                        }
-                    )
-                    .push(Text::new(info));
-            }
-    
-            let mut content: pane_grid::Content<'_, Message, _, Renderer> = 
-                pane_grid::Content::new({
-                    match chart_type {
-                        PaneContent::Heatmap(chart) => view_chart(pane, chart),
-                        
-                        PaneContent::Footprint(chart) => view_chart(pane, chart),
-                        
-                        PaneContent::Candlestick(chart) => view_chart(pane, chart),
-
-                        PaneContent::TimeAndSales(chart) => view_chart(pane, chart),
-
-                        PaneContent::Starter => view_starter(pane)
-                    }
-                })
-                .style(
-                    if is_focused {
-                        style::pane_focused
-                    } else {
-                        style::pane_active
-                    }
-                );
-    
-            let title_bar = pane_grid::TitleBar::new(stream_info_element)
-                .controls(view_controls(
-                    id,
-                    pane.id,
-                    chart_type,
-                    dashboard.panes.len(),
-                    is_maximized,
-                    &pane.settings,
-                ))
-                .padding(4)
-                .style(
-                    if is_focused {
-                        style::title_bar_focused
-                    } else {
-                        style::title_bar_active
-                    }
-                );
-            content = content.title_bar(title_bar);
-            
-            content
-        })
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .spacing(6);
-
         let layout_lock_button = button(
             container(
-                if dashboard.pane_lock { 
+                if dashboard.layout_lock { 
                     text(char::from(Icon::Locked).to_string()).font(ICON_FONT) 
                 } else { 
                     text(char::from(Icon::Unlocked).to_string()).font(ICON_FONT) 
@@ -1073,7 +940,7 @@ impl State {
             )
             .on_press(Message::ToggleLayoutLock);
 
-        let add_pane_button = button(
+        let layout_modal_button = button(
             container(
                 text(char::from(Icon::Layout).to_string()).font(ICON_FONT))
                 .width(25)
@@ -1081,14 +948,34 @@ impl State {
             )
             .on_press(Message::ShowLayoutModal);
 
+        let pane_modal_button = button(
+            container(
+                text(char::from(Icon::Layout).to_string()).font(ICON_FONT))
+                .width(25)
+                .center_x(iced::Pixels(20.0))
+            )
+            .on_press(Message::ShowPanesModal);
+
         let layout_controls = Row::new()
             .spacing(10)
             .align_y(Alignment::Center)
             .push(
-                tooltip(add_pane_button, "Manage Layout", tooltip::Position::Bottom).style(style::tooltip)
+                tooltip(
+                    pane_modal_button, 
+                    "Manage Panes", tooltip::Position::Bottom
+                ).style(style::tooltip)
             )
             .push(
-                tooltip(layout_lock_button, "Layout Lock", tooltip::Position::Bottom).style(style::tooltip)
+                tooltip(
+                    layout_modal_button, 
+                    "Manage Layouts", tooltip::Position::Bottom
+                ).style(style::tooltip)
+            )
+            .push(
+                tooltip(
+                    layout_lock_button, 
+                    "Layout Lock", tooltip::Position::Bottom
+                ).style(style::tooltip)
             );
 
         let mut ws_controls = Row::new()
@@ -1149,38 +1036,10 @@ impl State {
                     .push(layout_controls)
             )
             .push(
-                if dashboard.pane_lock {
-                    pane_grid
-                } else {
-                    pane_grid
-                        .on_click(Message::Clicked)
-                        .on_drag(Message::Dragged)
-                        .on_resize(10, Message::Resized)
-                }
+                dashboard.view().map(Message::Dashboard)
             );
 
-        if dashboard.show_layout_modal {
-            let mut add_pane_button = button("Split selected pane").width(iced::Pixels(200.0));
-
-            let mut replace_pane_button = button("Replace selected pane").width(iced::Pixels(200.0));
-
-            if dashboard.focus.is_some() {
-                replace_pane_button = replace_pane_button.on_press(
-                    Message::ReplacePane(
-                        dashboard.focus
-                            .unwrap_or_else(|| { *dashboard.panes.iter().next().unwrap().0 })
-                    )
-                );
-
-                add_pane_button = add_pane_button.on_press(
-                    Message::Split(
-                        pane_grid::Axis::Horizontal, 
-                        dashboard.focus
-                            .unwrap_or_else(|| { *dashboard.panes.iter().next().unwrap().0 })
-                    )
-                );
-            }
-
+        if self.show_layout_modal {
             let layout_picklist = pick_list(
                 &LayoutId::ALL[..],
                 Some(self.last_active_layout),
@@ -1224,15 +1083,6 @@ impl State {
                                         )                         
                                     )
                             )
-                    )
-                    .push(
-                        Column::new()
-                            .align_x(Alignment::Center)
-                            .push(Text::new("Panes"))
-                            .padding([8, 0])
-                            .spacing(8)
-                            .push(add_pane_button)
-                            .push(replace_pane_button)
                     )       
                     .push(
                         button("Close")
@@ -1384,338 +1234,6 @@ where
         .on_press(on_blur)
     ]
     .into()
-}
-
-trait ChartView {
-    fn view(&self, id: &PaneState) -> Element<Message>;
-}
-
-impl ChartView for HeatmapChart {
-    fn view(&self, pane: &PaneState) -> Element<Message> {
-        
-
-        let pane_id = pane.id;
-
-        let underlay = self.view().map(move |message| Message::ChartUserUpdate(message, pane_id));
-
-        if pane.show_modal {
-            let size_filter = &self.get_size_filter();
-
-            let signup: Container<Message, Theme, _> = container(
-                Column::new()
-                    .spacing(10)
-                    .align_x(Alignment::Center)
-                    .push(
-                        Text::new("Heatmap > Settings")
-                            .size(16)
-                    )
-                    .push(
-                        Column::new()
-                            .align_x(Alignment::Center)
-                            .push(Text::new("Size Filtering"))
-                            .push(
-                                Slider::new(0.0..=50000.0, *size_filter, move |value| Message::SliderChanged(pane_id, value))
-                                    .step(500.0)
-                            )
-                            .push(
-                                Text::new(format!("${size_filter}")).size(16)
-                            )
-                    )
-                    .push( 
-                        Row::new()
-                            .spacing(10)
-                            .push(
-                                button("Close")
-                                .on_press(Message::CloseModal(pane_id))
-                            )
-                    )
-            )
-            .width(Length::Shrink)
-            .padding(20)
-            .max_width(500)
-            .style(style::chart_modal);
-
-            return modal(underlay, signup, Message::CloseModal(pane_id));
-        } else {
-            underlay
-        }
-    }
-}
-impl ChartView for FootprintChart {
-    fn view(&self, pane: &PaneState) -> Element<Message> {
-        let pane_id = pane.id;
-
-        self.view().map(move |message| Message::ChartUserUpdate(message, pane_id))
-    }
-}
-impl ChartView for TimeAndSales {
-    fn view(&self, pane: &PaneState) -> Element<Message> {
-        
-
-        let pane_id = pane.id;
-
-        let underlay = self.view();
-
-        if pane.show_modal {
-            let size_filter = &self.get_size_filter();
-
-            let filter_sync_heatmap = &self.get_filter_sync_heatmap();
-
-            let signup = container(
-                Column::new()
-                    .spacing(10)
-                    .align_x(Alignment::Center)
-                    .push(
-                        Text::new("Time&Sales > Settings")
-                            .size(16)
-                    )
-                    .push(
-                        Column::new()
-                            .align_x(Alignment::Center)
-                            .push(Text::new("Size Filtering"))
-                            .push(
-                                Slider::new(0.0..=50000.0, *size_filter, move |value| Message::SliderChanged(pane_id, value))
-                                    .step(500.0)
-                            )
-                            .push(
-                                Text::new(format!("${size_filter}")).size(16)
-                            )
-                            .push(
-                                checkbox("Sync Heatmap with", *filter_sync_heatmap)
-                                    .on_toggle(Message::SyncWithHeatmap)
-                            )
-                    )
-                    .push( 
-                        Row::new()
-                            .spacing(10)
-                            .push(
-                                button("Close")
-                                .on_press(Message::CloseModal(pane_id))
-                            )
-                    )
-            )
-            .width(Length::Shrink)
-            .padding(20)
-            .max_width(500)
-            .style(style::chart_modal);
-
-            return modal(underlay, signup, Message::CloseModal(pane_id));
-        } else {
-            underlay
-        }
-    }
-}
-impl ChartView for CandlestickChart {
-    fn view(&self, pane: &PaneState) -> Element<Message> {
-        let pane_id = pane.id;
-
-        self.view().map(move |message| Message::ChartUserUpdate(message, pane_id))
-    }
-}
-
-fn view_chart<'a, C: ChartView>(
-    pane: &'a PaneState,
-    chart: &'a C,
-) -> Element<'a, Message> {
-    let chart_view: Element<Message> = chart.view(pane);
-
-    let container = Container::new(chart_view)
-        .width(Length::Fill)
-        .height(Length::Fill);
-
-    container.into()
-}
-
-fn view_starter(
-    pane: &PaneState,
-) -> Element<'_, Message> {
-    let content_names = ["Heatmap chart", "Footprint chart", "Candlestick chart", "Time&Sales"];
-    
-    let content_selector = content_names.iter().fold(
-        Column::new()
-            .spacing(6)
-            .align_x(Alignment::Center), |column, &label| {
-                let mut btn = button(label).width(Length::Fill);
-                if let (Some(exchange), Some(ticker)) = (pane.settings.selected_exchange, pane.settings.selected_ticker) {
-                    let timeframe = pane.settings.selected_timeframe.unwrap_or_else(
-                        || { log::error!("No timeframe found"); Timeframe::M1 }
-                    );
-
-                    let pane_stream: Vec<StreamType> = match label {
-                        "Heatmap chart" | "Time&Sales" => vec![
-                            StreamType::DepthAndTrades { exchange, ticker }
-                        ],
-                        "Footprint chart" => vec![
-                            StreamType::DepthAndTrades { exchange, ticker }, 
-                            StreamType::Kline { exchange, ticker, timeframe }
-                        ],
-                        "Candlestick chart" => vec![
-                            StreamType::Kline { exchange, ticker, timeframe }
-                        ],
-                        _ => vec![]
-                    };
-                
-                    btn = btn.on_press(
-                        Message::PaneContentSelected(label.to_string(), pane.id, pane_stream)
-                    );
-                }
-                column.push(btn)
-            }
-    );
-
-    let symbol_selector = pick_list(
-        &Ticker::ALL[..],
-        pane.settings.selected_ticker,
-        move |ticker| Message::TickerSelected(ticker, pane.id),
-    ).placeholder("ticker...").text_size(13).width(Length::Fill);
-
-    let exchange_selector = pick_list(
-        &Exchange::ALL[..],
-        pane.settings.selected_exchange,
-        move |exchange| Message::ExchangeSelected(exchange, pane.id),
-    ).placeholder("exchange...").text_size(13).width(Length::Fill);
-
-    let picklists = Row::new()
-        .spacing(6)
-        .align_y(Alignment::Center)
-        .push(exchange_selector.style(style::picklist_primary).menu_style(style::picklist_menu_primary))
-        .push(symbol_selector.style(style::picklist_primary).menu_style(style::picklist_menu_primary));
-
-    let column = Column::new()
-        .padding(10)
-        .spacing(10)
-        .align_x(Alignment::Center)
-        .push(picklists)
-        .push(content_selector);
-        
-    let container = Container::new(
-        Column::new()
-            .spacing(10)
-            .padding(20)
-            .align_x(Alignment::Center)
-            .max_width(300)
-            .push(
-                Text::new("Initialize the pane").size(16)
-            )
-            .push(scrollable(column))
-        ).align_x(alignment::Horizontal::Center);
-    
-    container.into()
-}
-
-fn view_controls<'a>(
-    pane: pane_grid::Pane,
-    pane_id: Uuid,
-    pane_type: &PaneContent,
-    total_panes: usize,
-    is_maximized: bool,
-    settings: &PaneSettings,
-) -> Element<'a, Message> {
-    let mut row = row![].spacing(5);
-
-    let (icon, message) = if is_maximized {
-        (Icon::ResizeSmall, Message::Restore)
-    } else {
-        (Icon::ResizeFull, Message::Maximize(pane))
-    };
-
-    match pane_type {
-        PaneContent::Heatmap(_) => {
-            let ticksize_picker = pick_list(
-                [TickMultiplier(1), TickMultiplier(2), TickMultiplier(5), TickMultiplier(10), TickMultiplier(25), TickMultiplier(50)],
-                settings.tick_multiply, 
-                move |tick_multiply| Message::TicksizeSelected(tick_multiply, pane_id)
-            ).placeholder("Ticksize multiplier...").text_size(11).width(iced::Pixels(80.0));
-
-            let ticksize_tooltip = tooltip(
-                ticksize_picker
-                    .style(style::picklist_primary)
-                    .menu_style(style::picklist_menu_primary),
-                    "Ticksize multiplier",
-                    tooltip::Position::FollowCursor
-                )
-                .style(style::tooltip);
-    
-            row = row.push(ticksize_tooltip);
-        },
-        PaneContent::TimeAndSales(_) => {
-        },
-        PaneContent::Footprint(_) => {
-            let timeframe_picker = pick_list(
-                &Timeframe::ALL[..],
-                settings.selected_timeframe,
-                move |timeframe| Message::TimeframeSelected(timeframe, pane_id),
-            ).placeholder("Choose a timeframe...").text_size(11).width(iced::Pixels(80.0));
-    
-            let tf_tooltip = tooltip(
-                timeframe_picker
-                    .style(style::picklist_primary)
-                    .menu_style(style::picklist_menu_primary),
-                    "Timeframe",
-                    tooltip::Position::FollowCursor
-                )
-                .style(style::tooltip);
-    
-            row = row.push(tf_tooltip);
-
-            let ticksize_picker = pick_list(
-                [TickMultiplier(1), TickMultiplier(2), TickMultiplier(5), TickMultiplier(10), TickMultiplier(25), TickMultiplier(50), TickMultiplier(100), TickMultiplier(200)],
-                settings.tick_multiply, 
-                move |tick_multiply| Message::TicksizeSelected(tick_multiply, pane_id)
-            ).placeholder("Ticksize multiplier...").text_size(11).width(iced::Pixels(80.0));
-            
-            let ticksize_tooltip = tooltip(
-                ticksize_picker
-                    .style(style::picklist_primary)
-                    .menu_style(style::picklist_menu_primary),
-                    "Ticksize multiplier",
-                    tooltip::Position::FollowCursor
-                )
-                .style(style::tooltip);
-    
-            row = row.push(ticksize_tooltip);
-        },
-        PaneContent::Candlestick(_) => {
-            let timeframe_picker = pick_list(
-                &Timeframe::ALL[..],
-                settings.selected_timeframe,
-                move |timeframe| Message::TimeframeSelected(timeframe, pane_id),
-            ).placeholder("Choose a timeframe...").text_size(11).width(iced::Pixels(80.0));
-    
-            let tooltip = tooltip(
-                timeframe_picker
-                    .style(style::picklist_primary)
-                    .menu_style(style::picklist_menu_primary),
-                    "Timeframe", 
-                    tooltip::Position::FollowCursor
-                )
-                .style(style::tooltip);
-    
-            row = row.push(tooltip);
-        },
-        PaneContent::Starter => {
-        },
-    }
-
-    let mut buttons = vec![
-        (container(text(char::from(Icon::Cog).to_string()).font(ICON_FONT).size(14)).width(25).center_x(iced::Pixels(25.0)), Message::OpenModal(pane)),
-        (container(text(char::from(icon).to_string()).font(ICON_FONT).size(14)).width(25).center_x(iced::Pixels(25.0)), message),
-    ];
-
-    if total_panes > 1 {
-        buttons.push((container(text(char::from(Icon::Close).to_string()).font(ICON_FONT).size(14)).width(25).center_x(iced::Pixels(25.0)), Message::Close(pane)));
-    }
-
-    for (content, message) in buttons {        
-        row = row.push(
-            button(content)
-                .style(style::button_primary)
-                .padding(3)
-                .on_press(message),
-        );
-    } 
-
-    row.into()
 }
 
 fn klines_fetch_all_task(stream_types: &HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>) -> Vec<Task<Message>> {

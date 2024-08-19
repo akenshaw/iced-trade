@@ -5,21 +5,30 @@ pub use pane::{Uuid, PaneState, PaneContent, PaneSettings};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    charts::{candlestick::CandlestickChart, footprint::FootprintChart, Message}, data_providers::{
+    charts::{candlestick::CandlestickChart, footprint::FootprintChart, heatmap::HeatmapChart, Message as ChartMessage}, data_providers::{
         Depth, Exchange, Kline, TickMultiplier, Ticker, Timeframe, Trade
-    }, StreamType
+    }, modal, style::{self, Icon, ICON_FONT}, StreamType
 };
 
 use super::{Error, Notification};
 
 use std::{collections::{HashMap, HashSet}, io::Read, rc::Rc};
-use iced::{widget::pane_grid::{self, Configuration}, Point, Size};
+use iced::{widget::{button, container, pane_grid::{self, Configuration}, pick_list, row, text, tooltip, Column, PaneGrid, Row, Text}, window, Alignment, Element, Length, Point, Renderer, Size, Task};
+
+#[derive(Debug, Clone)]
+pub enum Message {
+    Pane(pane::Message),
+    Close(window::Id),
+    DashboardSaved(Result<(), Error>),
+    CloseContextMenu(bool),
+    HidePanesModal,
+}
 
 pub struct Dashboard {
     pub panes: pane_grid::State<PaneState>,
     pub focus: Option<pane_grid::Pane>,
-    pub pane_lock: bool,
-    pub show_layout_modal: bool,
+    pub layout_lock: bool,
+    pub show_panes_modal: bool,
 }
 impl Dashboard {
     pub fn empty() -> Self {
@@ -88,8 +97,8 @@ impl Dashboard {
         Self { 
             panes: pane_grid::State::with_configuration(pane_config),
             focus: None,
-            pane_lock: false,
-            show_layout_modal: false,
+            layout_lock: false,
+            show_panes_modal: false,
         }
     }
 
@@ -97,8 +106,163 @@ impl Dashboard {
         Self {
             panes: pane_grid::State::with_configuration(panes),
             focus: None,
-            pane_lock: false,
-            show_layout_modal: false,
+            layout_lock: false,
+            show_panes_modal: false,
+        }
+    }
+
+    pub fn update(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::Pane(message) => {
+                match message {
+                    pane::Message::PaneClicked(pane_id) => {
+                        self.focus = Some(pane_id);
+                    },
+                    pane::Message::PaneResized(pane_grid::ResizeEvent { split, ratio })=> {
+                        self.panes.resize(split, ratio);
+                    },
+                    pane::Message::PaneDragged(event) => {
+                        match event {
+                            pane_grid::DragEvent::Dropped { pane, target } => {
+                                self.panes.drop(pane, target);
+
+                                self.focus = None;
+                            },
+                            _ => {}
+                        }
+                    },
+                    pane::Message::SplitPane(axis, pane) => {        
+                        let focus_pane = if let Some((new_pane, _)) = 
+                            self.panes.split(axis, pane, PaneState::new(Uuid::new_v4(), vec![], PaneSettings::default())) {
+                                    Some(new_pane)
+                                } else {
+                                    None
+                                };
+        
+                        if Some(focus_pane).is_some() {
+                            self.focus = focus_pane;
+                        }
+                    },
+                    pane::Message::ClosePane(pane) => {
+                        if let Some((_, sibling)) = self.panes.close(pane) {
+                            self.focus = Some(sibling);
+                        }
+                    },
+                    pane::Message::MaximizePane(pane) => {
+                        self.panes.maximize(pane);
+                    },
+                    pane::Message::Restore => {
+                        self.panes.restore();
+                    },
+                    pane::Message::TickerSelected(ticker, pane_id) => {
+                        if let Ok(settings) = self.get_pane_settings_mut(pane_id) {
+                            settings.selected_ticker = Some(ticker);
+                        }
+                    },
+                    pane::Message::ExchangeSelected(exchange, pane_id) => {
+                        if let Ok(settings) = self.get_pane_settings_mut(pane_id) {
+                            settings.selected_exchange = Some(exchange);
+                        }
+                    },
+                    _ => {}
+                }
+            }
+            Message::Close(window_id) => {
+                self.focus = None;
+            },
+            Message::DashboardSaved(_) => {
+                self.show_panes_modal = false;
+            },
+            Message::CloseContextMenu(_) => {
+                self.show_panes_modal = false;
+            },
+            Message::HidePanesModal => {
+                self.show_panes_modal = false;
+            },
+        }
+
+        Task::none()
+    }
+
+    pub fn view<'a>(&'a self) -> Element<'a, Message> {
+        let focus = self.focus;
+
+        let pane_grid: Element<_> = PaneGrid::new(&self.panes, |id, pane, maximized| {
+            let is_focused;
+
+            if self.layout_lock {
+                is_focused = false;
+            } else {
+                is_focused = focus == Some(id);
+            }
+
+            let panes = self.panes.len();
+            
+            pane.view(
+                id,
+                panes,
+                is_focused,
+                maximized,
+            )
+        })
+        .on_click(pane::Message::PaneClicked)
+        .on_resize(6, pane::Message::PaneResized)
+        .on_drag(pane::Message::PaneDragged)
+        .spacing(4)
+        .into();
+
+        let pane_grid = container(pane_grid.map(Message::Pane))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(8);
+
+        if self.show_panes_modal {
+            let mut add_pane_button = button("Split selected pane").width(iced::Pixels(200.0));
+
+            let mut replace_pane_button = button("Replace selected pane").width(iced::Pixels(200.0));
+
+            if self.focus.is_some() {
+                replace_pane_button = replace_pane_button.on_press(
+                    Message::Pane(pane::Message::ReplacePane(
+                        self.focus
+                            .unwrap_or_else(|| { *self.panes.iter().next().unwrap().0 })
+                    ))
+                );
+
+                add_pane_button = add_pane_button.on_press(
+                    Message::Pane(pane::Message::SplitPane(
+                        pane_grid::Axis::Horizontal, 
+                        self.focus
+                            .unwrap_or_else(|| { *self.panes.iter().next().unwrap().0 })
+                    ))
+                );
+            }
+
+            let layout_modal = container(
+                Column::new()
+                    .spacing(16)
+                    .align_x(Alignment::Center)
+                    .push(
+                        Column::new()
+                            .align_x(Alignment::Center)
+                            .push(Text::new("Panes"))
+                            .padding([8, 0])
+                            .spacing(8)
+                            .push(add_pane_button)
+                            .push(replace_pane_button)
+                    )       
+                    .push(
+                        button("Close")
+                            .on_press(Message::HidePanesModal)
+                    )
+            )
+            .width(Length::Shrink)
+            .padding(20)
+            .style(style::chart_modal);
+
+            modal(pane_grid, layout_modal, Message::HidePanesModal)
+        } else {
+            pane_grid.into()
         }
     }
 
@@ -373,22 +537,22 @@ impl Dashboard {
         }
     }
 
-    pub fn update_chart_state(&mut self, pane_id: Uuid, message: Message) -> Result<(), Error> {
+    pub fn update_chart_state(&mut self, pane_id: Uuid, ChartMessage: ChartMessage) -> Result<(), Error> {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.id == pane_id {
                 match pane_state.content {
                     PaneContent::Heatmap(ref mut chart) => {
-                        chart.update(&message);
+                        chart.update(&ChartMessage);
 
                         return Ok(());
                     },
                     PaneContent::Footprint(ref mut chart) => {
-                        chart.update(&message);
+                        chart.update(&ChartMessage);
 
                         return Ok(());
                     },
                     PaneContent::Candlestick(ref mut chart) => {
-                        chart.update(&message);
+                        chart.update(&ChartMessage);
 
                         return Ok(());
                     },

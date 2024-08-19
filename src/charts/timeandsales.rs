@@ -3,7 +3,8 @@ use iced::{
     alignment, Element, Length
 };
 use iced::widget::{Column, Row, Container, Text, container, Space};
-use crate::{Message, style, data_providers::Trade};
+use crate::screen::dashboard::pane::Message;
+use crate::{style, data_providers::Trade};
 
 struct ConvertedTrade {
     time: NaiveDateTime,
