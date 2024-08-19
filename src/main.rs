@@ -204,15 +204,9 @@ pub enum Message {
     // Pane grid
     ToggleLayoutLock,
     PaneContentSelected(String, Uuid, Vec<StreamType>),
-    ReplacePane(pane_grid::Pane),
-
-    // Modal
-    OpenModal(pane_grid::Pane),
-    CloseModal(Uuid),
 
     // Slider
     SliderChanged(Uuid, f32),
-    SyncWithHeatmap(bool),
 
     // Chart settings
     TicksizeSelected(TickMultiplier, Uuid),
@@ -610,24 +604,6 @@ impl State {
             
                 window::close(window)
             },
-            Message::OpenModal(pane) => {
-                let dashboard = self.get_mut_dashboard();
-
-                if let Some(pane) = dashboard.panes.get_mut(pane) {
-                    pane.show_modal = true;
-                };
-                Task::none()
-            },
-            Message::CloseModal(pane_id) => {
-                let dashboard = self.get_mut_dashboard();
-                
-                for (_, pane_state) in dashboard.panes.iter_mut() {
-                    if pane_state.id == pane_id {
-                        pane_state.show_modal = false;
-                    }
-                }
-                Task::none()
-            },
             Message::SliderChanged(pane_id, value) => {
                 let dashboard = self.get_mut_dashboard();
 
@@ -644,14 +620,6 @@ impl State {
                         )
                     }
                 }
-            },
-            Message::SyncWithHeatmap(sync) => {   
-                Task::perform(
-                    async {},
-                    move |_| Message::Notification(
-                        Notification::Warn("gonna have to reimplement that".to_string())
-                    )
-                )
             },
             Message::ShowLayoutModal => {
                 let dashboard = self.get_mut_dashboard();
@@ -836,13 +804,6 @@ impl State {
                 }
                 
                 Task::batch(tasks)
-            },
-            Message::ReplacePane(pane) => {
-                let dashboard = self.get_mut_dashboard();
-
-                dashboard.replace_new_pane(pane);
-
-                Task::none()
             },
             Message::ResetCurrentLayout => {
                 let new_dashboard = Dashboard::empty();

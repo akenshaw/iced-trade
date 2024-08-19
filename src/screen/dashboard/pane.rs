@@ -27,7 +27,7 @@ pub enum Message {
     TimeframeSelected(Timeframe, Uuid),
     TickerSelected(Ticker, Uuid),
     ExchangeSelected(Exchange, Uuid),
-    ShowModal(Uuid),
+    ShowModal(pane_grid::Pane),
     HideModal(Uuid),
     PaneContentSelected(String, Uuid, Vec<StreamType>),
     ReplacePane(pane_grid::Pane),
@@ -380,7 +380,7 @@ fn view_controls<'a>(
     }
 
     let mut buttons = vec![
-        (container(text(char::from(Icon::Cog).to_string()).font(ICON_FONT).size(14)).width(25).center_x(iced::Pixels(25.0)), Message::ShowModal(pane_id)),
+        (container(text(char::from(Icon::Cog).to_string()).font(ICON_FONT).size(14)).width(25).center_x(iced::Pixels(25.0)), Message::ShowModal(pane)),
         (container(text(char::from(icon).to_string()).font(ICON_FONT).size(14)).width(25).center_x(iced::Pixels(25.0)), message),
     ];
 

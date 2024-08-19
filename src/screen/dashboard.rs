@@ -20,7 +20,6 @@ pub enum Message {
     Pane(pane::Message),
     Close(window::Id),
     DashboardSaved(Result<(), Error>),
-    CloseContextMenu(bool),
     HidePanesModal,
 }
 
@@ -164,6 +163,21 @@ impl Dashboard {
                             settings.selected_exchange = Some(exchange);
                         }
                     },
+                    pane::Message::ReplacePane(pane_id) => {
+                        self.replace_new_pane(pane_id);
+                    },
+                    pane::Message::ShowModal(pane_id) => {
+                        if let Some(pane) = self.panes.get_mut(pane_id) {
+                            pane.show_modal = true;
+                        };
+                    },
+                    pane::Message::HideModal(pane_id) => {
+                        for (_, pane_state) in self.panes.iter_mut() {
+                            if pane_state.id == pane_id {
+                                pane_state.show_modal = false;
+                            }
+                        }
+                    },
                     _ => {}
                 }
             }
@@ -171,9 +185,6 @@ impl Dashboard {
                 self.focus = None;
             },
             Message::DashboardSaved(_) => {
-                self.show_panes_modal = false;
-            },
-            Message::CloseContextMenu(_) => {
                 self.show_panes_modal = false;
             },
             Message::HidePanesModal => {
@@ -186,35 +197,31 @@ impl Dashboard {
 
     pub fn view<'a>(&'a self) -> Element<'a, Message> {
         let focus = self.focus;
-
-        let pane_grid: Element<_> = PaneGrid::new(&self.panes, |id, pane, maximized| {
-            let is_focused;
-
-            if self.layout_lock {
-                is_focused = false;
-            } else {
-                is_focused = focus == Some(id);
-            }
-
-            let panes = self.panes.len();
-            
+        let pane_locked = self.layout_lock;
+        
+        let mut pane_grid = PaneGrid::new(&self.panes, |id, pane, maximized| {
+            let is_focused = !pane_locked && focus == Some(id);
             pane.view(
                 id,
-                panes,
+                self.panes.len(),
                 is_focused,
                 maximized,
             )
         })
-        .on_click(pane::Message::PaneClicked)
-        .on_resize(6, pane::Message::PaneResized)
-        .on_drag(pane::Message::PaneDragged)
-        .spacing(4)
-        .into();
+        .spacing(4);
+    
+        if !pane_locked {
+            pane_grid = pane_grid
+                .on_click(pane::Message::PaneClicked)
+                .on_resize(6, pane::Message::PaneResized)
+                .on_drag(pane::Message::PaneDragged);
+        }
+    
+        let pane_grid: Element<_> = pane_grid.into();
 
         let pane_grid = container(pane_grid.map(Message::Pane))
             .width(Length::Fill)
-            .height(Length::Fill)
-            .padding(8);
+            .height(Length::Fill);
 
         if self.show_panes_modal {
             let mut add_pane_button = button("Split selected pane").width(iced::Pixels(200.0));
