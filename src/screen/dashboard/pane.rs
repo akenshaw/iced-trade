@@ -33,6 +33,7 @@ pub enum Message {
     ReplacePane(pane_grid::Pane),
     ChartUserUpdate(charts::Message, Uuid),
     SliderChanged(Uuid, f32),
+    SetMinTickSize(Uuid, f32),
 }
 
 #[derive(Debug)]
@@ -113,11 +114,13 @@ impl PaneState {
                 match self.content {
                     PaneContent::Starter => view_starter(&self.id, &self.settings),
 
-                    _ => {
-                        Column::new()
-                            .push(Text::new("Loading..."))
-                            .into()
-                    }
+                    PaneContent::Heatmap(ref chart) => view_chart(self, chart),
+
+                    PaneContent::Footprint(ref chart) => view_chart(self, chart),
+
+                    PaneContent::Candlestick(ref chart) => view_chart(self, chart),
+
+                    PaneContent::TimeAndSales(ref chart) => view_chart(self, chart),
                 }
             })
             .style(

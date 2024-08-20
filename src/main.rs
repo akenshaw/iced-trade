@@ -187,7 +187,6 @@ pub enum Message {
     ErrorOccurred(Error),
     ClearNotification,
 
-    ChartUserUpdate(charts::Message, Uuid),
     ShowLayoutModal,
     HideLayoutModal,
     ShowPanesModal,
@@ -196,22 +195,10 @@ pub enum Message {
     // Market&User data stream
     UserKeySucceed(String),
     UserKeyError,
-    TickerSelected(Ticker, Uuid),
-    ExchangeSelected(Exchange, Uuid),
     MarketWsEvent(MarketEvents),
-    FetchEvent(Result<Vec<data_providers::Kline>, std::string::String>, StreamType, Uuid),
     
     // Pane grid
     ToggleLayoutLock,
-    PaneContentSelected(String, Uuid, Vec<StreamType>),
-
-    // Slider
-    SliderChanged(Uuid, f32),
-
-    // Chart settings
-    TicksizeSelected(TickMultiplier, Uuid),
-    TimeframeSelected(Timeframe, Uuid),
-    SetMinTickSize(f32, Uuid),   
     
     Event(Event),
 
@@ -270,168 +257,6 @@ impl State {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::ChartUserUpdate(message, pane_id) => {
-                let dashboard = self.get_mut_dashboard();
-            
-                match dashboard.update_chart_state(pane_id, message) {
-                    Ok(_) => Task::none(),
-                    Err(err) => {      
-                        Task::perform(
-                            async { err },
-                            move |err: Error| Message::ErrorOccurred(err)
-                        )
-                    }
-                }
-            },
-            Message::SetMinTickSize(min_tick_size, pane_id) => {
-                let dashboard = self.get_mut_dashboard();
-
-                match dashboard.get_pane_settings_mut(pane_id) {
-                    Ok(pane_settings) => {
-                        pane_settings.min_tick_size = Some(min_tick_size);
-                        
-                        Task::none()
-                    },
-                    Err(err) => {
-                        Task::perform(
-                            async { err },
-                            move |err: Error| Message::ErrorOccurred(err)
-                        )
-                    }
-                }
-            },
-            Message::TickerSelected(ticker, pane_id) => {
-                let dashboard = self.get_mut_dashboard();
-
-                match dashboard.get_pane_settings_mut(pane_id) {
-                    Ok(pane_settings) => {
-                        pane_settings.selected_ticker = Some(ticker);
-                        
-                        Task::none()
-                    },
-                    Err(err) => {
-                        Task::perform(
-                            async { err },
-                            move |err: Error| Message::ErrorOccurred(err)
-                        )
-                    }
-                }
-            },
-            Message::TimeframeSelected(timeframe, pane_id) => {    
-                let mut tasks = vec![];
-
-                let dashboard = self.get_mut_dashboard();
-            
-                match dashboard.set_pane_timeframe(pane_id, timeframe) {
-                    Ok(stream_type) => {
-                        if let StreamType::Kline { exchange, ticker, timeframe } = stream_type {
-                            let stream = *stream_type;
-            
-                            match exchange {
-                                Exchange::BinanceFutures => {
-                                    tasks.push(
-                                        Task::perform(
-                                            binance::market_data::fetch_klines(*ticker, *timeframe)
-                                                .map_err(|err| format!("{err}")),
-                                            move |klines| Message::FetchEvent(klines, stream, pane_id)
-                                        )
-                                    );
-                                },
-                                Exchange::BybitLinear => {                                    
-                                    tasks.push(
-                                        Task::perform(
-                                            bybit::market_data::fetch_klines(*ticker, *timeframe)
-                                                .map_err(|err| format!("{err}")),
-                                            move |klines| Message::FetchEvent(klines, stream, pane_id)
-                                        )
-                                    );
-                                },
-                            }
-
-                            tasks.push(
-                                Task::perform(
-                                    async {},
-                                    move |_| Message::Notification(Notification::Info("Fetching for klines...".to_string()))
-                                )
-                            );
-
-                            self.pane_streams = dashboard.get_all_diff_streams();
-                        }
-                    },
-                    Err(err) => {
-                        tasks.push(Task::perform(
-                            async { err },
-                            move |err: Error| Message::ErrorOccurred(err)
-                        ));
-                    }
-                }
-
-                Task::batch(tasks)
-            },
-            Message::ExchangeSelected(exchange, pane_id) => {
-                let dashboard = self.get_mut_dashboard();
-
-                match dashboard.get_pane_settings_mut(pane_id) {
-                    Ok(pane_settings) => {
-                        pane_settings.selected_exchange = Some(exchange);
-
-                        Task::none()
-                    },
-                    Err(err) => {
-                        Task::perform(
-                            async { err },
-                            move |err: Error| Message::ErrorOccurred(err)
-                        )
-                    }
-                }
-            },
-            Message::TicksizeSelected(tick_multiply, pane_id) => {
-                let dashboard = self.get_mut_dashboard();
-                
-                match dashboard.set_pane_ticksize(pane_id, tick_multiply) {
-                    Ok(_) => {
-                        Task::none()
-                    },
-                    Err(err) => {            
-                        Task::perform(
-                            async { err },
-                            move |err: Error| Message::ErrorOccurred(err)
-                        )
-                    }
-                }
-            },
-            Message::FetchEvent(klines, pane_stream, pane_id) => {
-                if let Some(notification) = &self.notification {
-                    match notification {
-                        Notification::Info(_) => {
-                            self.notification = None;
-                        },
-                        _ => {}
-                    }
-                }
-               
-                let dashboard = self.get_mut_dashboard();
-
-                match klines {
-                    Ok(klines) => {
-                        if let StreamType::Kline { .. } = pane_stream {
-                            dashboard.insert_klines_vec(&pane_stream, &klines, pane_id);
-
-                            Task::none()
-                        } else {
-                            log::error!("Invalid stream type for klines: {pane_stream:?}");
-
-                            Task::none()
-                        }
-                    },
-                    Err(err) => {
-                        Task::perform(
-                            async { err },
-                            move |err: String| Message::ErrorOccurred(Error::FetchError(err))
-                        )
-                    }
-                }
-            },
             Message::MarketWsEvent(event) => {
                 let dashboard = self.get_mut_dashboard();
 
@@ -604,23 +429,6 @@ impl State {
             
                 window::close(window)
             },
-            Message::SliderChanged(pane_id, value) => {
-                let dashboard = self.get_mut_dashboard();
-
-                match dashboard.set_pane_size_filter(pane_id, value) {
-                    Ok(_) => {
-                        log::info!("Size filter set to {value}");
-
-                        Task::none()
-                    }
-                    Err(err) => {
-                        Task::perform(
-                            async { err },
-                            move |err: Error| Message::ErrorOccurred(err)
-                        )
-                    }
-                }
-            },
             Message::ShowLayoutModal => {
                 let dashboard = self.get_mut_dashboard();
 
@@ -717,93 +525,6 @@ impl State {
                 self.notification = None;
 
                 Task::none()
-            },
-            Message::PaneContentSelected(content, pane_id, pane_stream) => {
-                let dashboard = self.get_mut_dashboard();
-
-                let mut tasks = vec![];
-                    
-                let pane_content = match content.as_str() {
-                    "Heatmap chart" => PaneContent::Heatmap(
-                        HeatmapChart::new(1.0)
-                    ),
-                    "Footprint chart" => {
-                        PaneContent::Footprint(
-                            FootprintChart::new(1, 1.0, vec![], vec![])
-                        )
-                    },
-                    "Candlestick chart" => {
-                        PaneContent::Candlestick(
-                            CandlestickChart::new(vec![], 1)
-                        )
-                    },
-                    "Time&Sales" => PaneContent::TimeAndSales(
-                        TimeAndSales::new()
-                    ),
-                    _ => return Task::none(),
-                };
-
-                // set pane's stream and content identifiers
-                if let Err(err) = dashboard.set_pane_content(pane_id, pane_content) {
-                    log::error!("Failed to set pane content: {}", err);
-                } else {
-                    log::info!("Pane content set: {content}");
-                }
-                
-                if let Err(err) = dashboard.set_pane_stream(pane_id, pane_stream.to_vec()) {
-                    log::error!("Failed to set pane stream: {err}");
-                } else {
-                    log::info!("Pane stream set: {pane_stream:?}");
-                }
-            
-                // prepare unique streams for websocket
-                for stream in pane_stream.iter() {
-                    match stream {
-                        StreamType::Kline { exchange, ticker, .. } | StreamType::DepthAndTrades { exchange, ticker } => {
-                            self.pane_streams
-                                .entry(*exchange)
-                                .or_default()
-                                .entry(*ticker)
-                                .or_default()
-                                .insert(*stream);
-                        }
-                        _ => {}
-                    }
-                }
-            
-                log::info!("{:?}", &self.pane_streams);
-
-                // get fetch tasks for pane's content
-                if ["Footprint chart", "Candlestick chart", "Heatmap chart"].contains(&content.as_str()) {
-                    for stream in pane_stream.iter() {
-                        match stream {
-                            StreamType::Kline { exchange, ticker, .. } => {
-                                if ["Candlestick chart", "Footprint chart"].contains(&content.as_str()) {
-                                    tasks.push(create_fetch_klines_task(*stream, pane_id));
-                                    
-                                    if content == "Footprint chart" {
-                                        tasks.push(create_fetch_ticksize_task(exchange, ticker, pane_id));
-                                    }
-                                }
-                            },
-                            StreamType::DepthAndTrades { exchange, ticker } => {
-                                tasks.push(create_fetch_ticksize_task(exchange, ticker, pane_id));
-                            },
-                            _ => {}
-                        }
-                    }
-
-                    tasks.push(
-                        Task::perform(
-                            async {},
-                            move |_| Message::Notification(
-                                Notification::Info(format!("Fetching data for the {}...", content.to_lowercase()))
-                            )
-                        )
-                    );
-                }
-                
-                Task::batch(tasks)
             },
             Message::ResetCurrentLayout => {
                 let new_dashboard = Dashboard::empty();
@@ -1294,52 +1015,6 @@ fn ticksize_fetch_all_task(stream_types: &HashMap<Exchange, HashMap<Ticker, Hash
     }
 
     tasks
-}
-
-fn create_fetch_klines_task(
-    stream: StreamType,
-    pane_id: Uuid,
-) -> Task<Message> {
-    match stream {
-        StreamType::Kline { exchange, ticker, timeframe } => {
-            match exchange {
-                Exchange::BinanceFutures => Task::perform(
-                    binance::market_data::fetch_klines(ticker, timeframe)
-                        .map_err(|err| format!("{err}")),
-                    move |klines| Message::FetchEvent(klines, stream, pane_id),
-                ),
-                Exchange::BybitLinear => Task::perform(
-                    bybit::market_data::fetch_klines(ticker, timeframe)
-                        .map_err(|err| format!("{err}")),
-                    move |klines| Message::FetchEvent(klines, stream, pane_id),
-                ),
-            }
-        },
-        _ => Task::none(),
-    }
-}
-
-fn create_fetch_ticksize_task(
-    exchange: &Exchange,
-    ticker: &Ticker,
-    pane_id: Uuid,
-) -> Task<Message> {
-    match exchange {
-        Exchange::BinanceFutures => Task::perform(
-            binance::market_data::fetch_ticksize(*ticker),
-            move |result| match result {
-                Ok(ticksize) => Message::SetMinTickSize(ticksize, pane_id),
-                Err(err) => Message::ErrorOccurred(Error::FetchError(err.to_string())),
-            },
-        ),
-        Exchange::BybitLinear => Task::perform(
-            bybit::market_data::fetch_ticksize(*ticker),
-            move |result| match result {
-                Ok(ticksize) => Message::SetMinTickSize(ticksize, pane_id),
-                Err(err) => Message::ErrorOccurred(Error::FetchError(err.to_string())),
-            },
-        ),
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
