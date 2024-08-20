@@ -587,7 +587,7 @@ pub async fn fetch_klines(ticker: Ticker, timeframe: Timeframe) -> Result<Vec<Kl
         Timeframe::M30 => "30",
     };
 
-    let url: String = format!("https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol_str}&interval={timeframe_str}&limit=250");
+    let url: String = format!("https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol_str}&interval={timeframe_str}&limit=720");
 
     let response: reqwest::Response = reqwest::get(&url).await
         .context("Failed to send request")?;

@@ -216,15 +216,12 @@ struct State {
     exchange_latency: Option<(u32, u32)>,
     listen_key: Option<String>,
     feed_latency_cache: VecDeque<data_providers::FeedLatency>,
-    pane_streams: HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>,
     notification: Option<Notification>,
 }
 
 impl State {
     fn new(saved_state: SavedState) -> (Self, Task<Message>) {
         let mut tasks = vec![];
-
-        let mut pane_streams = HashMap::new();
 
         let last_active_layout = saved_state.last_active_layout;
         let dashboard = saved_state.layouts.get(&last_active_layout);
@@ -236,8 +233,6 @@ impl State {
             );
 
             tasks.push(sleep_and_fetch);
-
-            pane_streams = dashboard.get_all_diff_streams();
         }
 
         (
@@ -248,7 +243,6 @@ impl State {
                 listen_key: None,
                 exchange_latency: None,
                 feed_latency_cache: VecDeque::new(),
-                pane_streams,
                 notification: None,
             },
             Task::batch(tasks)
@@ -276,13 +270,6 @@ impl State {
                             
                             if let Err(err) = dashboard.update_depth_and_trades(stream_type, depth_update_t, depth, trades_buffer) {
                                 log::error!("{err}, {stream_type:?}");
-
-                                self.pane_streams
-                                    .entry(Exchange::BinanceFutures)
-                                    .or_default()
-                                    .entry(ticker)
-                                    .or_default()
-                                    .remove(&stream_type);
                             }
                         }
                         binance::market_data::Event::KlineReceived(ticker, kline, timeframe) => {
@@ -294,13 +281,6 @@ impl State {
 
                             if let Err(err) = dashboard.update_latest_klines(&stream_type, &kline) {
                                 log::error!("{err}, {stream_type:?}");
-
-                                self.pane_streams
-                                    .entry(Exchange::BinanceFutures)
-                                    .or_default()
-                                    .entry(ticker)
-                                    .or_default()
-                                    .remove(&stream_type);
                             }
                         }
                     },
@@ -319,13 +299,6 @@ impl State {
                             
                             if let Err(err) = dashboard.update_depth_and_trades(stream_type, depth_update_t, depth, trades_buffer) {
                                 log::error!("{err}, {stream_type:?}");
-
-                                self.pane_streams
-                                    .entry(Exchange::BybitLinear)
-                                    .or_default()
-                                    .entry(ticker)
-                                    .or_default()
-                                    .remove(&stream_type);
                             }
                         }
                         bybit::market_data::Event::KlineReceived(ticker, kline, timeframe) => {
@@ -337,13 +310,6 @@ impl State {
 
                             if let Err(err) = dashboard.update_latest_klines(&stream_type, &kline) {
                                 log::error!("{err}, {stream_type:?}");
-
-                                self.pane_streams
-                                    .entry(Exchange::BybitLinear)
-                                    .or_default()
-                                    .entry(ticker)
-                                    .or_default()
-                                    .remove(&stream_type);
                             }
                         }
                     },
@@ -543,7 +509,9 @@ impl State {
             
                 let mut tasks = vec![];
 
-                self.pane_streams = self.get_dashboard().get_all_diff_streams();
+                let dashboard = self.get_mut_dashboard();
+
+                let pane_streams = dashboard.get_all_diff_streams();
 
                 tasks.push(
                     Task::perform(
@@ -553,10 +521,10 @@ impl State {
                 );
 
                 tasks.extend(
-                    klines_fetch_all_task(&self.pane_streams)
+                    klines_fetch_all_task(&pane_streams)
                 );
                 tasks.extend(
-                    ticksize_fetch_all_task(&self.pane_streams)
+                    ticksize_fetch_all_task(&pane_streams)
                 );
 
                 Task::batch(tasks)
@@ -603,7 +571,7 @@ impl State {
                 Task::batch(vec![
                     command.map(Message::Dashboard),
                 ])
-            }
+            },
         }
     }
 
@@ -785,7 +753,7 @@ impl State {
     fn subscription(&self) -> Subscription<Message> {
         let mut all_subscriptions = Vec::new();
     
-        for (exchange, stream) in &self.pane_streams {
+        for (exchange, stream) in &self.get_dashboard().pane_streams {
             let mut depth_streams: Vec<Subscription<Message>> = Vec::new();
             let mut kline_streams: Vec<(Ticker, Timeframe)> = Vec::new();
     

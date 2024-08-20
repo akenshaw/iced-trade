@@ -364,7 +364,6 @@ impl Dashboard {
                             }
                         }
                     },
-                    _ => {}
                 }
             },
             Message::Close(window_id) => {
@@ -491,13 +490,13 @@ impl Dashboard {
         }
     }
 
-    pub fn replace_new_pane(&mut self, pane: pane_grid::Pane) {
+    fn replace_new_pane(&mut self, pane: pane_grid::Pane) {
         if let Some(pane) = self.panes.get_mut(pane) {
             *pane = PaneState::new(Uuid::new_v4(), vec![], PaneSettings::default());
         }
     }
 
-    pub fn get_pane_settings_mut(&mut self, pane_id: Uuid) -> Result<&mut PaneSettings, Error> {
+    fn get_pane_settings_mut(&mut self, pane_id: Uuid) -> Result<&mut PaneSettings, Error> {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.id == pane_id {
                 return Ok(&mut pane_state.settings);
@@ -506,7 +505,7 @@ impl Dashboard {
         Err(Error::UnknownError("No pane found".to_string()))
     }
 
-    pub fn set_pane_content(&mut self, pane_id: Uuid, content: PaneContent) -> Result<(), &str> {
+    fn set_pane_content(&mut self, pane_id: Uuid, content: PaneContent) -> Result<(), &str> {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.id == pane_id {
                 pane_state.content = content;
@@ -517,7 +516,7 @@ impl Dashboard {
         Err("No pane found")
     }
 
-    pub fn set_pane_stream(&mut self, pane_id: Uuid, stream: Vec<StreamType>) -> Result<(), &str> {
+    fn set_pane_stream(&mut self, pane_id: Uuid, stream: Vec<StreamType>) -> Result<(), &str> {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.id == pane_id {
                 pane_state.stream = stream;
@@ -528,7 +527,7 @@ impl Dashboard {
         Err("No pane found")
     }
 
-    pub fn set_pane_ticksize(&mut self, pane_id: Uuid, new_tick_multiply: TickMultiplier) -> Result<(), Error> {
+    fn set_pane_ticksize(&mut self, pane_id: Uuid, new_tick_multiply: TickMultiplier) -> Result<(), Error> {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.id == pane_id {
                 pane_state.settings.tick_multiply = Some(new_tick_multiply);
@@ -561,7 +560,7 @@ impl Dashboard {
         Err(Error::UnknownError("No pane found to change ticksize".to_string()))
     }
     
-    pub fn set_pane_timeframe(&mut self, pane_id: Uuid, new_timeframe: Timeframe) -> Result<&StreamType, Error> {
+    fn set_pane_timeframe(&mut self, pane_id: Uuid, new_timeframe: Timeframe) -> Result<&StreamType, Error> {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.id == pane_id {
                 pane_state.settings.selected_timeframe = Some(new_timeframe);
@@ -589,7 +588,7 @@ impl Dashboard {
         Err(Error::UnknownError("No pane found to change tiemframe".to_string()))
     }
 
-    pub fn set_pane_size_filter(&mut self, pane_id: Uuid, new_size_filter: f32) -> Result<(), Error> {
+    fn set_pane_size_filter(&mut self, pane_id: Uuid, new_size_filter: f32) -> Result<(), Error> {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.id == pane_id {
                 pane_state.settings.trade_size_filter = Some(new_size_filter);
@@ -725,6 +724,8 @@ impl Dashboard {
         if found_match {
             Ok(())
         } else {
+            self.pane_streams = self.get_all_diff_streams();
+
             Err("No matching pane found for the stream")
         }
     }
@@ -758,26 +759,28 @@ impl Dashboard {
         if found_match {
             Ok(())
         } else {
+            self.pane_streams = self.get_all_diff_streams();
+
             Err("No matching pane found for the stream")
         }
     }
 
-    pub fn update_chart_state(&mut self, pane_id: Uuid, ChartMessage: ChartMessage) -> Result<(), Error> {
+    fn update_chart_state(&mut self, pane_id: Uuid, chart_message: ChartMessage) -> Result<(), Error> {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.id == pane_id {
                 match pane_state.content {
                     PaneContent::Heatmap(ref mut chart) => {
-                        chart.update(&ChartMessage);
+                        chart.update(&chart_message);
 
                         return Ok(());
                     },
                     PaneContent::Footprint(ref mut chart) => {
-                        chart.update(&ChartMessage);
+                        chart.update(&chart_message);
 
                         return Ok(());
                     },
                     PaneContent::Candlestick(ref mut chart) => {
-                        chart.update(&ChartMessage);
+                        chart.update(&chart_message);
 
                         return Ok(());
                     },
@@ -790,7 +793,7 @@ impl Dashboard {
         Err(Error::UnknownError("No pane found to update its state".to_string()))
     }
 
-    pub fn get_all_diff_streams(&self) -> HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>> {
+    pub fn get_all_diff_streams(&mut self) -> HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>> {
         let mut pane_streams = HashMap::new();
 
         for (_, pane_state) in self.panes.iter() {
@@ -817,6 +820,7 @@ impl Dashboard {
                 }
             }
         }
+        self.pane_streams = pane_streams.clone();
 
         pane_streams
     }
