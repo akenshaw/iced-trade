@@ -183,8 +183,6 @@ pub enum Message {
 
     ShowLayoutModal,
     HideLayoutModal,
-    ShowPanesModal,
-    HidePanesModal,
 
     MarketWsEvent(MarketEvents),
     
@@ -370,33 +368,11 @@ impl State {
                 window::close(window)
             },
             Message::ShowLayoutModal => {
-                let dashboard = self.get_mut_dashboard();
-
-                if dashboard.show_panes_modal {
-                    dashboard.show_panes_modal = false;
-                }
-
                 self.show_layout_modal = true;
                 iced::widget::focus_next()
             },
             Message::HideLayoutModal => {
                 self.show_layout_modal = false;
-                Task::none()
-            },
-            Message::ShowPanesModal => {
-                if self.show_layout_modal {
-                    self.show_layout_modal = false;
-                }
-
-                let dashboard = self.get_mut_dashboard();
-
-                dashboard.show_panes_modal = true;
-                iced::widget::focus_next()
-            },
-            Message::HidePanesModal => {
-                let dashboard = self.get_mut_dashboard();
-
-                dashboard.show_panes_modal = false;
                 Task::none()
             },
             Message::Notification(notification) => {
@@ -526,23 +502,9 @@ impl State {
             )
             .on_press(Message::ShowLayoutModal);
 
-        let pane_modal_button = button(
-            container(
-                text(char::from(Icon::Layout).to_string()).font(ICON_FONT))
-                .width(25)
-                .center_x(iced::Pixels(20.0))
-            )
-            .on_press(Message::ShowPanesModal);
-
         let layout_controls = Row::new()
             .spacing(10)
             .align_y(Alignment::Center)
-            .push(
-                tooltip(
-                    pane_modal_button, 
-                    "Manage Panes", tooltip::Position::Bottom
-                ).style(style::tooltip)
-            )
             .push(
                 tooltip(
                     layout_modal_button, 
@@ -624,6 +586,29 @@ impl State {
                 move |layout: LayoutId| Message::LayoutSelected(layout)
             );
 
+            let mut add_pane_button = button("Split selected pane").width(iced::Pixels(200.0));
+            let mut replace_pane_button = button("Replace selected pane").width(iced::Pixels(200.0));
+
+            if dashboard.focus.is_some() {
+                replace_pane_button = replace_pane_button.on_press(
+                    Message::Dashboard(dashboard::Message::Pane(
+                        pane::Message::ReplacePane(
+                        dashboard.focus
+                            .unwrap_or_else(|| { *dashboard.panes.iter().next().unwrap().0 })
+                        )
+                    ))
+                );
+
+                add_pane_button = add_pane_button.on_press(
+                    Message::Dashboard(dashboard::Message::Pane(
+                        pane::Message::SplitPane(
+                            pane_grid::Axis::Horizontal, 
+                            dashboard.focus.unwrap_or_else(|| { *dashboard.panes.iter().next().unwrap().0 })
+                        )
+                    ))
+                );
+            }
+
             let layout_modal = container(
                 Column::new()
                     .spacing(16)
@@ -661,6 +646,15 @@ impl State {
                                         )                         
                                     )
                             )
+                    )
+                    .push(
+                        Column::new()
+                            .align_x(Alignment::Center)
+                            .push(Text::new("Panes"))
+                            .padding([8, 0])
+                            .spacing(8)
+                            .push(add_pane_button)
+                            .push(replace_pane_button)
                     )       
                     .push(
                         button("Close")
@@ -839,7 +833,7 @@ fn filtered_events(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
-enum LayoutId {
+pub enum LayoutId {
     Layout1,
     Layout2,
     Layout3,

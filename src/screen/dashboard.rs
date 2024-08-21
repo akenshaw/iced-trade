@@ -19,7 +19,6 @@ use iced::{widget::{button, container, pane_grid::{self, Configuration}, Column,
 #[derive(Debug, Clone)]
 pub enum Message {
     Pane(pane::Message),
-    HidePanesModal,
     ErrorOccurred(Error),
     Notification(Notification),
     FetchEvent(Result<Vec<Kline>, String>, StreamType, Uuid),
@@ -32,7 +31,6 @@ pub struct Dashboard {
     pub panes: pane_grid::State<PaneState>,
     pub focus: Option<pane_grid::Pane>,
     pub layout_lock: bool,
-    pub show_panes_modal: bool,
     pub pane_streams: HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>,
     pub notification: Option<Notification>,
 }
@@ -104,7 +102,6 @@ impl Dashboard {
             panes: pane_grid::State::with_configuration(pane_config),
             focus: None,
             layout_lock: false,
-            show_panes_modal: false,
             pane_streams: HashMap::new(),
             notification: None,
         }
@@ -115,7 +112,6 @@ impl Dashboard {
             panes: pane_grid::State::with_configuration(panes),
             focus: None,
             layout_lock: false,
-            show_panes_modal: false,
             pane_streams: HashMap::new(),
             notification: None,
         }
@@ -367,9 +363,6 @@ impl Dashboard {
                     },
                 }
             },
-            Message::HidePanesModal => {
-                self.show_panes_modal = false;
-            },
             Message::ErrorOccurred(err) => {
                 dbg!(err);
             },
@@ -473,54 +466,7 @@ impl Dashboard {
             .width(Length::Fill)
             .height(Length::Fill);
 
-        if self.show_panes_modal {
-            let mut add_pane_button = button("Split selected pane").width(iced::Pixels(200.0));
-
-            let mut replace_pane_button = button("Replace selected pane").width(iced::Pixels(200.0));
-
-            if self.focus.is_some() {
-                replace_pane_button = replace_pane_button.on_press(
-                    Message::Pane(pane::Message::ReplacePane(
-                        self.focus
-                            .unwrap_or_else(|| { *self.panes.iter().next().unwrap().0 })
-                    ))
-                );
-
-                add_pane_button = add_pane_button.on_press(
-                    Message::Pane(pane::Message::SplitPane(
-                        pane_grid::Axis::Horizontal, 
-                        self.focus
-                            .unwrap_or_else(|| { *self.panes.iter().next().unwrap().0 })
-                    ))
-                );
-            }
-
-            let layout_modal = container(
-                Column::new()
-                    .spacing(16)
-                    .align_x(Alignment::Center)
-                    .push(
-                        Column::new()
-                            .align_x(Alignment::Center)
-                            .push(Text::new("Panes"))
-                            .padding([8, 0])
-                            .spacing(8)
-                            .push(add_pane_button)
-                            .push(replace_pane_button)
-                    )       
-                    .push(
-                        button("Close")
-                            .on_press(Message::HidePanesModal)
-                    )
-            )
-            .width(Length::Shrink)
-            .padding(20)
-            .style(style::chart_modal);
-
-            modal(pane_grid, layout_modal, Message::HidePanesModal)
-        } else {
-            pane_grid.into()
-        }
+        pane_grid.into()
     }
 
     pub fn layout_changed(&mut self) -> Task<Message> {
