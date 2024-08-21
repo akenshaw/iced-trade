@@ -1,10 +1,8 @@
 use std::fmt;
 
-use iced::{alignment, widget::{button, checkbox, container, pane_grid, pick_list, row, scrollable, text, tooltip, Column, Container, Row, Slider, Text}, Alignment, Element, Length, Renderer, Theme};
+use iced::{alignment, widget::{button, container, pane_grid, pick_list, row, scrollable, text, tooltip, Column, Container, Row, Slider, Text}, Alignment, Element, Length, Renderer, Theme};
 use serde::{Deserialize, Serialize};
 pub use uuid::Uuid;
-
-use super::{Message as DashboardMessage};
 
 use crate::{
     charts::{

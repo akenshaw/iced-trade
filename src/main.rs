@@ -11,26 +11,25 @@ use style::{ICON_FONT, ICON_BYTES, Icon};
 use screen::{dashboard, Error, Notification};
 use screen::dashboard::{
     Dashboard,
-    pane::{self, SerializablePane}, Uuid, LayoutId,
+    pane::{self, SerializablePane}, Uuid,
     PaneContent, PaneSettings, PaneState, 
-    SavedState, SerializableDashboard, SerializableState, 
-    read_layout_from_file, write_json_to_file,
+    SerializableDashboard, 
 };
-use data_providers::{binance, bybit, Exchange, MarketEvents, TickMultiplier, Ticker, Timeframe, StreamType};
+use data_providers::{binance, bybit, Exchange, MarketEvents, Ticker, Timeframe, StreamType};
 
 use charts::footprint::FootprintChart;
 use charts::heatmap::HeatmapChart;
 use charts::candlestick::CandlestickChart;
 use charts::timeandsales::TimeAndSales;
 
-use std::{collections::{HashMap, HashSet, VecDeque}, vec};
+use std::{collections::{HashMap, VecDeque}, vec};
 
 use iced::{
     alignment, widget::{
         button, center, checkbox, mouse_area, opaque, pick_list, stack, tooltip, Column, Container, Row, Slider, Space, Text
-    }, window::{self, Position}, Alignment, Color, Element, Length, Point, Renderer, Size, Subscription, Task, Theme
+    }, window::{self, Position}, Alignment, Color, Element, Length, Point, Size, Subscription, Task, Theme
 };
-use iced::widget::pane_grid::{self, PaneGrid, Configuration};
+use iced::widget::pane_grid::{self, Configuration};
 use iced::widget::{container, row, scrollable, text};
 
 fn main() -> iced::Result {
@@ -187,18 +186,12 @@ pub enum Message {
     ShowPanesModal,
     HidePanesModal,
 
-    // Market&User data stream
-    UserKeySucceed(String),
-    UserKeyError,
     MarketWsEvent(MarketEvents),
     
-    // Pane grid
-    ToggleLayoutLock,
-    
     Event(Event),
-
     SaveAndExit(window::Id, Option<Size>, Option<Point>),
 
+    ToggleLayoutLock,
     ResetCurrentLayout,
     LayoutSelected(LayoutId),
     Dashboard(dashboard::Message),
@@ -209,7 +202,6 @@ struct State {
     last_active_layout: LayoutId,
     show_layout_modal: bool,
     exchange_latency: Option<(u32, u32)>,
-    listen_key: Option<String>,
     feed_latency_cache: VecDeque<data_providers::FeedLatency>,
     notification: Option<Notification>,
 }
@@ -231,7 +223,6 @@ impl State {
                 layouts: saved_state.layouts,
                 last_active_layout,
                 show_layout_modal: false,
-                listen_key: None,
                 exchange_latency: None,
                 feed_latency_cache: VecDeque::new(),
                 notification: None,
@@ -306,14 +297,6 @@ impl State {
                     },
                 }
 
-                Task::none()
-            },
-            Message::UserKeySucceed(listen_key) => {
-                self.listen_key = Some(listen_key);
-                Task::none()
-            },
-            Message::UserKeyError => {
-                log::error!("Check API keys");
                 Task::none()
             },
             Message::ToggleLayoutLock => {
@@ -852,5 +835,93 @@ fn filtered_events(
     match &event {
         iced::Event::Window(window::Event::CloseRequested) => Some(Event::CloseRequested(window)),
         _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+enum LayoutId {
+    Layout1,
+    Layout2,
+    Layout3,
+    Layout4,
+}
+impl std::fmt::Display for LayoutId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LayoutId::Layout1 => write!(f, "Layout 1"),
+            LayoutId::Layout2 => write!(f, "Layout 2"),
+            LayoutId::Layout3 => write!(f, "Layout 3"),
+            LayoutId::Layout4 => write!(f, "Layout 4"),
+        }
+    }
+}
+impl LayoutId {
+    const ALL: [LayoutId; 4] = [LayoutId::Layout1, LayoutId::Layout2, LayoutId::Layout3, LayoutId::Layout4];
+}
+
+struct SavedState {
+    layouts: HashMap<LayoutId, Dashboard>,
+    last_active_layout: LayoutId,
+    window_size: Option<(f32, f32)>,
+    window_position: Option<(f32, f32)>,
+}
+impl Default for SavedState {
+    fn default() -> Self {
+        let mut layouts = HashMap::new();
+        layouts.insert(LayoutId::Layout1, Dashboard::default());
+        layouts.insert(LayoutId::Layout2, Dashboard::default());
+        layouts.insert(LayoutId::Layout3, Dashboard::default());
+        layouts.insert(LayoutId::Layout4, Dashboard::default());
+        
+        SavedState {
+            layouts,
+            last_active_layout: LayoutId::Layout1,
+            window_size: None,
+            window_position: None,
+        }
+    }
+}
+
+use std::fs::File;
+use std::io::{Read, Write};
+use std::path::Path;
+use serde::{Deserialize, Serialize};
+
+fn write_json_to_file(json: &str, file_path: &str) -> std::io::Result<()> {
+    let path = Path::new(file_path);
+    let mut file = File::create(path)?;
+    file.write_all(json.as_bytes())?;
+    Ok(())
+}
+
+fn read_layout_from_file(file_path: &str) -> Result<SerializableState, Box<dyn std::error::Error>> {
+    let path = Path::new(file_path);
+    let mut file = File::open(path)?;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)?;
+   
+    Ok(serde_json::from_str(&contents)?)
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct SerializableState {
+    pub layouts: HashMap<LayoutId, SerializableDashboard>,
+    pub last_active_layout: LayoutId,
+    pub window_size: Option<(f32, f32)>,
+    pub window_position: Option<(f32, f32)>,
+}
+impl SerializableState {
+    fn from_parts(
+        layouts: HashMap<LayoutId, SerializableDashboard>,
+        last_active_layout: LayoutId,
+        size: Option<Size>,
+        position: Option<Point>,
+    ) -> Self {
+        SerializableState {
+            layouts,
+            last_active_layout,
+            window_size: size.map(|s| (s.width, s.height)),
+            window_position: position.map(|p| (p.x, p.y)),
+        }
     }
 }

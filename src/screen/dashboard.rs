@@ -13,7 +13,7 @@ use crate::{
 
 use super::{Error, Notification};
 
-use std::{collections::{HashMap, HashSet}, io::Read, rc::Rc};
+use std::{collections::{HashMap, HashSet}, rc::Rc};
 use iced::{widget::{button, container, pane_grid::{self, Configuration}, Column, PaneGrid, Text}, window, Alignment, Element, Length, Point, Size, Task};
 
 #[derive(Debug, Clone)]
@@ -524,8 +524,6 @@ impl Dashboard {
     }
 
     pub fn layout_changed(&mut self) -> Task<Message> {
-        dbg!("Layout changed");
-
         self.pane_streams = self.get_all_diff_streams();
 
         Task::perform(
@@ -916,7 +914,7 @@ fn create_fetch_ticksize_task(
     }
 }
 
-pub fn klines_fetch_all_task(stream_types: &HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>) -> Vec<Task<Message>> {
+fn klines_fetch_all_task(stream_types: &HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>) -> Vec<Task<Message>> {
     let mut tasks: Vec<Task<Message>> = vec![];
 
     for (exchange, stream) in stream_types {
@@ -966,7 +964,7 @@ pub fn klines_fetch_all_task(stream_types: &HashMap<Exchange, HashMap<Ticker, Ha
     tasks
 }
 
-pub fn ticksize_fetch_all_task(stream_types: &HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>) -> Vec<Task<Message>> {
+fn ticksize_fetch_all_task(stream_types: &HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>) -> Vec<Task<Message>> {
     let mut tasks: Vec<Task<Message>> = vec![];
 
     for (exchange, stream) in stream_types {
@@ -1064,91 +1062,4 @@ impl Default for SerializableDashboard {
             pane: SerializablePane::Starter,
         }
     }
-}
-
-pub struct SavedState {
-    pub layouts: HashMap<LayoutId, Dashboard>,
-    pub last_active_layout: LayoutId,
-    pub window_size: Option<(f32, f32)>,
-    pub window_position: Option<(f32, f32)>,
-}
-impl Default for SavedState {
-    fn default() -> Self {
-        let mut layouts = HashMap::new();
-        layouts.insert(LayoutId::Layout1, Dashboard::default());
-        layouts.insert(LayoutId::Layout2, Dashboard::default());
-        layouts.insert(LayoutId::Layout3, Dashboard::default());
-        layouts.insert(LayoutId::Layout4, Dashboard::default());
-        
-        SavedState {
-            layouts,
-            last_active_layout: LayoutId::Layout1,
-            window_size: None,
-            window_position: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
-pub enum LayoutId {
-    Layout1,
-    Layout2,
-    Layout3,
-    Layout4,
-}
-impl std::fmt::Display for LayoutId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            LayoutId::Layout1 => write!(f, "Layout 1"),
-            LayoutId::Layout2 => write!(f, "Layout 2"),
-            LayoutId::Layout3 => write!(f, "Layout 3"),
-            LayoutId::Layout4 => write!(f, "Layout 4"),
-        }
-    }
-}
-impl LayoutId {
-    pub const ALL: [LayoutId; 4] = [LayoutId::Layout1, LayoutId::Layout2, LayoutId::Layout3, LayoutId::Layout4];
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct SerializableState {
-    pub layouts: HashMap<LayoutId, SerializableDashboard>,
-    pub last_active_layout: LayoutId,
-    pub window_size: Option<(f32, f32)>,
-    pub window_position: Option<(f32, f32)>,
-}
-impl SerializableState {
-    pub fn from_parts(
-        layouts: HashMap<LayoutId, SerializableDashboard>,
-        last_active_layout: LayoutId,
-        size: Option<Size>,
-        position: Option<Point>,
-    ) -> Self {
-        SerializableState {
-            layouts,
-            last_active_layout,
-            window_size: size.map(|s| (s.width, s.height)),
-            window_position: position.map(|p| (p.x, p.y)),
-        }
-    }
-}
-
-use std::fs::File;
-use std::io::Write;
-use std::path::Path;
-
-pub fn write_json_to_file(json: &str, file_path: &str) -> std::io::Result<()> {
-    let path = Path::new(file_path);
-    let mut file = File::create(path)?;
-    file.write_all(json.as_bytes())?;
-    Ok(())
-}
-
-pub fn read_layout_from_file(file_path: &str) -> Result<SerializableState, Box<dyn std::error::Error>> {
-    let path = Path::new(file_path);
-    let mut file = File::open(path)?;
-    let mut contents = String::new();
-    file.read_to_string(&mut contents)?;
-   
-    Ok(serde_json::from_str(&contents)?)
 }
