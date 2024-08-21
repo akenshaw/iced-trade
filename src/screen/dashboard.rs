@@ -1,25 +1,38 @@
 pub mod pane;
 
+use futures::TryFutureExt;
 use pane::SerializablePane;
 pub use pane::{Uuid, PaneState, PaneContent, PaneSettings};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    charts::{candlestick::CandlestickChart, footprint::FootprintChart, Message}, data_providers::{
-        Depth, Exchange, Kline, TickMultiplier, Ticker, Timeframe, Trade
-    }, StreamType
+    charts::{candlestick::CandlestickChart, footprint::FootprintChart, heatmap::HeatmapChart, timeandsales::TimeAndSales, Message as ChartMessage}, data_providers::{
+        binance, bybit, Depth, Exchange, Kline, TickMultiplier, Ticker, Timeframe, Trade
+    }, modal, style, StreamType
 };
 
 use super::{Error, Notification};
 
-use std::{collections::{HashMap, HashSet}, io::Read, rc::Rc};
-use iced::{widget::pane_grid::{self, Configuration}, Point, Size};
+use std::{collections::{HashMap, HashSet}, rc::Rc};
+use iced::{widget::{button, container, pane_grid::{self, Configuration}, Column, PaneGrid, Text}, window, Alignment, Element, Length, Point, Size, Task};
+
+#[derive(Debug, Clone)]
+pub enum Message {
+    Pane(pane::Message),
+    ErrorOccurred(Error),
+    Notification(Notification),
+    FetchEvent(Result<Vec<Kline>, String>, StreamType, Uuid),
+    FetchDistributeKlines(StreamType, Result<Vec<Kline>, String>),
+    FetchDistributeTicks(StreamType, Result<f32, String>),
+    FetchForLayout,
+}
 
 pub struct Dashboard {
     pub panes: pane_grid::State<PaneState>,
     pub focus: Option<pane_grid::Pane>,
-    pub pane_lock: bool,
-    pub show_layout_modal: bool,
+    pub layout_lock: bool,
+    pub pane_streams: HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>,
+    pub notification: Option<Notification>,
 }
 impl Dashboard {
     pub fn empty() -> Self {
@@ -88,8 +101,9 @@ impl Dashboard {
         Self { 
             panes: pane_grid::State::with_configuration(pane_config),
             focus: None,
-            pane_lock: false,
-            show_layout_modal: false,
+            layout_lock: false,
+            pane_streams: HashMap::new(),
+            notification: None,
         }
     }
 
@@ -97,18 +111,380 @@ impl Dashboard {
         Self {
             panes: pane_grid::State::with_configuration(panes),
             focus: None,
-            pane_lock: false,
-            show_layout_modal: false,
+            layout_lock: false,
+            pane_streams: HashMap::new(),
+            notification: None,
         }
     }
 
-    pub fn replace_new_pane(&mut self, pane: pane_grid::Pane) {
+    pub fn update(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::Pane(message) => {
+                match message {
+                    pane::Message::PaneClicked(pane_id) => {
+                        self.focus = Some(pane_id);
+                    },
+                    pane::Message::PaneResized(pane_grid::ResizeEvent { split, ratio })=> {
+                        self.panes.resize(split, ratio);
+                    },
+                    pane::Message::PaneDragged(event) => {
+                        match event {
+                            pane_grid::DragEvent::Dropped { pane, target } => {
+                                self.panes.drop(pane, target);
+
+                                self.focus = None;
+                            },
+                            _ => {}
+                        }
+                    },
+                    pane::Message::SplitPane(axis, pane) => {        
+                        let focus_pane = if let Some((new_pane, _)) = 
+                            self.panes.split(axis, pane, PaneState::new(Uuid::new_v4(), vec![], PaneSettings::default())) {
+                                    Some(new_pane)
+                                } else {
+                                    None
+                                };
+        
+                        if Some(focus_pane).is_some() {
+                            self.focus = focus_pane;
+                        }
+                    },
+                    pane::Message::ClosePane(pane) => {
+                        if let Some((_, sibling)) = self.panes.close(pane) {
+                            self.focus = Some(sibling);
+                        }
+                    },
+                    pane::Message::MaximizePane(pane) => {
+                        self.panes.maximize(pane);
+                    },
+                    pane::Message::Restore => {
+                        self.panes.restore();
+                    },
+                    pane::Message::TickerSelected(ticker, pane_id) => {
+                        if let Ok(settings) = self.get_pane_settings_mut(pane_id) {
+                            settings.selected_ticker = Some(ticker);
+                        }
+                    },
+                    pane::Message::ExchangeSelected(exchange, pane_id) => {
+                        if let Ok(settings) = self.get_pane_settings_mut(pane_id) {
+                            settings.selected_exchange = Some(exchange);
+                        }
+                    },
+                    pane::Message::ReplacePane(pane_id) => {
+                        self.replace_new_pane(pane_id);
+                    },
+                    pane::Message::ShowModal(pane_id) => {
+                        if let Some(pane) = self.panes.get_mut(pane_id) {
+                            pane.show_modal = true;
+                        };
+                    },
+                    pane::Message::HideModal(pane_id) => {
+                        for (_, pane_state) in self.panes.iter_mut() {
+                            if pane_state.id == pane_id {
+                                pane_state.show_modal = false;
+                            }
+                        }
+                    },
+                    pane::Message::ChartUserUpdate(message, pane_id) => {
+                        match self.update_chart_state(pane_id, message) {
+                            Ok(_) => return Task::none(),
+                            Err(err) => {      
+                                return Task::perform(
+                                    async { err },
+                                    move |err: Error| Message::ErrorOccurred(err)
+                                );
+                            }
+                        }
+                    },
+                    pane::Message::SliderChanged(pane_id, value) => {
+                        match self.set_pane_size_filter(pane_id, value) {
+                            Ok(_) => {
+                                log::info!("Size filter set to {value}");
+
+                                return Task::none()
+                            }
+                            Err(err) => {
+                                return Task::perform(
+                                    async { err },
+                                    move |err: Error| Message::ErrorOccurred(err)
+                                )
+                            }
+                        }
+                    },
+                    pane::Message::PaneContentSelected(content, pane_id, pane_stream) => {        
+                        let mut tasks = vec![];
+                            
+                        let pane_content = match content.as_str() {
+                            "Heatmap chart" => PaneContent::Heatmap(
+                                HeatmapChart::new(1.0)
+                            ),
+                            "Footprint chart" => {
+                                PaneContent::Footprint(
+                                    FootprintChart::new(1, 1.0, vec![], vec![])
+                                )
+                            },
+                            "Candlestick chart" => {
+                                PaneContent::Candlestick(
+                                    CandlestickChart::new(vec![], 1)
+                                )
+                            },
+                            "Time&Sales" => PaneContent::TimeAndSales(
+                                TimeAndSales::new()
+                            ),
+                            _ => return Task::none(),
+                        };
+        
+                        // set pane's stream and content identifiers
+                        if let Err(err) = self.set_pane_content(pane_id, pane_content) {
+                            log::error!("Failed to set pane content: {}", err);
+                        } else {
+                            log::info!("Pane content set: {content}");
+                        }
+                        
+                        if let Err(err) = self.set_pane_stream(pane_id, pane_stream.to_vec()) {
+                            log::error!("Failed to set pane stream: {err}");
+                        } else {
+                            log::info!("Pane stream set: {pane_stream:?}");
+                        }
+                    
+                        // prepare unique streams for websocket
+                        for stream in pane_stream.iter() {
+                            match stream {
+                                StreamType::Kline { exchange, ticker, .. } | StreamType::DepthAndTrades { exchange, ticker } => {
+                                    self.pane_streams
+                                        .entry(*exchange)
+                                        .or_default()
+                                        .entry(*ticker)
+                                        .or_default()
+                                        .insert(*stream);
+                                }
+                                _ => {}
+                            }
+                        }
+                    
+                        log::info!("{:?}", &self.pane_streams);
+        
+                        // get fetch tasks for pane's content
+                        if ["Footprint chart", "Candlestick chart", "Heatmap chart"].contains(&content.as_str()) {
+                            for stream in pane_stream.iter() {
+                                match stream {
+                                    StreamType::Kline { exchange, ticker, .. } => {
+                                        if ["Candlestick chart", "Footprint chart"].contains(&content.as_str()) {
+                                            tasks.push(create_fetch_klines_task(*stream, pane_id));
+                                            
+                                            if content == "Footprint chart" {
+                                                tasks.push(create_fetch_ticksize_task(exchange, ticker, pane_id));
+                                            }
+                                        }
+                                    },
+                                    StreamType::DepthAndTrades { exchange, ticker } => {
+                                        tasks.push(create_fetch_ticksize_task(exchange, ticker, pane_id));
+                                    },
+                                    _ => {}
+                                }
+                            }
+                        }
+                        
+                        return Task::batch(tasks)
+                    },
+                    pane::Message::TimeframeSelected(timeframe, pane_id) => {    
+                        let mut tasks = vec![];
+                
+                        match self.set_pane_timeframe(pane_id, timeframe) {
+                            Ok(stream_type) => {
+                                if let StreamType::Kline { exchange, ticker, timeframe } = stream_type {
+                                    let stream = *stream_type;
+                    
+                                    match exchange {
+                                        Exchange::BinanceFutures => {
+                                            tasks.push(
+                                                Task::perform(
+                                                    binance::market_data::fetch_klines(*ticker, *timeframe)
+                                                        .map_err(|err| format!("{err}")),
+                                                    move |klines| Message::FetchEvent(klines, stream, pane_id)
+                                                )
+                                            );
+                                        },
+                                        Exchange::BybitLinear => {                                    
+                                            tasks.push(
+                                                Task::perform(
+                                                    bybit::market_data::fetch_klines(*ticker, *timeframe)
+                                                        .map_err(|err| format!("{err}")),
+                                                    move |klines| Message::FetchEvent(klines, stream, pane_id)
+                                                )
+                                            );
+                                        },
+                                    }
+        
+                                    tasks.push(
+                                        Task::perform(
+                                            async {},
+                                            move |_| Message::Notification(Notification::Info("Fetching for klines...".to_string()))
+                                        )
+                                    );
+        
+                                    self.pane_streams = self.get_all_diff_streams();
+                                }
+                            },
+                            Err(err) => {
+                                tasks.push(Task::perform(
+                                    async { err },
+                                    move |err: Error| Message::ErrorOccurred(err)
+                                ));
+                            }
+                        }
+        
+                        return Task::batch(tasks)
+                    },
+                    pane::Message::TicksizeSelected(tick_multiply, pane_id) => {                        
+                        match self.set_pane_ticksize(pane_id, tick_multiply) {
+                            Ok(_) => {
+                            },
+                            Err(err) => {            
+                                return Task::perform(
+                                    async { err },
+                                    move |err: Error| Message::ErrorOccurred(err)
+                                )
+                            }
+                        }
+                    },
+                    pane::Message::SetMinTickSize(pane_id, ticksize) => {        
+                        match self.get_pane_settings_mut(pane_id) {
+                            Ok(pane_settings) => {
+                                pane_settings.min_tick_size = Some(ticksize);
+                            },
+                            Err(err) => {
+                                return Task::perform(
+                                    async { err },
+                                    move |err: Error| Message::ErrorOccurred(err)
+                                )
+                            }
+                        }
+                    },
+                }
+            },
+            Message::ErrorOccurred(err) => {
+                dbg!(err);
+            },
+            Message::Notification(notification) => {
+                dbg!(notification);
+            },
+            Message::FetchEvent(klines, pane_stream, pane_id) => {
+                if let Some(notification) = &self.notification {
+                    match notification {
+                        Notification::Info(_) => {
+                            self.notification = None;
+                        },
+                        _ => {}
+                    }
+                }
+               
+                match klines {
+                    Ok(klines) => {
+                        if let StreamType::Kline { .. } = pane_stream {
+                            self.insert_klines_vec(&pane_stream, &klines, pane_id);
+                        } else {
+                            log::error!("Invalid stream type for klines: {pane_stream:?}");
+                        }
+                    },
+                    Err(err) => {
+                        return Task::perform(
+                            async { err },
+                            move |err: String| Message::ErrorOccurred(Error::FetchError(err))
+                        )
+                    }
+                }
+            },
+            Message::FetchDistributeKlines(stream_type, klines) => {
+                match klines {
+                    Ok(klines) => {
+                        if let Err(err) = self.find_and_insert_klines(&stream_type, &klines) {
+                            log::error!("{err}");
+                        }
+                    },
+                    Err(err) => {
+                        log::error!("{err}");
+                    }
+                }
+            },  
+            Message::FetchDistributeTicks(stream_type, min_tick_size) => {
+                match min_tick_size {
+                    Ok(ticksize) => {
+                        if let Err(err) = self.find_and_insert_ticksizes(&stream_type, ticksize) {
+                            log::error!("{err}");
+                        }
+                    },
+                    Err(err) => {
+                        log::error!("{err}");
+                    }
+                }
+            },
+            Message::FetchForLayout => {
+                let mut tasks = vec![];
+
+                let pane_streams = self.get_all_diff_streams();
+
+                tasks.extend(
+                    klines_fetch_all_task(&pane_streams)
+                );
+                tasks.extend(
+                    ticksize_fetch_all_task(&pane_streams)
+                );
+ 
+                return Task::batch(tasks)
+            },
+        }
+
+        Task::none()
+    }
+
+    pub fn view<'a>(&'a self) -> Element<'a, Message> {
+        let focus = self.focus;
+        let pane_locked = self.layout_lock;
+        
+        let mut pane_grid = PaneGrid::new(&self.panes, |id, pane, maximized| {
+            let is_focused = !pane_locked && focus == Some(id);
+            pane.view(
+                id,
+                self.panes.len(),
+                is_focused,
+                maximized,
+            )
+        })
+        .spacing(4);
+    
+        if !pane_locked {
+            pane_grid = pane_grid
+                .on_click(pane::Message::PaneClicked)
+                .on_resize(6, pane::Message::PaneResized)
+                .on_drag(pane::Message::PaneDragged);
+        }
+    
+        let pane_grid: Element<_> = pane_grid.into();
+
+        let pane_grid = container(pane_grid.map(Message::Pane))
+            .width(Length::Fill)
+            .height(Length::Fill);
+
+        pane_grid.into()
+    }
+
+    pub fn layout_changed(&mut self) -> Task<Message> {
+        self.pane_streams = self.get_all_diff_streams();
+
+        Task::perform(
+            async {},
+            move |_| Message::FetchForLayout
+        )
+    }
+
+    fn replace_new_pane(&mut self, pane: pane_grid::Pane) {
         if let Some(pane) = self.panes.get_mut(pane) {
             *pane = PaneState::new(Uuid::new_v4(), vec![], PaneSettings::default());
         }
     }
 
-    pub fn get_pane_settings_mut(&mut self, pane_id: Uuid) -> Result<&mut PaneSettings, Error> {
+    fn get_pane_settings_mut(&mut self, pane_id: Uuid) -> Result<&mut PaneSettings, Error> {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.id == pane_id {
                 return Ok(&mut pane_state.settings);
@@ -117,7 +493,7 @@ impl Dashboard {
         Err(Error::UnknownError("No pane found".to_string()))
     }
 
-    pub fn set_pane_content(&mut self, pane_id: Uuid, content: PaneContent) -> Result<(), &str> {
+    fn set_pane_content(&mut self, pane_id: Uuid, content: PaneContent) -> Result<(), &str> {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.id == pane_id {
                 pane_state.content = content;
@@ -128,7 +504,7 @@ impl Dashboard {
         Err("No pane found")
     }
 
-    pub fn set_pane_stream(&mut self, pane_id: Uuid, stream: Vec<StreamType>) -> Result<(), &str> {
+    fn set_pane_stream(&mut self, pane_id: Uuid, stream: Vec<StreamType>) -> Result<(), &str> {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.id == pane_id {
                 pane_state.stream = stream;
@@ -139,7 +515,7 @@ impl Dashboard {
         Err("No pane found")
     }
 
-    pub fn set_pane_ticksize(&mut self, pane_id: Uuid, new_tick_multiply: TickMultiplier) -> Result<(), Error> {
+    fn set_pane_ticksize(&mut self, pane_id: Uuid, new_tick_multiply: TickMultiplier) -> Result<(), Error> {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.id == pane_id {
                 pane_state.settings.tick_multiply = Some(new_tick_multiply);
@@ -172,7 +548,7 @@ impl Dashboard {
         Err(Error::UnknownError("No pane found to change ticksize".to_string()))
     }
     
-    pub fn set_pane_timeframe(&mut self, pane_id: Uuid, new_timeframe: Timeframe) -> Result<&StreamType, Error> {
+    fn set_pane_timeframe(&mut self, pane_id: Uuid, new_timeframe: Timeframe) -> Result<&StreamType, Error> {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.id == pane_id {
                 pane_state.settings.selected_timeframe = Some(new_timeframe);
@@ -200,7 +576,7 @@ impl Dashboard {
         Err(Error::UnknownError("No pane found to change tiemframe".to_string()))
     }
 
-    pub fn set_pane_size_filter(&mut self, pane_id: Uuid, new_size_filter: f32) -> Result<(), Error> {
+    fn set_pane_size_filter(&mut self, pane_id: Uuid, new_size_filter: f32) -> Result<(), Error> {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.id == pane_id {
                 pane_state.settings.trade_size_filter = Some(new_size_filter);
@@ -336,6 +712,8 @@ impl Dashboard {
         if found_match {
             Ok(())
         } else {
+            self.pane_streams = self.get_all_diff_streams();
+
             Err("No matching pane found for the stream")
         }
     }
@@ -369,26 +747,28 @@ impl Dashboard {
         if found_match {
             Ok(())
         } else {
+            self.pane_streams = self.get_all_diff_streams();
+
             Err("No matching pane found for the stream")
         }
     }
 
-    pub fn update_chart_state(&mut self, pane_id: Uuid, message: Message) -> Result<(), Error> {
+    fn update_chart_state(&mut self, pane_id: Uuid, chart_message: ChartMessage) -> Result<(), Error> {
         for (_, pane_state) in self.panes.iter_mut() {
             if pane_state.id == pane_id {
                 match pane_state.content {
                     PaneContent::Heatmap(ref mut chart) => {
-                        chart.update(&message);
+                        chart.update(&chart_message);
 
                         return Ok(());
                     },
                     PaneContent::Footprint(ref mut chart) => {
-                        chart.update(&message);
+                        chart.update(&chart_message);
 
                         return Ok(());
                     },
                     PaneContent::Candlestick(ref mut chart) => {
-                        chart.update(&message);
+                        chart.update(&chart_message);
 
                         return Ok(());
                     },
@@ -401,7 +781,7 @@ impl Dashboard {
         Err(Error::UnknownError("No pane found to update its state".to_string()))
     }
 
-    pub fn get_all_diff_streams(&self) -> HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>> {
+    pub fn get_all_diff_streams(&mut self) -> HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>> {
         let mut pane_streams = HashMap::new();
 
         for (_, pane_state) in self.panes.iter() {
@@ -428,9 +808,155 @@ impl Dashboard {
                 }
             }
         }
+        self.pane_streams = pane_streams.clone();
 
         pane_streams
     }
+}
+
+fn create_fetch_klines_task(
+    stream: StreamType,
+    pane_id: Uuid,
+) -> Task<Message> {
+    match stream {
+        StreamType::Kline { exchange, ticker, timeframe } => {
+            match exchange {
+                Exchange::BinanceFutures => Task::perform(
+                    binance::market_data::fetch_klines(ticker, timeframe)
+                        .map_err(|err| format!("{err}")),
+                    move |klines| Message::FetchEvent(klines, stream, pane_id),
+                ),
+                Exchange::BybitLinear => Task::perform(
+                    bybit::market_data::fetch_klines(ticker, timeframe)
+                        .map_err(|err| format!("{err}")),
+                    move |klines| Message::FetchEvent(klines, stream, pane_id),
+                ),
+            }
+        },
+        _ => Task::none(),
+    }
+}
+
+fn create_fetch_ticksize_task(
+    exchange: &Exchange,
+    ticker: &Ticker,
+    pane_id: Uuid,
+) -> Task<Message> {
+    match exchange {
+        Exchange::BinanceFutures => Task::perform(
+            binance::market_data::fetch_ticksize(*ticker),
+            move |result| match result {
+                Ok(ticksize) => Message::Pane(pane::Message::SetMinTickSize(pane_id, ticksize)),
+                Err(err) => Message::ErrorOccurred(Error::FetchError(err.to_string())),
+            },
+        ),
+        Exchange::BybitLinear => Task::perform(
+            bybit::market_data::fetch_ticksize(*ticker),
+            move |result| match result {
+                Ok(ticksize) => Message::Pane(pane::Message::SetMinTickSize(pane_id, ticksize)),
+                Err(err) => Message::ErrorOccurred(Error::FetchError(err.to_string())),
+            },
+        ),
+    }
+}
+
+fn klines_fetch_all_task(stream_types: &HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>) -> Vec<Task<Message>> {
+    let mut tasks: Vec<Task<Message>> = vec![];
+
+    for (exchange, stream) in stream_types {
+        let mut kline_fetches = Vec::new();
+
+        for stream_types in stream.values() {
+            for stream_type in stream_types {
+                match stream_type {
+                    StreamType::Kline { ticker, timeframe, .. } => {
+                        kline_fetches.push((*ticker, *timeframe));
+                    },
+                    _ => {}
+                }
+            }
+        }
+
+        for (ticker, timeframe) in kline_fetches {
+            let ticker = ticker;
+            let timeframe = timeframe;
+            let exchange = *exchange;
+
+            match exchange {
+                Exchange::BinanceFutures => {
+                    let fetch_klines = Task::perform(
+                        binance::market_data::fetch_klines(ticker, timeframe)
+                            .map_err(|err| format!("{err}")),
+                        move |klines| Message::FetchDistributeKlines(
+                            StreamType::Kline { exchange, ticker, timeframe }, klines
+                        )
+                    );
+                    tasks.push(fetch_klines);
+                },
+                Exchange::BybitLinear => {
+                    let fetch_klines = Task::perform(
+                        bybit::market_data::fetch_klines(ticker, timeframe)
+                            .map_err(|err| format!("{err}")),
+                        move |klines| Message::FetchDistributeKlines(
+                            StreamType::Kline { exchange, ticker, timeframe }, klines
+                        )
+                    );
+                    tasks.push(fetch_klines);
+                }
+            }
+        }
+    }
+
+    tasks
+}
+
+fn ticksize_fetch_all_task(stream_types: &HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>) -> Vec<Task<Message>> {
+    let mut tasks: Vec<Task<Message>> = vec![];
+
+    for (exchange, stream) in stream_types {
+        let mut ticksize_fetches = Vec::new();
+
+        for stream_types in stream.values() {
+            for stream_type in stream_types {
+                match stream_type {
+                    StreamType::DepthAndTrades { ticker, .. } => {
+                        ticksize_fetches.push(*ticker);
+                    },
+                    _ => {}
+                }
+            }
+        }
+
+        for ticker in ticksize_fetches {
+            let ticker = ticker;
+            let exchange = *exchange;
+
+            match exchange {
+                Exchange::BinanceFutures => {
+                    let fetch_ticksize = Task::perform(
+                        binance::market_data::fetch_ticksize(ticker)
+                            .map_err(|err| format!("{err}")),
+                        move |ticksize| Message::FetchDistributeTicks(
+                            StreamType::DepthAndTrades { exchange, ticker }, ticksize
+                        )
+                    );
+                    tasks.push(fetch_ticksize);
+                },
+                Exchange::BybitLinear => {
+                    let fetch_ticksize = Task::perform(
+                        bybit::market_data::fetch_ticksize(ticker)
+                            .map_err(|err| format!("{err}")),
+                        move |ticksize| Message::FetchDistributeTicks(
+                            StreamType::DepthAndTrades { exchange, ticker }, ticksize
+                        )
+                    );
+                    tasks.push(fetch_ticksize);
+                }
+            }
+        }
+    }
+
+    tasks
 }
 
 impl Default for Dashboard {
@@ -482,91 +1008,4 @@ impl Default for SerializableDashboard {
             pane: SerializablePane::Starter,
         }
     }
-}
-
-pub struct SavedState {
-    pub layouts: HashMap<LayoutId, Dashboard>,
-    pub last_active_layout: LayoutId,
-    pub window_size: Option<(f32, f32)>,
-    pub window_position: Option<(f32, f32)>,
-}
-impl Default for SavedState {
-    fn default() -> Self {
-        let mut layouts = HashMap::new();
-        layouts.insert(LayoutId::Layout1, Dashboard::default());
-        layouts.insert(LayoutId::Layout2, Dashboard::default());
-        layouts.insert(LayoutId::Layout3, Dashboard::default());
-        layouts.insert(LayoutId::Layout4, Dashboard::default());
-        
-        SavedState {
-            layouts,
-            last_active_layout: LayoutId::Layout1,
-            window_size: None,
-            window_position: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
-pub enum LayoutId {
-    Layout1,
-    Layout2,
-    Layout3,
-    Layout4,
-}
-impl std::fmt::Display for LayoutId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            LayoutId::Layout1 => write!(f, "Layout 1"),
-            LayoutId::Layout2 => write!(f, "Layout 2"),
-            LayoutId::Layout3 => write!(f, "Layout 3"),
-            LayoutId::Layout4 => write!(f, "Layout 4"),
-        }
-    }
-}
-impl LayoutId {
-    pub const ALL: [LayoutId; 4] = [LayoutId::Layout1, LayoutId::Layout2, LayoutId::Layout3, LayoutId::Layout4];
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct SerializableState {
-    pub layouts: HashMap<LayoutId, SerializableDashboard>,
-    pub last_active_layout: LayoutId,
-    pub window_size: Option<(f32, f32)>,
-    pub window_position: Option<(f32, f32)>,
-}
-impl SerializableState {
-    pub fn from_parts(
-        layouts: HashMap<LayoutId, SerializableDashboard>,
-        last_active_layout: LayoutId,
-        size: Option<Size>,
-        position: Option<Point>,
-    ) -> Self {
-        SerializableState {
-            layouts,
-            last_active_layout,
-            window_size: size.map(|s| (s.width, s.height)),
-            window_position: position.map(|p| (p.x, p.y)),
-        }
-    }
-}
-
-use std::fs::File;
-use std::io::Write;
-use std::path::Path;
-
-pub fn write_json_to_file(json: &str, file_path: &str) -> std::io::Result<()> {
-    let path = Path::new(file_path);
-    let mut file = File::create(path)?;
-    file.write_all(json.as_bytes())?;
-    Ok(())
-}
-
-pub fn read_layout_from_file(file_path: &str) -> Result<SerializableState, Box<dyn std::error::Error>> {
-    let path = Path::new(file_path);
-    let mut file = File::open(path)?;
-    let mut contents = String::new();
-    file.read_to_string(&mut contents)?;
-   
-    Ok(serde_json::from_str(&contents)?)
 }
