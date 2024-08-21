@@ -8,23 +8,24 @@ use serde::{Deserialize, Serialize};
 use crate::{
     charts::{candlestick::CandlestickChart, footprint::FootprintChart, heatmap::HeatmapChart, timeandsales::TimeAndSales, Message as ChartMessage}, data_providers::{
         binance, bybit, Depth, Exchange, Kline, TickMultiplier, Ticker, Timeframe, Trade
-    }, modal, screen::dashboard, style::{self, Icon, ICON_FONT}, StreamType
+    }, modal, style, StreamType
 };
 
 use super::{Error, Notification};
 
 use std::{collections::{HashMap, HashSet}, io::Read, rc::Rc};
-use iced::{widget::{button, container, pane_grid::{self, Configuration}, pick_list, row, text, tooltip, Column, PaneGrid, Row, Text}, window, Alignment, Element, Length, Point, Renderer, Size, Task};
+use iced::{widget::{button, container, pane_grid::{self, Configuration}, Column, PaneGrid, Text}, window, Alignment, Element, Length, Point, Size, Task};
 
 #[derive(Debug, Clone)]
 pub enum Message {
     Pane(pane::Message),
-    Close(window::Id),
-    DashboardSaved(Result<(), Error>),
     HidePanesModal,
     ErrorOccurred(Error),
     Notification(Notification),
     FetchEvent(Result<Vec<Kline>, String>, StreamType, Uuid),
+    FetchDistributeKlines(StreamType, Result<Vec<Kline>, String>),
+    FetchDistributeTicks(StreamType, Result<f32, String>),
+    FetchForLayout,
 }
 
 pub struct Dashboard {
@@ -366,12 +367,6 @@ impl Dashboard {
                     },
                 }
             },
-            Message::Close(window_id) => {
-                self.focus = None;
-            },
-            Message::DashboardSaved(_) => {
-                self.show_panes_modal = false;
-            },
             Message::HidePanesModal => {
                 self.show_panes_modal = false;
             },
@@ -406,6 +401,44 @@ impl Dashboard {
                         )
                     }
                 }
+            },
+            Message::FetchDistributeKlines(stream_type, klines) => {
+                match klines {
+                    Ok(klines) => {
+                        if let Err(err) = self.find_and_insert_klines(&stream_type, &klines) {
+                            log::error!("{err}");
+                        }
+                    },
+                    Err(err) => {
+                        log::error!("{err}");
+                    }
+                }
+            },  
+            Message::FetchDistributeTicks(stream_type, min_tick_size) => {
+                match min_tick_size {
+                    Ok(ticksize) => {
+                        if let Err(err) = self.find_and_insert_ticksizes(&stream_type, ticksize) {
+                            log::error!("{err}");
+                        }
+                    },
+                    Err(err) => {
+                        log::error!("{err}");
+                    }
+                }
+            },
+            Message::FetchForLayout => {
+                let mut tasks = vec![];
+
+                let pane_streams = self.get_all_diff_streams();
+
+                tasks.extend(
+                    klines_fetch_all_task(&pane_streams)
+                );
+                tasks.extend(
+                    ticksize_fetch_all_task(&pane_streams)
+                );
+ 
+                return Task::batch(tasks)
             },
         }
 
@@ -488,6 +521,17 @@ impl Dashboard {
         } else {
             pane_grid.into()
         }
+    }
+
+    pub fn layout_changed(&mut self) -> Task<Message> {
+        dbg!("Layout changed");
+
+        self.pane_streams = self.get_all_diff_streams();
+
+        Task::perform(
+            async {},
+            move |_| Message::FetchForLayout
+        )
     }
 
     fn replace_new_pane(&mut self, pane: pane_grid::Pane) {
@@ -870,6 +914,105 @@ fn create_fetch_ticksize_task(
             },
         ),
     }
+}
+
+pub fn klines_fetch_all_task(stream_types: &HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>) -> Vec<Task<Message>> {
+    let mut tasks: Vec<Task<Message>> = vec![];
+
+    for (exchange, stream) in stream_types {
+        let mut kline_fetches = Vec::new();
+
+        for stream_types in stream.values() {
+            for stream_type in stream_types {
+                match stream_type {
+                    StreamType::Kline { ticker, timeframe, .. } => {
+                        kline_fetches.push((*ticker, *timeframe));
+                    },
+                    _ => {}
+                }
+            }
+        }
+
+        for (ticker, timeframe) in kline_fetches {
+            let ticker = ticker;
+            let timeframe = timeframe;
+            let exchange = *exchange;
+
+            match exchange {
+                Exchange::BinanceFutures => {
+                    let fetch_klines = Task::perform(
+                        binance::market_data::fetch_klines(ticker, timeframe)
+                            .map_err(|err| format!("{err}")),
+                        move |klines| Message::FetchDistributeKlines(
+                            StreamType::Kline { exchange, ticker, timeframe }, klines
+                        )
+                    );
+                    tasks.push(fetch_klines);
+                },
+                Exchange::BybitLinear => {
+                    let fetch_klines = Task::perform(
+                        bybit::market_data::fetch_klines(ticker, timeframe)
+                            .map_err(|err| format!("{err}")),
+                        move |klines| Message::FetchDistributeKlines(
+                            StreamType::Kline { exchange, ticker, timeframe }, klines
+                        )
+                    );
+                    tasks.push(fetch_klines);
+                }
+            }
+        }
+    }
+
+    tasks
+}
+
+pub fn ticksize_fetch_all_task(stream_types: &HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>) -> Vec<Task<Message>> {
+    let mut tasks: Vec<Task<Message>> = vec![];
+
+    for (exchange, stream) in stream_types {
+        let mut ticksize_fetches = Vec::new();
+
+        for stream_types in stream.values() {
+            for stream_type in stream_types {
+                match stream_type {
+                    StreamType::DepthAndTrades { ticker, .. } => {
+                        ticksize_fetches.push(*ticker);
+                    },
+                    _ => {}
+                }
+            }
+        }
+
+        for ticker in ticksize_fetches {
+            let ticker = ticker;
+            let exchange = *exchange;
+
+            match exchange {
+                Exchange::BinanceFutures => {
+                    let fetch_ticksize = Task::perform(
+                        binance::market_data::fetch_ticksize(ticker)
+                            .map_err(|err| format!("{err}")),
+                        move |ticksize| Message::FetchDistributeTicks(
+                            StreamType::DepthAndTrades { exchange, ticker }, ticksize
+                        )
+                    );
+                    tasks.push(fetch_ticksize);
+                },
+                Exchange::BybitLinear => {
+                    let fetch_ticksize = Task::perform(
+                        bybit::market_data::fetch_ticksize(ticker)
+                            .map_err(|err| format!("{err}")),
+                        move |ticksize| Message::FetchDistributeTicks(
+                            StreamType::DepthAndTrades { exchange, ticker }, ticksize
+                        )
+                    );
+                    tasks.push(fetch_ticksize);
+                }
+            }
+        }
+    }
+
+    tasks
 }
 
 impl Default for Dashboard {

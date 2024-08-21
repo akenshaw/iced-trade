@@ -6,7 +6,6 @@ mod style;
 mod screen;
 mod logger;
 
-use hyper::client::conn;
 use style::{ICON_FONT, ICON_BYTES, Icon};
 
 use screen::{dashboard, Error, Notification};
@@ -15,7 +14,7 @@ use screen::dashboard::{
     pane::{self, SerializablePane}, Uuid, LayoutId,
     PaneContent, PaneSettings, PaneState, 
     SavedState, SerializableDashboard, SerializableState, 
-    read_layout_from_file, write_json_to_file, 
+    read_layout_from_file, write_json_to_file,
 };
 use data_providers::{binance, bybit, Exchange, MarketEvents, TickMultiplier, Ticker, Timeframe, StreamType};
 
@@ -23,8 +22,6 @@ use charts::footprint::FootprintChart;
 use charts::heatmap::HeatmapChart;
 use charts::candlestick::CandlestickChart;
 use charts::timeandsales::TimeAndSales;
-
-use futures::TryFutureExt;
 
 use std::{collections::{HashMap, HashSet, VecDeque}, vec};
 
@@ -180,8 +177,6 @@ fn main() -> iced::Result {
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    FetchDistributeKlines(StreamType, Result<Vec<data_providers::Kline>, std::string::String>),
-    FetchDistributeTicks(StreamType, Result<f32, std::string::String>),
     Debug(String),
     Notification(Notification),
     ErrorOccurred(Error),
@@ -224,16 +219,12 @@ impl State {
         let mut tasks = vec![];
 
         let last_active_layout = saved_state.last_active_layout;
-        let dashboard = saved_state.layouts.get(&last_active_layout);
 
-        if let Some(dashboard) = dashboard {
-            let sleep_and_fetch = Task::perform(
-                async { tokio::time::sleep(tokio::time::Duration::from_millis(200)).await; },
-                move |_| Message::LayoutSelected(last_active_layout)
-            );
-
-            tasks.push(sleep_and_fetch);
-        }
+        let wait_and_fetch = Task::perform(
+            async { tokio::time::sleep(tokio::time::Duration::from_millis(200)).await; },
+            move |_| Message::LayoutSelected(last_active_layout)
+        );
+        tasks.push(wait_and_fetch);
 
         (
             Self { 
@@ -506,60 +497,14 @@ impl State {
             },
             Message::LayoutSelected(layout_id) => {
                 self.last_active_layout = layout_id;
+
+                let dashboard = self.get_mut_dashboard();
+
+                let layout_fetch_command = dashboard.layout_changed();
             
-                let mut tasks = vec![];
-
-                let dashboard = self.get_mut_dashboard();
-
-                let pane_streams = dashboard.get_all_diff_streams();
-
-                tasks.push(
-                    Task::perform(
-                        async {},
-                        move |_| Message::Notification(Notification::Info("Fetching data...".to_string()))
-                    )
-                );
-
-                tasks.extend(
-                    klines_fetch_all_task(&pane_streams)
-                );
-                tasks.extend(
-                    ticksize_fetch_all_task(&pane_streams)
-                );
-
-                Task::batch(tasks)
-            },
-            Message::FetchDistributeKlines(stream_type, klines) => {
-                let dashboard = self.get_mut_dashboard();
-
-                match klines {
-                    Ok(klines) => {
-                        if let Err(err) = dashboard.find_and_insert_klines(&stream_type, &klines) {
-                            log::error!("{err}");
-                        }
-                    },
-                    Err(err) => {
-                        log::error!("{err}");
-                    }
-                }
-
-                Task::none()
-            },  
-            Message::FetchDistributeTicks(stream_type, min_tick_size) => {
-                let dashboard = self.get_mut_dashboard();
-
-                match min_tick_size {
-                    Ok(ticksize) => {
-                        if let Err(err) = dashboard.find_and_insert_ticksizes(&stream_type, ticksize) {
-                            log::error!("{err}");
-                        }
-                    },
-                    Err(err) => {
-                        log::error!("{err}");
-                    }
-                }
-
-                Task::none()
+                Task::batch(vec![
+                    layout_fetch_command.map(Message::Dashboard),
+                ])
             },
             Message::Dashboard(message) => {
                 let dashboard = self.get_mut_dashboard();
@@ -884,105 +829,6 @@ where
         .on_press(on_blur)
     ]
     .into()
-}
-
-fn klines_fetch_all_task(stream_types: &HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>) -> Vec<Task<Message>> {
-    let mut tasks: Vec<Task<Message>> = vec![];
-
-    for (exchange, stream) in stream_types {
-        let mut kline_fetches = Vec::new();
-
-        for stream_types in stream.values() {
-            for stream_type in stream_types {
-                match stream_type {
-                    StreamType::Kline { ticker, timeframe, .. } => {
-                        kline_fetches.push((*ticker, *timeframe));
-                    },
-                    _ => {}
-                }
-            }
-        }
-
-        for (ticker, timeframe) in kline_fetches {
-            let ticker = ticker;
-            let timeframe = timeframe;
-            let exchange = *exchange;
-
-            match exchange {
-                Exchange::BinanceFutures => {
-                    let fetch_klines = Task::perform(
-                        binance::market_data::fetch_klines(ticker, timeframe)
-                            .map_err(|err| format!("{err}")),
-                        move |klines| Message::FetchDistributeKlines(
-                            StreamType::Kline { exchange, ticker, timeframe }, klines
-                        )
-                    );
-                    tasks.push(fetch_klines);
-                },
-                Exchange::BybitLinear => {
-                    let fetch_klines = Task::perform(
-                        bybit::market_data::fetch_klines(ticker, timeframe)
-                            .map_err(|err| format!("{err}")),
-                        move |klines| Message::FetchDistributeKlines(
-                            StreamType::Kline { exchange, ticker, timeframe }, klines
-                        )
-                    );
-                    tasks.push(fetch_klines);
-                }
-            }
-        }
-    }
-
-    tasks
-}
-
-fn ticksize_fetch_all_task(stream_types: &HashMap<Exchange, HashMap<Ticker, HashSet<StreamType>>>) -> Vec<Task<Message>> {
-    let mut tasks: Vec<Task<Message>> = vec![];
-
-    for (exchange, stream) in stream_types {
-        let mut ticksize_fetches = Vec::new();
-
-        for stream_types in stream.values() {
-            for stream_type in stream_types {
-                match stream_type {
-                    StreamType::DepthAndTrades { ticker, .. } => {
-                        ticksize_fetches.push(*ticker);
-                    },
-                    _ => {}
-                }
-            }
-        }
-
-        for ticker in ticksize_fetches {
-            let ticker = ticker;
-            let exchange = *exchange;
-
-            match exchange {
-                Exchange::BinanceFutures => {
-                    let fetch_ticksize = Task::perform(
-                        binance::market_data::fetch_ticksize(ticker)
-                            .map_err(|err| format!("{err}")),
-                        move |ticksize| Message::FetchDistributeTicks(
-                            StreamType::DepthAndTrades { exchange, ticker }, ticksize
-                        )
-                    );
-                    tasks.push(fetch_ticksize);
-                },
-                Exchange::BybitLinear => {
-                    let fetch_ticksize = Task::perform(
-                        bybit::market_data::fetch_ticksize(ticker)
-                            .map_err(|err| format!("{err}")),
-                        move |ticksize| Message::FetchDistributeTicks(
-                            StreamType::DepthAndTrades { exchange, ticker }, ticksize
-                        )
-                    );
-                    tasks.push(fetch_ticksize);
-                }
-            }
-        }
-    }
-
-    tasks
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
