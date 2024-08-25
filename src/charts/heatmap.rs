@@ -308,7 +308,7 @@ impl HeatmapChart {
                     chart.x_crosshair_cache.clear();
                 }
             },
-            Message::YScaling(delta, is_wheel_scroll) => {
+            Message::YScaling(delta, _, is_wheel_scroll) => {
                 if self.chart.autoscale {
                     self.chart.autoscale = false;
                 }
@@ -329,6 +329,7 @@ impl HeatmapChart {
                     }
                 }
             },
+            _ => {}
         }
     }
 

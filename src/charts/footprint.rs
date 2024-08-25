@@ -1,13 +1,13 @@
 use std::collections::{BTreeMap, HashMap};
 use iced::{
-    alignment, mouse, widget::{button, canvas::{self, event::{self, Event}, stroke::Stroke, Canvas, Geometry, Path}}, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme
+    alignment, mouse, widget::{button, canvas::{self, event::{self, Event}, stroke::Stroke, Canvas, Geometry, Path}}, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector
 };
 use iced::widget::{Column, Row, Container, Text};
+use iced_futures::core::time;
 use crate::data_providers::{Kline, Trade};
 
 use super::{Chart, CommonChartData, Message, Interaction, AxisLabelXCanvas, AxisLabelYCanvas};
 use super::chart_button;
-
 
 impl Chart for FootprintChart {
     type DataPoint = BTreeMap<i64, (HashMap<i64, (f32, f32)>, Kline)>;
@@ -20,24 +20,48 @@ impl Chart for FootprintChart {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct Region {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
+
 pub struct FootprintChart {
     chart: CommonChartData,
     data_points: BTreeMap<i64, (HashMap<i64, (f32, f32)>, Kline)>,
     timeframe: u16,
     tick_size: f32,
     raw_trades: Vec<Trade>,
+    x_grid_spacing: f32,
+    y_grid_spacing: f32,
+    highest_y: f32,
+    lowest_y: f32,
 }
 
 impl FootprintChart {
-    const MIN_SCALING: f32 = 0.4;
-    const MAX_SCALING: f32 = 3.6;
+    const MIN_SCALING: f32 = 0.6;
+    const MAX_SCALING: f32 = 3.0;
+
+    const MIN_GRID_SPACING: (f32, f32) = (30.0, 1.0);
+    const MAX_GRID_SPACING: (f32, f32) = (120.0, 60.0);
 
     pub fn new(timeframe: u16, tick_size: f32, klines_raw: Vec<Kline>, raw_trades: Vec<Trade>) -> Self {
         let mut data_points = BTreeMap::new();
         let aggregate_time = 1000 * 60 * timeframe as i64;
 
+        let (mut highest_y, mut lowest_y) = (0.0f32, std::f32::MAX);
+
         for kline in klines_raw {
             data_points.entry(kline.time as i64).or_insert((HashMap::new(), kline));
+
+            if kline.low < lowest_y {
+                lowest_y = kline.low;
+            }
+            if kline.high > highest_y {
+                highest_y = kline.high;
+            }
         };
         for trade in &raw_trades {
             let rounded_time = (trade.time / aggregate_time) * aggregate_time;
@@ -66,6 +90,10 @@ impl FootprintChart {
             timeframe,
             tick_size,
             raw_trades,
+            x_grid_spacing: timeframe as f32 * 60.0,
+            y_grid_spacing: 10.0 * tick_size,
+            highest_y,
+            lowest_y,
         }
     }
 
@@ -103,6 +131,13 @@ impl FootprintChart {
             kline_value.close = kline.close;
             kline_value.volume = kline.volume;
         } 
+
+        if kline.low < self.lowest_y {
+            self.lowest_y = kline.low;
+        }
+        if kline.high > self.highest_y {
+            self.highest_y = kline.high;
+        }
 
         self.render_start();
     }
@@ -146,61 +181,48 @@ impl FootprintChart {
     
         self.data_points = new_data_points;
         self.tick_size = new_tick_size;
+
+        self.y_grid_spacing = 10.0 * new_tick_size;
     }
 
     pub fn render_start(&mut self) {
-        let (latest, earliest, highest, lowest) = self.calculate_range();
-        if highest <= 0.0 || lowest <= 0.0 {
-            return;
-        }
-
         let chart_state = &mut self.chart;
-
-        if earliest != chart_state.x_min_time || latest != chart_state.x_max_time {
-            chart_state.x_min_time = earliest;
-            chart_state.x_max_time = latest;
-
-            chart_state.x_labels_cache.clear();
-            chart_state.x_crosshair_cache.clear();
-        };
-    
-        if lowest != chart_state.y_min_price || highest != chart_state.y_max_price {
-            chart_state.y_min_price = lowest;
-            chart_state.y_max_price = highest;
-
-            chart_state.y_labels_cache.clear();
-            chart_state.y_crosshair_cache.clear();
-        };
     
         chart_state.crosshair_cache.clear();
         chart_state.main_cache.clear();
     }
 
-    fn calculate_range(&self) -> (i64, i64, f32, f32) {
+    fn visible_region(&self, size: Size) -> Region {
         let chart = self.get_common_data();
 
-        let timestamp_latest = self.data_points.keys().last().unwrap_or(&0);
+        let width = size.width / chart.scaling;
+        let height = size.height / chart.scaling;
 
-        let latest: i64 = *timestamp_latest - ((chart.translation.x*800.0)*(self.timeframe as f32)) as i64;
-        let earliest: i64 = latest - ((640000.0*self.timeframe as f32) / (chart.scaling / (chart.bounds.width/800.0))) as i64;
-    
-        let mut highest: f32 = 0.0;
-        let mut lowest: f32 = std::f32::MAX;
-
-        for (_, (_, kline)) in self.data_points.range(earliest..=latest) {
-            if kline.high > highest {
-                highest = kline.high;
-            }
-            if kline.low < lowest {
-                lowest = kline.low;
-            }
+        Region {
+            x: -chart.translation.x - width / 2.0,
+            y: -chart.translation.y - height / 2.0,
+            width,
+            height,
         }
-
-        highest = highest + (highest - lowest) * 0.05;
-        lowest = lowest - (highest - lowest) * 0.05;
-
-        (latest, earliest, highest, lowest)
     }
+
+    fn time_to_x(&self, time: i64) -> f32 {
+        let time_per_cell = self.timeframe as i64 * 60 * 1000; 
+        let latest_time = *self.data_points.last_key_value().unwrap().0;
+        
+        ((time - latest_time) as f32 / time_per_cell as f32) * self.x_grid_spacing
+    }
+
+    fn x_to_time(&self, x: f32) -> i64 {
+        let time_per_cell = self.timeframe as i64 * 60 * 1000; 
+        let latest_time = *self.data_points.last_key_value().unwrap().0;
+        
+        latest_time + ((x / self.x_grid_spacing) * time_per_cell as f32) as i64
+    }
+
+    fn price_to_y(&self, price: f32) -> f32 {        
+        ((self.lowest_y - price) / self.tick_size) * self.y_grid_spacing
+    }    
 
     pub fn update(&mut self, message: &Message) {
         match message {
@@ -249,6 +271,50 @@ impl FootprintChart {
                     chart.crosshair_cache.clear();
                     chart.y_crosshair_cache.clear();
                     chart.x_crosshair_cache.clear();
+                }
+            },
+            Message::XScaling(delta, cursor_to_center_x, is_wheel_scroll) => {
+                if *delta < 0.0 && self.x_grid_spacing > Self::MIN_GRID_SPACING.0 || *delta > 0.0 && self.x_grid_spacing < Self::MAX_GRID_SPACING.0 {
+                    let old_spacing = self.x_grid_spacing;
+
+                    let x_grid_spacing = (self.x_grid_spacing * (1.0 + delta / 30.0))
+                        .clamp(
+                            Self::MIN_GRID_SPACING.0, 
+                            Self::MAX_GRID_SPACING.0,  
+                        )
+                        .ceil();
+
+                    let chart_state = self.get_common_data_mut();
+
+                    let factor = x_grid_spacing - old_spacing;
+
+                    chart_state.translation.x -= (cursor_to_center_x * factor) / (old_spacing * old_spacing);
+
+                    self.x_grid_spacing = x_grid_spacing;
+
+                    self.render_start();
+                }
+            },
+            Message::YScaling(delta, cursor_to_center_y, is_wheel_scroll) => {
+                if *delta < 0.0 && self.y_grid_spacing > Self::MIN_GRID_SPACING.1 || *delta > 0.0 && self.y_grid_spacing < Self::MAX_GRID_SPACING.1 {
+                    let old_spacing = self.y_grid_spacing;
+
+                    let y_grid_spacing = (self.y_grid_spacing * (1.0 + delta / 30.0))
+                        .clamp(
+                            Self::MIN_GRID_SPACING.1, 
+                            Self::MAX_GRID_SPACING.1,  
+                        )
+                        .ceil();
+
+                    let chart_state = self.get_common_data_mut();
+
+                    let factor = y_grid_spacing - old_spacing;
+
+                    chart_state.translation.x -= (cursor_to_center_y * factor) / (old_spacing * old_spacing);
+
+                    self.y_grid_spacing = y_grid_spacing;
+
+                    self.render_start();
                 }
             },
             _ => {}
@@ -382,9 +448,7 @@ impl canvas::Program<Message> for FootprintChart {
                     let message = match *interaction {
                         Interaction::Panning { translation, start } => {
                             Some(Message::Translated(
-                                translation
-                                    + (cursor_position - start)
-                                        * (1.0 / chart_state.scaling),
+                                translation + (cursor_position - start) * (1.0 / chart_state.scaling),
                             ))
                         }
                         Interaction::None => 
@@ -404,12 +468,9 @@ impl canvas::Program<Message> for FootprintChart {
                     (event_status, message)
                 }
                 mouse::Event::WheelScrolled { delta } => match delta {
-                    mouse::ScrollDelta::Lines { y, .. }
-                    | mouse::ScrollDelta::Pixels { y, .. } => {
-                        if y < 0.0 && chart_state.scaling > Self::MIN_SCALING
-                            || y > 0.0 && chart_state.scaling < Self::MAX_SCALING
-                        {
-                            //let old_scaling = self.scaling;
+                    mouse::ScrollDelta::Lines { y, .. } | mouse::ScrollDelta::Pixels { y, .. } => {
+                        if y < 0.0 && chart_state.scaling > Self::MIN_SCALING || y > 0.0 && chart_state.scaling < Self::MAX_SCALING {
+                            let old_scaling = chart_state.scaling;
 
                             let scaling = (chart_state.scaling * (1.0 + y / 30.0))
                                 .clamp(
@@ -417,30 +478,29 @@ impl canvas::Program<Message> for FootprintChart {
                                     Self::MAX_SCALING,  // 2.0
                                 );
 
-                            //let translation =
-                            //    if let Some(cursor_to_center) =
-                            //        cursor.position_from(bounds.center())
-                            //    {
-                            //        let factor = scaling - old_scaling;
-
-                            //        Some(
-                            //            self.translation
-                            //                - Vector::new(
-                            //                    cursor_to_center.x * factor
-                            //                        / (old_scaling
-                            //                            * old_scaling),
-                            //                    cursor_to_center.y * factor
-                            //                        / (old_scaling
-                            //                            * old_scaling),
-                            //                ),
-                            //        )
-                            //    } else {
-                            //        None
-                            //    };
+                            let translation =
+                                if let Some(cursor_to_center) =
+                                    cursor.position_from(bounds.center())
+                                {
+                                    let factor = scaling - old_scaling;
+                                    Some(
+                                        chart_state.translation
+                                            - Vector::new(
+                                                cursor_to_center.x * factor
+                                                    / (old_scaling
+                                                        * old_scaling),
+                                                cursor_to_center.y * factor
+                                                    / (old_scaling
+                                                        * old_scaling),
+                                            ),
+                                    )
+                                } else {
+                                    None
+                                };
 
                             (
                                 event::Status::Captured,
-                                Some(Message::Scaled(scaling, None)),
+                                Some(Message::Scaled(scaling, translation)),
                             )
                         } else {
                             (event::Status::Captured, None)
@@ -463,209 +523,97 @@ impl canvas::Program<Message> for FootprintChart {
     ) -> Vec<Geometry> {    
         let chart = self.get_common_data();
 
-        let (latest, earliest) = (chart.x_max_time, chart.x_min_time);    
-        let (lowest, highest) = (chart.y_min_price, chart.y_max_price);
+        let center = Vector::new(bounds.width / 2.0, bounds.height / 2.0);
 
-        let y_range: f32 = highest - lowest;
-
-        let volume_area_height: f32 = bounds.height / 8.0; 
-        let footprint_area_height: f32 = bounds.height - volume_area_height;
+        let (x_grid_spacing, y_grid_spacing) = (self.x_grid_spacing, self.y_grid_spacing);
 
         let footprint = chart.main_cache.draw(renderer, bounds.size(), |frame| {
-            let mut x_positions: Vec<f32> = Vec::new();
-            let mut max_trade_qty: f32 = 0.0;
-            let mut max_volume: f32 = 0.0;
-            let mut min_distance: f32 = f32::MAX;
-            let mut previous_x_position: Option<f32> = None;
+            frame.with_save(|frame| {                
+                frame.translate(center);
+                frame.scale(chart.scaling);
+                frame.translate(chart.translation);
 
-            for (time, (trades, kline)) in self.data_points.range(earliest..=latest) {
-                for trade in trades {
-                    max_trade_qty = max_trade_qty.max(trade.1.0.max(trade.1.1));
-                }
-                max_volume = max_volume.max(kline.volume.0.max(kline.volume.1));
+                let region = self.visible_region(frame.size());
+        
+                if !self.data_points.is_empty() {
+                    let earliest = self.x_to_time(region.x);
+                    let latest = self.x_to_time(region.x + region.width);
 
-                let x_position: f32 = ((time - earliest) as f32 / (latest - earliest) as f32) * bounds.width;
-                if !x_position.is_nan() && !x_position.is_infinite() {
-                    x_positions.push(x_position);
+                    let mut max_trade_qty: f32 = 0.0;
+                    let mut max_volume: f32 = 0.0;
+                    
+                    for (&timestamp, (trades, kline)) in self.data_points.range(earliest..=latest).rev() {
+                        let x_position = self.time_to_x(timestamp);
 
-                    if let Some(prev_x) = previous_x_position {
-                        let distance = x_position - prev_x;
-                        if distance < min_distance {
-                            min_distance = distance;
+                        if x_position >= region.x && x_position <= region.x + region.width {
+                            for trade in trades {
+                                max_trade_qty = max_trade_qty.max(trade.1.0.max(trade.1.1));
+                            }
+                            max_volume = max_volume.max(kline.volume.0.max(kline.volume.1));
                         }
                     }
-                    previous_x_position = Some(x_position);
-                }
-            }
 
-            let max_bar_width = min_distance / 2.0;
+                    for (&timestamp, (trades, kline)) in self.data_points.range(earliest..=latest).rev() {
+                        let x_position = self.time_to_x(timestamp);
 
-            let bar_height = ((footprint_area_height / (y_range / self.tick_size) as f32).floor()).max(1.0);
+                        let y_open = self.price_to_y(kline.open);
+                        let y_high = self.price_to_y(kline.high);
+                        let y_low = self.price_to_y(kline.low);
+                        let y_close = self.price_to_y(kline.close);
 
-            for (time, (trades, kline)) in self.data_points.range(earliest..=latest) {
-                let x_position: f32 = ((time - earliest) as f32 / (latest - earliest) as f32) * bounds.width;
+                        let candle_width = 0.2 * x_grid_spacing;
 
-                if x_position.is_nan() {
-                    continue;
-                }
-
-                let y_open = footprint_area_height - ((kline.open - lowest) / y_range * footprint_area_height);
-                let y_high = footprint_area_height - ((kline.high - lowest) / y_range * footprint_area_height);
-                let y_low = footprint_area_height - ((kline.low - lowest) / y_range * footprint_area_height);
-                let y_close = footprint_area_height - ((kline.close - lowest) / y_range * footprint_area_height);
-
-                let body_color = 
-                    if kline.close >= kline.open { 
-                        Color::from_rgba8(81, 205, 160, 0.8) 
-                    } else { Color::from_rgba8(192, 80, 77, 0.8) 
-                };
-                frame.fill_rectangle(
-                    Point::new(x_position - (2.0 * chart.scaling), y_open.min(y_close)), 
-                    Size::new(4.0 * chart.scaling, (y_open - y_close).abs()), 
-                    body_color
-                );
-
-                let wick_color = 
-                    if kline.close >= kline.open { 
-                        Color::from_rgba8(81, 205, 160, 0.4) 
-                    } else { Color::from_rgba8(192, 80, 77, 0.4) 
-                };
-                frame.fill_rectangle(
-                    Point::new(x_position - chart.scaling, y_high),
-                    Size::new(2.0 * chart.scaling, (y_high - y_low).abs()),
-                    wick_color
-                );
-
-                for trade in trades {
-                    let price = (*trade.0 as f32) / (1.0 / self.tick_size);
-                    let y_position = footprint_area_height - ((price - lowest) / y_range * footprint_area_height);
-
-                    if trade.1.0 > 0.0 {
-                        let bar_width = (trade.1.0 / max_trade_qty) * (max_bar_width*0.9);
-
-                        frame.fill_rectangle(
-                            Point::new(x_position + (3.0 * chart.scaling), y_position), 
-                            Size::new(bar_width, bar_height) , 
-                            Color::from_rgba8(81, 205, 160, 1.0)
-                        );
-                    } 
-                    if trade.1.1 > 0.0 {
-                        let bar_width = -(trade.1.1 / max_trade_qty) * (max_bar_width*0.9);
-
-                        frame.fill_rectangle(
-                            Point::new(x_position - (3.0 * chart.scaling), y_position), 
-                            Size::new(bar_width, bar_height), 
-                            Color::from_rgba8(192, 80, 77, 1.0)
-                        );
-                    }
-                }
-
-                if max_volume > 0.0 {
-                    if kline.volume.0 != -1.0 {
-                        let buy_bar_height = (kline.volume.0 / max_volume) * volume_area_height;
-                        let sell_bar_height = (kline.volume.1 / max_volume) * volume_area_height;
-
-                        let bar_width = 8.0 * chart.scaling;
-                        let sell_bar_x_position = x_position - (5.0*chart.scaling) - bar_width;
-
-                        frame.fill_rectangle(
-                            Point::new(sell_bar_x_position, bounds.height - sell_bar_height), 
-                            Size::new(bar_width, sell_bar_height),
-                            Color::from_rgb8(192, 80, 77)
-                        );
-
-                        frame.fill_rectangle(
-                            Point::new(x_position + (5.0*chart.scaling), bounds.height - buy_bar_height), 
-                            Size::new(bar_width, buy_bar_height),
-                            Color::from_rgb8(81, 205, 160)
-                        );
-
-                    } else {
-                        let bar_height = (kline.volume.1 / max_volume) * volume_area_height;
-
-                        let color = 
+                        let body_color = 
                             if kline.close >= kline.open { 
                                 Color::from_rgba8(81, 205, 160, 0.8) 
                             } else { Color::from_rgba8(192, 80, 77, 0.8) 
                         };
-
                         frame.fill_rectangle(
-                            Point::new(x_position - (3.0*chart.scaling), bounds.height - bar_height), 
-                            Size::new(6.0 * chart.scaling, bar_height),
-                            color
+                            Point::new(x_position - (candle_width / 4.0), y_open.min(y_close)), 
+                            Size::new(candle_width / 2.0, (y_open - y_close).abs()), 
+                            body_color
                         );
+
+                        let wick_color = 
+                            if kline.close >= kline.open { 
+                                Color::from_rgba8(81, 205, 160, 0.4) 
+                            } else { Color::from_rgba8(192, 80, 77, 0.4) 
+                        };
+                        frame.fill_rectangle(
+                            Point::new(x_position - 1.0, y_high),
+                            Size::new(2.0, (y_high - y_low).abs()),
+                            wick_color
+                        );
+
+                        for trade in trades {
+                            let price = (*trade.0 as f32) / (1.0 / self.tick_size);
+                            let y_position = self.price_to_y(price);
+        
+                            if trade.1.0 > 0.0 {
+                                let bar_width = (trade.1.0 / max_trade_qty) * (x_grid_spacing * 0.4);
+        
+                                frame.fill_rectangle(
+                                    Point::new(x_position + (candle_width / 3.0), y_position), 
+                                    Size::new(bar_width, y_grid_spacing) , 
+                                    Color::from_rgba8(81, 205, 160, 1.0)
+                                );
+                            } 
+                            if trade.1.1 > 0.0 {
+                                let bar_width = -(trade.1.1 / max_trade_qty) * ((x_grid_spacing * 0.4));
+        
+                                frame.fill_rectangle(
+                                    Point::new(x_position - (candle_width / 3.0), y_position), 
+                                    Size::new(bar_width, y_grid_spacing), 
+                                    Color::from_rgba8(192, 80, 77, 1.0)
+                                );
+                            }
+                        }
                     }
                 }
-            } 
-            
-            let text_size = 9.0;
-            let text_content = format!("{max_volume:.2}");
-            let text_width = (text_content.len() as f32 * text_size) / 1.5;
-
-            let text_position = Point::new(bounds.width - text_width, bounds.height - volume_area_height);
-            
-            frame.fill_text(canvas::Text {
-                content: text_content,
-                position: text_position,
-                size: iced::Pixels(text_size),
-                color: Color::from_rgba8(81, 81, 81, 1.0),
-                ..canvas::Text::default()
             });
         });
 
-        if chart.crosshair {
-            let crosshair = chart.crosshair_cache.draw(renderer, bounds.size(), |frame| {
-                if let Some(cursor_position) = cursor.position_in(bounds) {
-                    let line = Path::line(
-                        Point::new(0.0, cursor_position.y), 
-                        Point::new(bounds.width, cursor_position.y)
-                    );
-                    frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(200, 200, 200, 0.6)).with_width(1.0));
-
-                    let crosshair_ratio = cursor_position.x as f64 / bounds.width as f64;
-                    let crosshair_millis = earliest as f64 + crosshair_ratio * (latest - earliest) as f64;
-                    let rounded_timestamp = (crosshair_millis / (self.timeframe as f64 * 60.0 * 1000.0)).round() as i64 * self.timeframe as i64 * 60 * 1000;
-
-                    let snap_ratio = (rounded_timestamp as f64 - earliest as f64) / (latest as f64 - earliest as f64);
-                    let snap_x = snap_ratio * bounds.width as f64;
-
-                    let line = Path::line(
-                        Point::new(snap_x as f32, 0.0), 
-                        Point::new(snap_x as f32, bounds.height)
-                    );
-                    frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(200, 200, 200, 0.6)).with_width(1.0));
-
-                    if let Some((_, kline)) = self.data_points.iter()
-                        .find(|(time, _)| **time == rounded_timestamp) {
-
-                            let tooltip_text: String = if kline.1.volume.0 != -1.0 {
-                                format!(
-                                    "O: {} H: {} L: {} C: {}\nBuyV: {:.0} SellV: {:.0}",
-                                    kline.1.open, kline.1.high, kline.1.low, kline.1.close, kline.1.volume.0, kline.1.volume.1
-                                )
-                            } else {
-                                format!(
-                                    "O: {} H: {} L: {} C: {}\nVolume: {:.0}",
-                                    kline.1.open, kline.1.high, kline.1.low, kline.1.close, kline.1.volume.1
-                                )
-                            };
-
-                            let text = canvas::Text {
-                                content: tooltip_text,
-                                position: Point::new(10.0, 10.0),
-                                size: iced::Pixels(12.0),
-                                color: Color::from_rgba8(120, 120, 120, 1.0),
-                                ..canvas::Text::default()
-                            };
-                            frame.fill_text(text);
-                    }
-                }
-            });
-
-            vec![crosshair, footprint]
-        }   else {
-            vec![footprint]
-        }
+        vec![footprint]
     }
 
     fn mouse_interaction(

@@ -19,7 +19,8 @@ pub enum Message {
     AutoscaleToggle,
     CrosshairToggle,
     CrosshairMoved(Point),
-    YScaling(f32, bool),
+    YScaling(f32, f32, bool),
+    XScaling(f32, f32, bool),
 }
 struct CommonChartData {
     main_cache: Cache,
@@ -42,6 +43,7 @@ struct CommonChartData {
 
     translation: Vector,
     scaling: f32,
+    y_scaling: f32,
     autoscale: bool,
 
     bounds: Rectangle,
@@ -69,7 +71,8 @@ impl Default for CommonChartData {
 
             translation: Vector::default(),
             scaling: 1.0,
-            autoscale: true,
+            y_scaling: 1.0,
+            autoscale: false,
 
             bounds: Rectangle::default(),
         }
@@ -253,11 +256,71 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
 
     fn update(
         &self,
-        _interaction: &mut Interaction,
-        _event: Event,
-        _bounds: Rectangle,
-        _cursor: mouse::Cursor,
+        interaction: &mut Interaction,
+        event: Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
     ) -> (event::Status, Option<Message>) {
+        if let Event::Mouse(mouse::Event::ButtonReleased(_)) = event {
+            *interaction = Interaction::None;
+            return (event::Status::Ignored, None);
+        }
+    
+        let Some(cursor_position) = cursor.position_in(bounds) else {
+            return (event::Status::Ignored, None);
+        };
+    
+        if !cursor.is_over(bounds) {
+            return (event::Status::Ignored, None);
+        }
+    
+        match event {
+            Event::Mouse(mouse_event) => match mouse_event {
+                mouse::Event::ButtonPressed(button) => {
+                    if let mouse::Button::Left = button {
+                        *interaction = Interaction::Zoomin {
+                            last_position: cursor_position,
+                        };
+                        return (event::Status::Captured, None);
+                    }
+                }
+                mouse::Event::CursorMoved { .. } => {
+                    if let Interaction::Zoomin { ref mut last_position } = *interaction {
+                        let difference_y = last_position.y - cursor_position.y;
+    
+                        if difference_y.abs() > 1.0 {
+                            let y_scaling = 1.0 + (difference_y / bounds.height);
+                            *last_position = cursor_position;
+                            return (
+                                event::Status::Captured,
+                                None,
+                            );
+                        }
+                    }
+                }
+                mouse::Event::WheelScrolled { delta } => match delta {
+                    mouse::ScrollDelta::Lines { y, .. } | mouse::ScrollDelta::Pixels { y, .. } => {
+                        return (
+                            event::Status::Captured,
+                            Some(
+                                Message::XScaling(
+                                    y,
+                                    if let Some(cursor_to_center) = cursor.position_from(bounds.center()) {
+                                        cursor_to_center.x
+                                    } else {
+                                        0.0
+                                    },
+                                    true
+                                )
+                            ),
+                        );
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    
         (event::Status::Ignored, None)
     }
     
@@ -450,17 +513,26 @@ impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
                             *last_position = cursor_position;
                             return (
                                 event::Status::Captured,
-                                Some(Message::YScaling((y_scaling * 1000.0).round() / 1000.0, false)),
+                                None,
                             );
                         }
                     }
                 }
-                mouse::Event::WheelScrolled { delta } => {
-                    if let mouse::ScrollDelta::Lines { y, .. } = delta {
-                        let y_scaling = 1.0 + y * 0.1;
+                mouse::Event::WheelScrolled { delta } => match delta {
+                    mouse::ScrollDelta::Lines { y, .. } | mouse::ScrollDelta::Pixels { y, .. } => {
                         return (
                             event::Status::Captured,
-                            Some(Message::YScaling((y_scaling * 1000.0).round() / 1000.0, true)),
+                            Some(
+                                Message::YScaling(
+                                    y,
+                                    if let Some(cursor_to_center) = cursor.position_from(bounds.center()) {
+                                        cursor_to_center.y
+                                    } else {
+                                        0.0
+                                    },
+                                    true
+                                )
+                            ),
                         );
                     }
                 }
