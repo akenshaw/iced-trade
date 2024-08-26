@@ -42,13 +42,13 @@ pub struct FootprintChart {
 
 impl FootprintChart {
     const MIN_SCALING: f32 = 0.1;
-    const MAX_SCALING: f32 = 2.0;
+    const MAX_SCALING: f32 = 1.2;
 
-    const MAX_CELL_WIDTH: f32 = 120.0;
-    const MIN_CELL_WIDTH: f32 = 12.0;
+    const MAX_CELL_WIDTH: f32 = 320.0;
+    const MIN_CELL_WIDTH: f32 = 128.0;
 
-    const MAX_CELL_HEIGHT: f32 = 80.0;
-    const MIN_CELL_HEIGHT: f32 = 8.0;
+    const MAX_CELL_HEIGHT: f32 = 96.0;
+    const MIN_CELL_HEIGHT: f32 = 24.0;
 
     pub fn new(timeframe: u16, tick_size: f32, klines_raw: Vec<Kline>, raw_trades: Vec<Trade>) -> Self {
         let mut data_points = BTreeMap::new();
@@ -142,6 +142,8 @@ impl FootprintChart {
             self.highest_y = kline.high;
         }
 
+        //println!("cell width: {}, cell height: {}", self.cell_width, self.cell_height);
+
         self.render_start();
     }
 
@@ -215,7 +217,6 @@ impl FootprintChart {
         
         ((time - latest_time) as f32 / time_per_cell as f32) * self.cell_width
     }
-
     fn x_to_time(&self, x: f32) -> i64 {
         let time_per_cell = self.timeframe as i64 * 60 * 1000; 
         let latest_time = *self.data_points.last_key_value().unwrap().0;
@@ -225,7 +226,10 @@ impl FootprintChart {
 
     fn price_to_y(&self, price: f32) -> f32 {        
         ((self.lowest_y - price) / self.tick_size) * self.cell_height
-    }    
+    } 
+    fn y_to_price(&self, y: f32) -> f32 {
+        self.lowest_y - (y / self.cell_height) * self.tick_size
+    }
 
     pub fn update(&mut self, message: &Message) {
         match message {
@@ -276,45 +280,51 @@ impl FootprintChart {
                     chart.x_crosshair_cache.clear();
                 }
             },
-            Message::XScaling(delta, cursor_to_center_x, is_wheel_scroll) => {
+            Message::XScaling(delta, cursor_to_center_x, _is_wheel_scroll) => {
                 if *delta < 0.0 && self.cell_width > Self::MIN_CELL_WIDTH || *delta > 0.0 && self.cell_width < Self::MAX_CELL_WIDTH {
-                    let old_width = self.cell_width;
-
-                    let cell_width = (self.cell_width * (1.0 + delta / 30.0))
-                        .clamp(
-                            Self::MIN_CELL_WIDTH, 
-                            Self::MAX_CELL_WIDTH,  
-                        );
-
+                    let (old_scaling, old_translation_x) = {
+                        let chart_state = self.get_common_data();
+                        (chart_state.scaling, chart_state.translation.x)
+                    };
+                    
+                    let new_width = (self.cell_width * (1.0 + delta / 30.0))
+                        .clamp(Self::MIN_CELL_WIDTH, Self::MAX_CELL_WIDTH);
+                    
+                    let cursor_chart_x = cursor_to_center_x / old_scaling - old_translation_x;
+                    
+                    let cursor_time = self.x_to_time(cursor_chart_x);
+                    
+                    self.cell_width = new_width;
+                    
+                    let new_cursor_x = self.time_to_x(cursor_time);
+                    
                     let chart_state = self.get_common_data_mut();
-
-                    let factor = cell_width - old_width;
-
-                    chart_state.translation.x -= (cursor_to_center_x * factor) / (old_width * old_width);
-
-                    self.cell_width = cell_width;
-
+                    chart_state.translation.x -= new_cursor_x - cursor_chart_x;
+                    
                     self.render_start();
                 }
             },
-            Message::YScaling(delta, cursor_to_center_y, is_wheel_scroll) => {
+            Message::YScaling(delta, cursor_to_center_y, _is_wheel_scroll) => {
                 if *delta < 0.0 && self.cell_height > Self::MIN_CELL_HEIGHT || *delta > 0.0 && self.cell_height < Self::MAX_CELL_HEIGHT {
-                    let old_height = self.cell_height;
-
-                    let cell_height = (self.cell_height * (1.0 + delta / 30.0))
-                        .clamp(
-                            Self::MIN_CELL_HEIGHT, 
-                            Self::MAX_CELL_HEIGHT,  
-                        );
-
+                    let (old_scaling, old_translation_y) = {
+                        let chart_state = self.get_common_data();
+                        (chart_state.scaling, chart_state.translation.y)
+                    };
+                    
+                    let new_height = (self.cell_height * (1.0 + delta / 30.0))
+                        .clamp(Self::MIN_CELL_HEIGHT, Self::MAX_CELL_HEIGHT);
+                    
+                    let cursor_chart_y = cursor_to_center_y / old_scaling - old_translation_y;
+                    
+                    let cursor_price = self.y_to_price(cursor_chart_y);
+                    
+                    self.cell_height = new_height;
+                    
+                    let new_cursor_y = self.price_to_y(cursor_price);
+                    
                     let chart_state = self.get_common_data_mut();
-
-                    let factor = cell_height - old_height;
-
-                    chart_state.translation.y -= (cursor_to_center_y * factor) / (old_height * old_height);
-
-                    self.cell_height = cell_height;
-
+                    chart_state.translation.y -= new_cursor_y - cursor_chart_y;
+                    
                     self.render_start();
                 }
             },
@@ -591,7 +601,7 @@ impl canvas::Program<Message> for FootprintChart {
                             let y_position = self.price_to_y(price);
         
                             if trade.1.0 > 0.0 {
-                                let bar_width = (trade.1.0 / max_trade_qty) * (cell_height * 0.4);
+                                let bar_width = (trade.1.0 / max_trade_qty) * (cell_width * 0.4);
         
                                 frame.fill_rectangle(
                                     Point::new(x_position + (candle_width / 3.0), y_position), 
@@ -600,7 +610,7 @@ impl canvas::Program<Message> for FootprintChart {
                                 );
                             } 
                             if trade.1.1 > 0.0 {
-                                let bar_width = -(trade.1.1 / max_trade_qty) * ((cell_height * 0.4));
+                                let bar_width = -(trade.1.1 / max_trade_qty) * ((cell_width * 0.4));
         
                                 frame.fill_rectangle(
                                     Point::new(x_position - (candle_width / 3.0), y_position), 
