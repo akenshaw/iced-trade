@@ -37,11 +37,11 @@ impl FootprintChart {
     const MIN_SCALING: f32 = 0.1;
     const MAX_SCALING: f32 = 1.2;
 
-    const MAX_CELL_WIDTH: f32 = 320.0;
-    const MIN_CELL_WIDTH: f32 = 128.0;
+    const MAX_CELL_WIDTH: f32 = 480.0;
+    const MIN_CELL_WIDTH: f32 = 60.0;
 
-    const MAX_CELL_HEIGHT: f32 = 96.0;
-    const MIN_CELL_HEIGHT: f32 = 24.0;
+    const MAX_CELL_HEIGHT: f32 = 40.0;
+    const MIN_CELL_HEIGHT: f32 = 1.0;
 
     pub fn new(timeframe: u16, tick_size: f32, klines_raw: Vec<Kline>, raw_trades: Vec<Trade>) -> Self {
         let mut data_points = BTreeMap::new();
@@ -89,13 +89,16 @@ impl FootprintChart {
         };
 
         FootprintChart {
-            chart: CommonChartData::default(),
+            chart: CommonChartData {
+                scaling: 0.2,
+                ..Default::default()
+            },
             data_points,
             timeframe,
             tick_size,
             raw_trades,
-            cell_width: timeframe as f32 * 60.0,
-            cell_height: 8.0 * tick_size,
+            cell_width: 180.0,
+            cell_height: 10.0,
             highest_y,
             lowest_y,
             latest_x,
@@ -193,12 +196,11 @@ impl FootprintChart {
         }
     
         self.data_points = new_data_points;
-        self.tick_size = new_tick_size;
 
-        self.cell_height = 8.0 * new_tick_size;
+        self.tick_size = new_tick_size;
     }
 
-    pub fn render_start(&mut self) {
+    fn render_start(&mut self) {
         let chart_state = &mut self.chart;
 
         chart_state.y_labels_cache.clear();
@@ -208,7 +210,7 @@ impl FootprintChart {
         chart_state.main_cache.clear();
     }
 
-    pub fn visible_region(&self, size: Size) -> Region {
+    fn visible_region(&self, size: Size) -> Region {
         let chart = self.get_common_data();
 
         let width = size.width / chart.scaling;
@@ -238,8 +240,8 @@ impl FootprintChart {
         latest_time + ((x / self.cell_width) * time_per_cell as f32) as i64
     }
 
-    fn price_to_y(&self, price: f32) -> f32 {        
-        ((self.lowest_y - price) / self.tick_size) * self.cell_height
+    fn price_to_y(&self, price: f32) -> f32 {
+        ((self.lowest_y- price) / self.tick_size) * self.cell_height
     } 
     fn y_to_price(&self, y: f32) -> f32 {
         self.lowest_y - (y / self.cell_height) * self.tick_size
@@ -248,30 +250,28 @@ impl FootprintChart {
     pub fn update(&mut self, message: &Message) {
         match message {
             Message::Translated(translation) => {
-                let chart = self.get_common_data_mut();
+                let chart_state = self.get_common_data_mut();
 
-                if chart.autoscale {
-                    chart.translation.x = translation.x;
-                } else {
-                    chart.translation = *translation;
-                }
-                chart.crosshair_position = Point::new(0.0, 0.0);
+                chart_state.translation = *translation;
+
+                chart_state.autoscale = false;
+
+                chart_state.crosshair_position = Point::new(0.0, 0.0);
 
                 self.render_start();
             },
             Message::Scaled(scaling, translation) => {
-                let chart = self.get_common_data_mut();
+                let chart_state = self.get_common_data_mut();
 
-                chart.scaling = *scaling;
+                chart_state.scaling = *scaling;
                 
                 if let Some(translation) = translation {
-                    if chart.autoscale {
-                        chart.translation.x = translation.x;
-                    } else {
-                        chart.translation = *translation;
-                    }
+                    chart_state.translation = *translation;
                 }
-                chart.crosshair_position = Point::new(0.0, 0.0);
+
+                chart_state.crosshair_position = Point::new(0.0, 0.0);
+
+                chart_state.autoscale = false;
 
                 self.render_start();
             },
@@ -279,7 +279,19 @@ impl FootprintChart {
                 self.chart.bounds = *bounds;
             },
             Message::AutoscaleToggle => {
-                self.chart.autoscale = !self.chart.autoscale;
+                let chart_state = self.get_common_data_mut();
+
+                chart_state.autoscale = !chart_state.autoscale;
+
+                if chart_state.autoscale {
+                    chart_state.scaling = 0.2;
+                    chart_state.translation.x = 0.0;
+                    
+                    self.cell_width = 180.0;
+                    self.cell_height = 10.0;
+                }
+
+                self.render_start();
             },
             Message::CrosshairToggle => {
                 self.chart.crosshair = !self.chart.crosshair;
@@ -314,6 +326,8 @@ impl FootprintChart {
                     
                     let chart_state = self.get_common_data_mut();
                     chart_state.translation.x -= new_cursor_x - cursor_chart_x;
+
+                    chart_state.autoscale = false;
                     
                     self.render_start();
                 }
@@ -338,6 +352,8 @@ impl FootprintChart {
                     
                     let chart_state = self.get_common_data_mut();
                     chart_state.translation.y -= new_cursor_y - cursor_chart_y;
+
+                    chart_state.autoscale = false;
                     
                     self.render_start();
                 }
@@ -603,7 +619,7 @@ impl canvas::Program<Message> for FootprintChart {
                         let wick_color = 
                             if kline.close >= kline.open { 
                                 Color::from_rgba8(81, 205, 160, 0.4) 
-                            } else { Color::from_rgba8(192, 80, 77, 0.4) 
+                            } else { Color::from_rgba8(192, 80, 77, 0.6) 
                         };
                         frame.fill_rectangle(
                             Point::new(x_position - 1.0, y_high),

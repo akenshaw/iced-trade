@@ -42,7 +42,6 @@ struct CommonChartData {
 
     translation: Vector,
     scaling: f32,
-    y_scaling: f32,
     autoscale: bool,
 
     bounds: Rectangle,
@@ -70,7 +69,6 @@ impl Default for CommonChartData {
 
             translation: Vector::default(),
             scaling: 1.0,
-            y_scaling: 1.0,
             autoscale: false,
 
             bounds: Rectangle::default(),
@@ -840,12 +838,6 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
                 
                 time += time_step;
             }
-
-            let line = Path::line(
-                Point::new(0.0, bounds.height - 30.0), 
-                Point::new(bounds.width, bounds.height - 30.0)
-            );
-            frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(81, 81, 81, 0.2)).with_width(1.0));
 
             if self.crosshair && self.crosshair_position.x > 0.0 {
                 let crosshair_ratio = self.crosshair_position.x as f64 / bounds.width as f64;
