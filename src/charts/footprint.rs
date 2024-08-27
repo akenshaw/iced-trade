@@ -1,12 +1,11 @@
 use std::collections::{BTreeMap, HashMap};
 use iced::{
-    alignment, mouse, widget::{button, canvas::{self, event::{self, Event}, stroke::Stroke, Canvas, Geometry, Path}}, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector
+    alignment, mouse, widget::{button, canvas::{self, event::{self, Event}, stroke::Stroke, Canvas, Frame, Geometry, Path}}, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector
 };
 use iced::widget::{Column, Row, Container, Text};
-use iced_futures::core::time;
 use crate::data_providers::{Kline, Trade};
 
-use super::{Chart, CommonChartData, Message, Interaction, AxisLabelXCanvas, AxisLabelYCanvas};
+use super::{AxisLabelsX, AxisLabelsY, Chart, CommonChartData, Interaction, Message, Region};
 use super::chart_button;
 
 impl Chart for FootprintChart {
@@ -20,14 +19,6 @@ impl Chart for FootprintChart {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Region {
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-}
-
 pub struct FootprintChart {
     chart: CommonChartData,
     data_points: BTreeMap<i64, (HashMap<i64, (f32, f32)>, Kline)>,
@@ -38,6 +29,8 @@ pub struct FootprintChart {
     cell_height: f32,
     highest_y: f32,
     lowest_y: f32,
+    latest_x: i64,
+    earliest_x: i64,
 }
 
 impl FootprintChart {
@@ -55,6 +48,7 @@ impl FootprintChart {
         let aggregate_time = 1000 * 60 * timeframe as i64;
 
         let (mut highest_y, mut lowest_y) = (0.0f32, std::f32::MAX);
+        let (mut latest_x, mut earliest_x) = (0, std::i64::MAX);
 
         for kline in klines_raw {
             data_points.entry(kline.time as i64).or_insert((HashMap::new(), kline));
@@ -64,6 +58,13 @@ impl FootprintChart {
             }
             if kline.high > highest_y {
                 highest_y = kline.high;
+            }
+            
+            if (kline.time as i64) > latest_x {
+                latest_x = kline.time as i64;
+            }
+            if (kline.time as i64) < earliest_x {
+                earliest_x = kline.time as i64;
             }
         };
         for trade in &raw_trades {
@@ -97,6 +98,8 @@ impl FootprintChart {
             cell_height: 8.0 * tick_size,
             highest_y,
             lowest_y,
+            latest_x,
+            earliest_x,
         }
     }
 
@@ -142,7 +145,12 @@ impl FootprintChart {
             self.highest_y = kline.high;
         }
 
-        //println!("cell width: {}, cell height: {}", self.cell_width, self.cell_height);
+        if (kline.time as i64) > self.latest_x {
+            self.latest_x = kline.time as i64;
+        }
+        if (kline.time as i64) < self.earliest_x {
+            self.earliest_x = kline.time as i64;
+        }
 
         self.render_start();
     }
@@ -192,12 +200,15 @@ impl FootprintChart {
 
     pub fn render_start(&mut self) {
         let chart_state = &mut self.chart;
+
+        chart_state.y_labels_cache.clear();
+        chart_state.x_labels_cache.clear();
     
         chart_state.crosshair_cache.clear();
         chart_state.main_cache.clear();
     }
 
-    fn visible_region(&self, size: Size) -> Region {
+    pub fn visible_region(&self, size: Size) -> Region {
         let chart = self.get_common_data();
 
         let width = size.width / chart.scaling;
@@ -218,9 +229,12 @@ impl FootprintChart {
         ((time - latest_time) as f32 / time_per_cell as f32) * self.cell_width
     }
     fn x_to_time(&self, x: f32) -> i64 {
-        let time_per_cell = self.timeframe as i64 * 60 * 1000; 
-        let latest_time = *self.data_points.last_key_value().unwrap().0;
-        
+        let time_per_cell = self.timeframe as i64 * 60 * 1000;
+        let latest_time = match self.data_points.last_key_value() {
+            Some((key, _)) => *key,
+            None => return 0,
+        };
+    
         latest_time + ((x / self.cell_width) * time_per_cell as f32) as i64
     }
 
@@ -276,8 +290,8 @@ impl FootprintChart {
                 chart.crosshair_position = *position;
                 if chart.crosshair {
                     chart.crosshair_cache.clear();
-                    chart.y_crosshair_cache.clear();
-                    chart.x_crosshair_cache.clear();
+                    chart.y_labels_cache.clear();
+                    chart.x_labels_cache.clear();
                 }
             },
             Message::XScaling(delta, cursor_to_center_x, _is_wheel_scroll) => {
@@ -340,26 +354,31 @@ impl FootprintChart {
         let chart_state = self.get_common_data();
 
         let axis_labels_x = Canvas::new(
-            AxisLabelXCanvas { 
+            AxisLabelsX { 
                 labels_cache: &chart_state.x_labels_cache, 
-                min: chart_state.x_min_time, 
-                max: chart_state.x_max_time, 
-                crosshair_cache: &chart_state.x_crosshair_cache, 
+                scaling: chart_state.scaling,
+                translation_x: chart_state.translation.x,
+                min: self.earliest_x, 
+                max: self.latest_x, 
                 crosshair_position: chart_state.crosshair_position, 
                 crosshair: chart_state.crosshair,
-                timeframe: Some(self.timeframe)
+                timeframe: self.timeframe,
+                cell_width: self.cell_width
             })
             .width(Length::FillPortion(10))
             .height(Length::Fixed(26.0));
 
         let axis_labels_y = Canvas::new(
-            AxisLabelYCanvas { 
+            AxisLabelsY { 
                 labels_cache: &chart_state.y_labels_cache, 
-                y_croshair_cache: &chart_state.y_crosshair_cache, 
-                min: chart_state.y_min_price,
-                max: chart_state.y_max_price,
+                translation_y: chart_state.translation.y,
+                scaling: chart_state.scaling,
+                min: self.lowest_y,
+                max: self.highest_y,
                 crosshair_position: chart_state.crosshair_position, 
-                crosshair: chart_state.crosshair
+                crosshair: chart_state.crosshair,
+                tick_size: self.tick_size,
+                cell_height: self.cell_height
             })
             .width(Length::Fixed(60.0))
             .height(Length::FillPortion(10));
@@ -553,15 +572,11 @@ impl canvas::Program<Message> for FootprintChart {
                     let mut max_trade_qty: f32 = 0.0;
                     let mut max_volume: f32 = 0.0;
                     
-                    for (&timestamp, (trades, kline)) in self.data_points.range(earliest..=latest).rev() {
-                        let x_position = self.time_to_x(timestamp);
-
-                        if x_position >= region.x && x_position <= region.x + region.width {
-                            for trade in trades {
-                                max_trade_qty = max_trade_qty.max(trade.1.0.max(trade.1.1));
-                            }
-                            max_volume = max_volume.max(kline.volume.0.max(kline.volume.1));
+                    for (_, (trades, kline)) in self.data_points.range(earliest..=latest).rev() {
+                        for trade in trades {
+                            max_trade_qty = max_trade_qty.max(trade.1.0.max(trade.1.1));
                         }
+                        max_volume = max_volume.max(kline.volume.0.max(kline.volume.1));
                     }
 
                     for (&timestamp, (trades, kline)) in self.data_points.range(earliest..=latest).rev() {
@@ -624,7 +639,64 @@ impl canvas::Program<Message> for FootprintChart {
             });
         });
 
-        vec![footprint]
+        if chart.crosshair & !self.data_points.is_empty() {
+            let crosshair = chart.crosshair_cache.draw(renderer, bounds.size(), |frame| {
+                if let Some(cursor_position) = cursor.position_in(bounds) {
+                    let line = Path::line(
+                        Point::new(0.0, cursor_position.y), 
+                        Point::new(bounds.width, cursor_position.y)
+                    );
+                    frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(200, 200, 200, 0.6)).with_width(1.0));
+
+                    let region = self.visible_region(frame.size());
+
+                    let earliest = self.x_to_time(region.x);
+                    let latest = self.x_to_time(region.x + region.width);
+
+                    let crosshair_ratio = cursor_position.x as f64 / bounds.width as f64;
+                    let crosshair_millis = earliest as f64 + crosshair_ratio * (latest - earliest) as f64;
+                    let rounded_timestamp = (crosshair_millis / (self.timeframe as f64 * 60.0 * 1000.0)).round() as i64 * self.timeframe as i64 * 60 * 1000;
+
+                    let snap_ratio = (rounded_timestamp as f64 - earliest as f64) / (latest as f64 - earliest as f64);
+                    let snap_x = snap_ratio * bounds.width as f64;
+
+                    let line = Path::line(
+                        Point::new(snap_x as f32, 0.0), 
+                        Point::new(snap_x as f32, bounds.height)
+                    );
+                    frame.stroke(&line, Stroke::default().with_color(Color::from_rgba8(200, 200, 200, 0.6)).with_width(1.0));
+
+                    if let Some((_, kline)) = self.data_points.iter()
+                        .find(|(time, _)| **time == rounded_timestamp) {
+
+                            let tooltip_text: String = if kline.1.volume.0 != -1.0 {
+                                format!(
+                                    "O: {} H: {} L: {} C: {}\nBuyV: {:.0} SellV: {:.0}",
+                                    kline.1.open, kline.1.high, kline.1.low, kline.1.close, kline.1.volume.0, kline.1.volume.1
+                                )
+                            } else {
+                                format!(
+                                    "O: {} H: {} L: {} C: {}\nVolume: {:.0}",
+                                    kline.1.open, kline.1.high, kline.1.low, kline.1.close, kline.1.volume.1
+                                )
+                            };
+
+                            let text = canvas::Text {
+                                content: tooltip_text,
+                                position: Point::new(10.0, 10.0),
+                                size: iced::Pixels(12.0),
+                                color: Color::from_rgba8(120, 120, 120, 1.0),
+                                ..canvas::Text::default()
+                            };
+                            frame.fill_text(text);
+                    }
+                }
+            });
+
+            vec![crosshair, footprint]
+        }   else {
+            vec![footprint]
+        }
     }
 
     fn mouse_interaction(
