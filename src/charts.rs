@@ -527,43 +527,21 @@ impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
                         let difference_y = last_position.y - cursor_position.y;
     
                         if difference_y.abs() > 1.0 {
+                            let y_scaling = 1.0 + (difference_y / bounds.height);
                             *last_position = cursor_position;
                             return (
                                 event::Status::Captured,
-                                Some(
-                                    Message::YScaling(
-                                        difference_y,
-                                        {
-                                            if let Some(cursor_to_center) = cursor.position_from(bounds.center()) {
-                                                cursor_to_center.y
-                                            } else {
-                                                0.0
-                                            }
-                                        },
-                                        false
-                                    )
-                                ),
+                                Some(Message::YScaling((y_scaling * 1000.0).round() / 1000.0, 0.0, false)),
                             );
                         }
                     }
                 }
-                mouse::Event::WheelScrolled { delta } => match delta {
-                    mouse::ScrollDelta::Lines { y, .. } | mouse::ScrollDelta::Pixels { y, .. } => {
+                mouse::Event::WheelScrolled { delta } => {
+                    if let mouse::ScrollDelta::Lines { y, .. } = delta {
+                        let y_scaling = 1.0 + y * 0.1;
                         return (
                             event::Status::Captured,
-                            Some(
-                                Message::YScaling(
-                                    y,
-                                    {
-                                        if let Some(cursor_to_center) = cursor.position_from(bounds.center()) {
-                                            cursor_to_center.y
-                                        } else {
-                                            0.0
-                                        }
-                                    },
-                                    true
-                                )
-                            ),
+                            Some(Message::YScaling((y_scaling * 1000.0).round() / 1000.0, 0.0, true)),
                         );
                     }
                 }
