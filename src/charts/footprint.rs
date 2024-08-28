@@ -198,9 +198,22 @@ impl FootprintChart {
         self.data_points = new_data_points;
 
         self.tick_size = new_tick_size;
+
+        self.chart.autoscale = true;
     }
 
     fn render_start(&mut self) {
+        if self.chart.autoscale {
+            if let Some((_, (_, kline))) = self.data_points.last_key_value() {
+                let y_low = self.price_to_y(kline.low);
+                let y_high = self.price_to_y(kline.high);
+
+                self.chart.translation.x = 0.0 + (2.0 * self.cell_width) / self.chart.scaling;
+
+                self.chart.translation.y = -(y_low + y_high) / 2.0;
+            }
+        }
+
         let chart_state = &mut self.chart;
 
         chart_state.y_labels_cache.clear();
@@ -280,10 +293,9 @@ impl FootprintChart {
 
                 chart_state.autoscale = !chart_state.autoscale;
 
-                if chart_state.autoscale {
-                    chart_state.scaling = 0.2;
-                    chart_state.translation.x = 0.0;
-                    
+                if chart_state.autoscale {     
+                    self.chart.scaling = 0.2;
+
                     self.cell_width = 180.0;
                     self.cell_height = 10.0;
                 }
@@ -645,6 +657,12 @@ impl canvas::Program<Message> for FootprintChart {
                         }
                     
                         if max_volume > 0.0 {
+                            frame.fill_rectangle(
+                                Point::new(x_position - (cell_width / 2.0), (region.y + region.height) - bounds.height / 8.0 ), 
+                                Size::new(cell_width, bounds.height / 8.0), 
+                                Color::from_rgba8(0, 0, 0, 0.9)
+                            );
+
                             if kline.volume.0 != -1.0 {
                                 let buy_bar_height = (kline.volume.0 / max_volume) * (bounds.height / 8.0);
                                 let sell_bar_height = (kline.volume.1 / max_volume) * (bounds.height / 8.0);

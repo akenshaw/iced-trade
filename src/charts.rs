@@ -69,7 +69,7 @@ impl Default for CommonChartData {
 
             translation: Vector::default(),
             scaling: 1.0,
-            autoscale: false,
+            autoscale: true,
 
             bounds: Rectangle::default(),
         }
