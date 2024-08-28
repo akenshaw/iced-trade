@@ -275,9 +275,6 @@ impl FootprintChart {
 
                 self.render_start();
             },
-            Message::ChartBounds(bounds) => {
-                self.chart.bounds = *bounds;
-            },
             Message::AutoscaleToggle => {
                 let chart_state = self.get_common_data_mut();
 
@@ -455,10 +452,6 @@ impl canvas::Program<Message> for FootprintChart {
         cursor: mouse::Cursor,
     ) -> (event::Status, Option<Message>) {       
         let chart_state = self.get_common_data();
-
-        if bounds != chart_state.bounds {
-            return (event::Status::Ignored, Some(Message::ChartBounds(bounds)));
-        } 
         
         if let Event::Mouse(mouse::Event::ButtonReleased(_)) = event {
             *interaction = Interaction::None;
@@ -649,6 +642,61 @@ impl canvas::Program<Message> for FootprintChart {
                                     Color::from_rgba8(192, 80, 77, 1.0)
                                 );
                             }
+                        }
+                    
+                        if max_volume > 0.0 {
+                            if kline.volume.0 != -1.0 {
+                                let buy_bar_height = (kline.volume.0 / max_volume) * (bounds.height / 8.0);
+                                let sell_bar_height = (kline.volume.1 / max_volume) * (bounds.height / 8.0);
+        
+                                let bar_width = (self.cell_width / 2.0) * 0.9;
+
+                                frame.fill_rectangle(
+                                    Point::new(x_position - bar_width, (region.y + region.height)  - sell_bar_height), 
+                                    Size::new(bar_width, sell_bar_height),
+                                    Color::from_rgb8(192, 80, 77)
+                                );
+        
+                                frame.fill_rectangle(
+                                    Point::new(x_position, (region.y + region.height) - buy_bar_height), 
+                                    Size::new(bar_width, buy_bar_height),
+                                    Color::from_rgb8(81, 205, 160)
+                                );
+        
+                            } else {
+                                let bar_height = (kline.volume.1 / max_volume) * (bounds.height/ 8.0);
+
+                                let bar_width = self.cell_width * 0.9;
+        
+                                let color = 
+                                    if kline.close >= kline.open { 
+                                        Color::from_rgba8(81, 205, 160, 0.8) 
+                                    } else { Color::from_rgba8(192, 80, 77, 0.8) 
+                                };
+        
+                                frame.fill_rectangle(
+                                    Point::new(x_position - (bar_width / 2.0), (region.y + region.height) - bar_height), 
+                                    Size::new(bar_width, bar_height),
+                                    color
+                                );
+                            }
+
+                            let text_size = 9.0 / chart.scaling;
+                            let text_content = format!("{max_volume:.2}");
+                            let text_width = (text_content.len() as f32 * text_size) / 1.5;
+
+                            let text_position = Point::new(
+                                (region.x + region.width) - text_width, 
+                                (region.y + region.height) - bounds.height / 8.0 - text_size
+                            );
+                            
+                            frame.fill_text(canvas::Text {
+                                content: text_content,
+                                position: text_position,
+                                size: iced::Pixels(text_size),
+                                color: Color::from_rgba8(121, 121, 121, 1.0),
+                                ..canvas::Text::default()
+                            });
                         }
                     }
                 }
