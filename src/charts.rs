@@ -255,6 +255,7 @@ pub struct AxisLabelXCanvas<'a> {
     min: i64,
     max: i64,
     timeframe: Option<u16>,
+    zoom_exists: bool,
 }
 impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
     type State = Interaction;
@@ -472,9 +473,19 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
     ) -> mouse::Interaction {
         match interaction {
             Interaction::Panning { .. } => mouse::Interaction::None,
-            Interaction::Zoomin { .. } => mouse::Interaction::ResizingHorizontally,
+            Interaction::Zoomin { .. } => {
+                if self.zoom_exists {
+                    mouse::Interaction::ResizingHorizontally
+                } else {
+                    mouse::Interaction::default()
+                }
+            }
             Interaction::None if cursor.is_over(bounds) => {
-                mouse::Interaction::ResizingHorizontally
+                if self.zoom_exists {
+                    mouse::Interaction::ResizingHorizontally
+                } else {
+                    mouse::Interaction::default()
+                }
             }
             Interaction::None => mouse::Interaction::default(),
         }
@@ -488,6 +499,7 @@ pub struct AxisLabelYCanvas<'a> {
     max: f32,
     crosshair_position: Point,
     crosshair: bool,
+    zoom_exists: bool,
 }
 impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
     type State = Interaction;
@@ -636,10 +648,20 @@ impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
         match interaction {
-            Interaction::Zoomin { .. } => mouse::Interaction::ResizingVertically,
+            Interaction::Zoomin { .. } => {
+                if self.zoom_exists {
+                    mouse::Interaction::ResizingHorizontally
+                } else {
+                    mouse::Interaction::default()
+                }
+            }
             Interaction::Panning { .. } => mouse::Interaction::None,
             Interaction::None if cursor.is_over(bounds) => {
-                mouse::Interaction::ResizingVertically
+                if self.zoom_exists {
+                    mouse::Interaction::ResizingVertically
+                } else {
+                    mouse::Interaction::default()
+                }
             }
             Interaction::None => mouse::Interaction::default(),
         }
@@ -721,7 +743,7 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
                                 event::Status::Captured,
                                 Some(
                                     Message::XScaling(
-                                        difference_x,
+                                        difference_x * 0.2,
                                         {
                                             if let Some(cursor_to_center) = cursor.position_from(bounds.center()) {
                                                 cursor_to_center.x
@@ -956,7 +978,7 @@ impl canvas::Program<Message> for AxisLabelsY<'_>{
                                 event::Status::Captured,
                                 Some(
                                     Message::YScaling(
-                                        difference_y,
+                                        difference_y * 0.4,
                                         {
                                             if let Some(cursor_to_center) = cursor.position_from(bounds.center()) {
                                                 cursor_to_center.y

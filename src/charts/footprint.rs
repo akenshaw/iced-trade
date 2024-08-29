@@ -315,14 +315,16 @@ impl FootprintChart {
                     chart.x_labels_cache.clear();
                 }
             },
-            Message::XScaling(delta, cursor_to_center_x, _is_wheel_scroll) => {
+            Message::XScaling(delta, cursor_to_center_x, is_wheel_scroll) => {
                 if *delta < 0.0 && self.cell_width > Self::MIN_CELL_WIDTH || *delta > 0.0 && self.cell_width < Self::MAX_CELL_WIDTH {
                     let (old_scaling, old_translation_x) = {
                         let chart_state = self.get_common_data();
                         (chart_state.scaling, chart_state.translation.x)
                     };
+
+                    let zoom_factor = if *is_wheel_scroll { 30.0 } else { 90.0 };
                     
-                    let new_width = (self.cell_width * (1.0 + delta / 30.0))
+                    let new_width = (self.cell_width * (1.0 + delta / zoom_factor))
                         .clamp(Self::MIN_CELL_WIDTH, Self::MAX_CELL_WIDTH);
                     
                     let cursor_chart_x = cursor_to_center_x / old_scaling - old_translation_x;
@@ -341,14 +343,16 @@ impl FootprintChart {
                     self.render_start();
                 }
             },
-            Message::YScaling(delta, cursor_to_center_y, _is_wheel_scroll) => {
+            Message::YScaling(delta, cursor_to_center_y, is_wheel_scroll) => {
                 if *delta < 0.0 && self.cell_height > Self::MIN_CELL_HEIGHT || *delta > 0.0 && self.cell_height < Self::MAX_CELL_HEIGHT {
                     let (old_scaling, old_translation_y) = {
                         let chart_state = self.get_common_data();
                         (chart_state.scaling, chart_state.translation.y)
                     };
+
+                    let zoom_factor = if *is_wheel_scroll { 30.0 } else { 90.0 };
                     
-                    let new_height = (self.cell_height * (1.0 + delta / 30.0))
+                    let new_height = (self.cell_height * (1.0 + delta / zoom_factor))
                         .clamp(Self::MIN_CELL_HEIGHT, Self::MAX_CELL_HEIGHT);
                     
                     let cursor_chart_y = cursor_to_center_y / old_scaling - old_translation_y;

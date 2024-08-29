@@ -172,7 +172,8 @@ impl CandlestickChart {
                 crosshair_cache: &chart_state.x_crosshair_cache, 
                 crosshair_position: chart_state.crosshair_position, 
                 crosshair: chart_state.crosshair,
-                timeframe: Some(self.timeframe)
+                timeframe: Some(self.timeframe),
+                zoom_exists: false
             })
             .width(Length::FillPortion(10))
             .height(Length::Fixed(26.0));
@@ -184,7 +185,8 @@ impl CandlestickChart {
                 min: chart_state.y_min_price,
                 max: chart_state.y_max_price,
                 crosshair_position: chart_state.crosshair_position, 
-                crosshair: chart_state.crosshair
+                crosshair: chart_state.crosshair,
+                zoom_exists: false
             })
             .width(Length::Fixed(60.0))
             .height(Length::FillPortion(10));
