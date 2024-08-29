@@ -600,72 +600,128 @@ impl canvas::Program<Message> for FootprintChart {
                         max_volume = max_volume.max(kline.volume.0.max(kline.volume.1));
                     }
 
-                    for (&timestamp, (trades, kline)) in self.data_points.range(earliest..=latest).rev() {
-                        let x_position = self.time_to_x(timestamp);
+                    let cell_area_unscaled = (cell_width * cell_height) * chart.scaling;
 
-                        let y_open = self.price_to_y(kline.open);
-                        let y_high = self.price_to_y(kline.high);
-                        let y_low = self.price_to_y(kline.low);
-                        let y_close = self.price_to_y(kline.close);
+                    let footprint_area = Rectangle {
+                        x: 0.0,
+                        y: 0.0,
+                        width: bounds.width,
+                        height: bounds.height * 0.9,
+                    };
 
-                        let candle_width = 0.2 * cell_width;
+                    frame.with_clip(footprint_area, |frame| {
+                        frame.translate(center);
+                        frame.scale(chart.scaling);
+                        frame.translate(chart.translation);
 
-                        let body_color = 
-                            if kline.close >= kline.open { 
-                                Color::from_rgba8(81, 205, 160, 0.8) 
-                            } else { Color::from_rgba8(192, 80, 77, 0.8) 
-                        };
-                        frame.fill_rectangle(
-                            Point::new(x_position - (candle_width / 4.0), y_open.min(y_close)), 
-                            Size::new(candle_width / 2.0, (y_open - y_close).abs()), 
-                            body_color
-                        );
+                        for (&timestamp, (trades, kline)) in self.data_points.range(earliest..=latest).rev() {
+                            let x_position = self.time_to_x(timestamp);
 
-                        let wick_color = 
-                            if kline.close >= kline.open { 
-                                Color::from_rgba8(81, 205, 160, 0.4) 
-                            } else { Color::from_rgba8(192, 80, 77, 0.6) 
-                        };
-                        frame.fill_rectangle(
-                            Point::new(x_position - 1.0, y_high),
-                            Size::new(2.0, (y_high - y_low).abs()),
-                            wick_color
-                        );
+                            let y_open = self.price_to_y(kline.open);
+                            let y_high = self.price_to_y(kline.high);
+                            let y_low = self.price_to_y(kline.low);
+                            let y_close = self.price_to_y(kline.close);
 
-                        for trade in trades {
-                            let price = (*trade.0 as f32) / (1.0 / self.tick_size);
-                            let y_position = self.price_to_y(price);
-        
-                            if trade.1.0 > 0.0 {
-                                let bar_width = (trade.1.0 / max_trade_qty) * (cell_width * 0.4);
-        
-                                frame.fill_rectangle(
-                                    Point::new(x_position + (candle_width / 3.0), y_position), 
-                                    Size::new(bar_width, cell_height) , 
-                                    Color::from_rgba8(81, 205, 160, 1.0)
-                                );
-                            } 
-                            if trade.1.1 > 0.0 {
-                                let bar_width = -(trade.1.1 / max_trade_qty) * ((cell_width * 0.4));
-        
-                                frame.fill_rectangle(
-                                    Point::new(x_position - (candle_width / 3.0), y_position), 
-                                    Size::new(bar_width, cell_height), 
-                                    Color::from_rgba8(192, 80, 77, 1.0)
-                                );
-                            }
-                        }
-                    
-                        if max_volume > 0.0 {
+                            let candle_width = 0.2 * cell_width;
+
+                            let body_color = 
+                                if kline.close >= kline.open { 
+                                    Color::from_rgba8(81, 205, 160, 0.8) 
+                                } else { Color::from_rgba8(192, 80, 77, 0.8) 
+                            };
                             frame.fill_rectangle(
-                                Point::new(x_position - (cell_width / 2.0), (region.y + region.height) - bounds.height / 8.0 ), 
-                                Size::new(cell_width, bounds.height / 8.0), 
-                                Color::from_rgba8(0, 0, 0, 0.9)
+                                Point::new(x_position - (candle_width / 4.0), y_open.min(y_close)), 
+                                Size::new(candle_width / 2.0, (y_open - y_close).abs()), 
+                                body_color
                             );
 
+                            let wick_color = 
+                                if kline.close >= kline.open { 
+                                    Color::from_rgba8(81, 205, 160, 0.4) 
+                                } else { Color::from_rgba8(192, 80, 77, 0.6) 
+                            };
+                            frame.fill_rectangle(
+                                Point::new(x_position - 1.0, y_high),
+                                Size::new(2.0, (y_high - y_low).abs()),
+                                wick_color
+                            );
+
+                            for trade in trades {
+                                let price = (*trade.0 as f32) / (1.0 / self.tick_size);
+                                let y_position = self.price_to_y(price);
+            
+                                if trade.1.0 > 0.0 {
+                                    let bar_width = (trade.1.0 / max_trade_qty) * (cell_width * 0.4);
+            
+                                    frame.fill_rectangle(
+                                        Point::new(x_position + (candle_width / 3.0), y_position), 
+                                        Size::new(bar_width, cell_height) , 
+                                        Color::from_rgba8(81, 205, 160, 1.0)
+                                    );
+
+                                    if cell_area_unscaled > 2000.0 {
+                                        let text_size = 10.0;
+                                        let text_content = format!("{:.2}", trade.1.0);
+
+                                        let text_position = Point::new(
+                                            x_position + (candle_width / 2.0), 
+                                            y_position
+                                        );
+                                        
+                                        frame.fill_text(canvas::Text {
+                                            content: text_content,
+                                            position: text_position,
+                                            size: iced::Pixels(text_size),
+                                            color: Color::WHITE,
+                                            ..canvas::Text::default()
+                                        });
+                                    }
+                                } 
+                                if trade.1.1 > 0.0 {
+                                    let bar_width = -(trade.1.1 / max_trade_qty) * ((cell_width * 0.4));
+            
+                                    frame.fill_rectangle(
+                                        Point::new(x_position - (candle_width / 3.0), y_position), 
+                                        Size::new(bar_width, cell_height), 
+                                        Color::from_rgba8(192, 80, 77, 1.0)
+                                    );
+
+                                    if cell_area_unscaled > 2000.0 {
+                                        let text_size = 10.0;
+                                        let text_content = format!("{:.2}", trade.1.1);
+                                        let text_width = (text_content.len() as f32 * text_size) / 1.5;
+
+                                        let text_position = Point::new(
+                                            x_position - (candle_width / 3.0) - text_width, 
+                                            y_position
+                                        );
+                                        
+                                        frame.fill_text(canvas::Text {
+                                            content: text_content,
+                                            position: text_position,
+                                            size: iced::Pixels(text_size),
+                                            color: Color::WHITE,
+                                            ..canvas::Text::default()
+                                        });
+                                    }
+                                }
+                            }
+                        };
+                    });
+
+                    frame.fill_rectangle(
+                        Point::new(region.x, (region.y + region.height) - (bounds.height / chart.scaling) * 0.1), 
+                        Size::new(region.width, 1.0 / chart.scaling), 
+                        Color::from_rgba8(121, 121, 121, 0.2)
+                    );
+                        
+                    for (&timestamp, (_, kline)) in self.data_points.range(earliest..=latest).rev() {
+                        let x_position = self.time_to_x(timestamp);
+                        
+                        if max_volume > 0.0 {
                             if kline.volume.0 != -1.0 {
-                                let buy_bar_height = (kline.volume.0 / max_volume) * (bounds.height / 8.0);
-                                let sell_bar_height = (kline.volume.1 / max_volume) * (bounds.height / 8.0);
+                                let buy_bar_height = (kline.volume.0 / max_volume) * (bounds.height / chart.scaling) * 0.1;
+                                let sell_bar_height = (kline.volume.1 / max_volume) * (bounds.height / chart.scaling) * 0.1;
         
                                 let bar_width = (self.cell_width / 2.0) * 0.9;
 
@@ -682,7 +738,7 @@ impl canvas::Program<Message> for FootprintChart {
                                 );
         
                             } else {
-                                let bar_height = (kline.volume.1 / max_volume) * (bounds.height/ 8.0);
+                                let bar_height = (kline.volume.1 / max_volume) * (bounds.height / chart.scaling) * 0.1;
 
                                 let bar_width = self.cell_width * 0.9;
         
@@ -705,7 +761,7 @@ impl canvas::Program<Message> for FootprintChart {
 
                             let text_position = Point::new(
                                 (region.x + region.width) - text_width, 
-                                (region.y + region.height) - bounds.height / 8.0 - text_size
+                                (region.y + region.height) - (bounds.height / chart.scaling) * 0.1 - text_size
                             );
                             
                             frame.fill_text(canvas::Text {
