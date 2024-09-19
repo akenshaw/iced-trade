@@ -647,6 +647,7 @@ mod string_to_f32 {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Debug, Clone)]
 struct FetchedKlines (
     u64,
@@ -655,12 +656,12 @@ struct FetchedKlines (
     #[serde(with = "string_to_f32")] f32,
     #[serde(with = "string_to_f32")] f32,
     #[serde(with = "string_to_f32")] f32,
-    (),
-    (),
-    (),
+    u64,
+    String,
+    u32,
     #[serde(with = "string_to_f32")] f32,
-    (),
-    (),
+    String,
+    String,
 );
 impl From<FetchedKlines> for Kline {
     fn from(fetched: FetchedKlines) -> Self {
