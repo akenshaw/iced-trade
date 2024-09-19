@@ -314,13 +314,8 @@ pub fn connect_market_stream(ticker: Ticker) -> impl Stream<Item = Event> {
 
             let selected_ticker = ticker;
 
-            let symbol_str = match selected_ticker {
-                Ticker::BTCUSDT => "BTCUSDT",
-                Ticker::ETHUSDT => "ETHUSDT",
-                Ticker::SOLUSDT => "SOLUSDT",
-                Ticker::LTCUSDT => "LTCUSDT",
-            };
-
+            let symbol_str = selected_ticker.get_string().to_uppercase();
+            
             let stream_1 = format!("publicTrade.{symbol_str}");
             let stream_2 = format!("orderbook.500.{symbol_str}");
 
@@ -464,12 +459,7 @@ pub fn connect_kline_stream(streams: Vec<(Ticker, Timeframe)>) -> impl Stream<It
             let mut state = State::Disconnected;    
 
             let stream_str = streams.iter().map(|(ticker, timeframe)| {
-                let symbol_str = match ticker {
-                    Ticker::BTCUSDT => "BTCUSDT",
-                    Ticker::ETHUSDT => "ETHUSDT",
-                    Ticker::SOLUSDT => "SOLUSDT",
-                    Ticker::LTCUSDT => "LTCUSDT",
-                };
+                let symbol_str = ticker.get_string().to_uppercase();
                 let timeframe_str = match timeframe {
                     Timeframe::M1 => "1",
                     Timeframe::M3 => "3",
@@ -573,13 +563,8 @@ struct ApiResult {
 }
 
 pub async fn fetch_klines(ticker: Ticker, timeframe: Timeframe) -> Result<Vec<Kline>> {
-    let symbol_str: &str = match ticker {
-        Ticker::BTCUSDT => "BTCUSDT",
-        Ticker::ETHUSDT => "ETHUSDT",
-        Ticker::SOLUSDT => "SOLUSDT",
-        Ticker::LTCUSDT => "LTCUSDT",
-    };
-    let timeframe_str: &str = match timeframe {
+    let symbol_str = ticker.get_string().to_uppercase();
+    let timeframe_str = match timeframe {
         Timeframe::M1 => "1",
         Timeframe::M3 => "3",
         Timeframe::M5 => "5",
@@ -631,12 +616,7 @@ pub async fn fetch_klines(ticker: Ticker, timeframe: Timeframe) -> Result<Vec<Kl
 }
 
 pub async fn fetch_ticksize(ticker: Ticker) -> Result<f32> {
-    let symbol_str = match ticker {
-        Ticker::BTCUSDT => "BTCUSDT",
-        Ticker::ETHUSDT => "ETHUSDT",
-        Ticker::SOLUSDT => "SOLUSDT",
-        Ticker::LTCUSDT => "LTCUSDT",
-    };
+    let symbol_str = ticker.get_string().to_uppercase();
 
     let url = format!("https://api.bybit.com/v5/market/instruments-info?category=linear&symbol={}", symbol_str);
 
