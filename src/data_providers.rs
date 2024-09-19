@@ -182,6 +182,20 @@ impl Ticker {
     pub const ALL: [Ticker; 4] = [Ticker::BTCUSDT, Ticker::ETHUSDT, Ticker::SOLUSDT, Ticker::LTCUSDT];
 }
 
+impl Ticker {
+    /// Returns the string representation of the ticker in lowercase
+    /// 
+    /// e.g. BTCUSDT -> "btcusdt"
+    pub fn get_string(&self) -> String {
+        match self {
+            Ticker::BTCUSDT => "btcusdt".to_string(),
+            Ticker::ETHUSDT => "ethusdt".to_string(),
+            Ticker::SOLUSDT => "solusdt".to_string(),
+            Ticker::LTCUSDT => "ltcusdt".to_string(),
+        }
+    }
+}
+
 impl std::fmt::Display for Timeframe {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -255,4 +269,16 @@ impl Default for UserWsState {
 pub enum MarketEvents {
     Binance(binance::market_data::Event),
     Bybit(bybit::market_data::Event),
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum StreamError {
+    #[error("FetchError: {0}")]
+    FetchError(#[from] reqwest::Error),
+    #[error("ParseError: {0}")]
+    ParseError(String),
+    #[error("StreamError: {0}")]
+    WebsocketError(String),
+    #[error("UnknownError: {0}")]
+    UnknownError(String),
 }
