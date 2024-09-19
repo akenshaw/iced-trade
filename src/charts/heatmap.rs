@@ -308,7 +308,7 @@ impl HeatmapChart {
                     chart.x_crosshair_cache.clear();
                 }
             },
-            Message::YScaling(delta, is_wheel_scroll) => {
+            Message::YScaling(delta, _, is_wheel_scroll) => {
                 if self.chart.autoscale {
                     self.chart.autoscale = false;
                 }
@@ -329,6 +329,7 @@ impl HeatmapChart {
                     }
                 }
             },
+            _ => {}
         }
     }
 
@@ -348,6 +349,7 @@ impl HeatmapChart {
                 crosshair_position: chart_state.crosshair_position, 
                 crosshair: chart_state.crosshair,
                 timeframe: None,
+                zoom_exists: false
             })
             .width(Length::FillPortion(10))
             .height(Length::Fixed(26.0));
@@ -360,6 +362,7 @@ impl HeatmapChart {
                 max: chart_state.y_max_price,
                 crosshair_position: chart_state.crosshair_position, 
                 crosshair: chart_state.crosshair,
+                zoom_exists: true
             })
             .width(Length::Fixed(60.0))
             .height(Length::FillPortion(10));

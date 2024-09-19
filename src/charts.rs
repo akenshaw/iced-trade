@@ -1,11 +1,10 @@
 use chrono::NaiveDateTime;
 use iced::{
-    widget::{canvas::Cache, button}, Border, Color, Point, Rectangle, Theme, Vector
+    widget::{button, canvas::Cache}, Border, Color, Point, Rectangle, Theme, Vector
 };
 use iced::{
     mouse, widget::canvas, widget::canvas::{event::{self, Event}, stroke::Stroke, Geometry, Path}, Renderer, Size
 };
-
 pub mod heatmap;
 pub mod footprint;
 pub mod candlestick;
@@ -19,7 +18,8 @@ pub enum Message {
     AutoscaleToggle,
     CrosshairToggle,
     CrosshairMoved(Point),
-    YScaling(f32, bool),
+    YScaling(f32, f32, bool),
+    XScaling(f32, f32, bool),
 }
 struct CommonChartData {
     main_cache: Cache,
@@ -93,6 +93,14 @@ impl Default for Interaction {
     fn default() -> Self {
         Self::None
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct Region {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
 }
 
 fn chart_button(theme: &Theme, _status: button::Status, is_active: bool) -> button::Style {
@@ -247,17 +255,91 @@ pub struct AxisLabelXCanvas<'a> {
     min: i64,
     max: i64,
     timeframe: Option<u16>,
+    zoom_exists: bool,
 }
 impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
     type State = Interaction;
 
     fn update(
         &self,
-        _interaction: &mut Interaction,
-        _event: Event,
-        _bounds: Rectangle,
-        _cursor: mouse::Cursor,
+        interaction: &mut Interaction,
+        event: Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
     ) -> (event::Status, Option<Message>) {
+        if let Event::Mouse(mouse::Event::ButtonReleased(_)) = event {
+            *interaction = Interaction::None;
+            return (event::Status::Ignored, None);
+        }
+    
+        let Some(cursor_position) = cursor.position_in(bounds) else {
+            return (event::Status::Ignored, None);
+        };
+    
+        if !cursor.is_over(bounds) {
+            return (event::Status::Ignored, None);
+        }
+    
+        match event {
+            Event::Mouse(mouse_event) => match mouse_event {
+                mouse::Event::ButtonPressed(button) => {
+                    if let mouse::Button::Left = button {
+                        *interaction = Interaction::Zoomin {
+                            last_position: cursor_position,
+                        };
+                        return (event::Status::Captured, None);
+                    }
+                }
+                mouse::Event::CursorMoved { .. } => {
+                    if let Interaction::Zoomin { ref mut last_position } = *interaction {
+                        let difference_x = last_position.x - cursor_position.x;
+    
+                        if difference_x.abs() > 1.0 {
+                            *last_position = cursor_position;
+                            return (
+                                event::Status::Captured,
+                                Some(
+                                    Message::XScaling(
+                                        difference_x,
+                                        {
+                                            if let Some(cursor_to_center) = cursor.position_from(bounds.center()) {
+                                                cursor_to_center.x
+                                            } else {
+                                                0.0
+                                            }
+                                        },
+                                        false
+                                    )
+                                ),
+                            );
+                        }
+                    }
+                }
+                mouse::Event::WheelScrolled { delta } => match delta {
+                    mouse::ScrollDelta::Lines { y, .. } | mouse::ScrollDelta::Pixels { y, .. } => {
+                        return (
+                            event::Status::Captured,
+                            Some(
+                                Message::XScaling(
+                                    y,
+                                    {
+                                        if let Some(cursor_to_center) = cursor.position_from(bounds.center()) {
+                                            cursor_to_center.x
+                                        } else {
+                                            0.0
+                                        }
+                                    },
+                                    true
+                                )
+                            ),
+                        );
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    
         (event::Status::Ignored, None)
     }
     
@@ -391,9 +473,19 @@ impl canvas::Program<Message> for AxisLabelXCanvas<'_> {
     ) -> mouse::Interaction {
         match interaction {
             Interaction::Panning { .. } => mouse::Interaction::None,
-            Interaction::Zoomin { .. } => mouse::Interaction::ResizingHorizontally,
+            Interaction::Zoomin { .. } => {
+                if self.zoom_exists {
+                    mouse::Interaction::ResizingHorizontally
+                } else {
+                    mouse::Interaction::default()
+                }
+            }
             Interaction::None if cursor.is_over(bounds) => {
-                mouse::Interaction::ResizingHorizontally
+                if self.zoom_exists {
+                    mouse::Interaction::ResizingHorizontally
+                } else {
+                    mouse::Interaction::default()
+                }
             }
             Interaction::None => mouse::Interaction::default(),
         }
@@ -407,6 +499,7 @@ pub struct AxisLabelYCanvas<'a> {
     max: f32,
     crosshair_position: Point,
     crosshair: bool,
+    zoom_exists: bool,
 }
 impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
     type State = Interaction;
@@ -450,7 +543,7 @@ impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
                             *last_position = cursor_position;
                             return (
                                 event::Status::Captured,
-                                Some(Message::YScaling((y_scaling * 1000.0).round() / 1000.0, false)),
+                                Some(Message::YScaling((y_scaling * 1000.0).round() / 1000.0, 0.0, false)),
                             );
                         }
                     }
@@ -460,7 +553,7 @@ impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
                         let y_scaling = 1.0 + y * 0.1;
                         return (
                             event::Status::Captured,
-                            Some(Message::YScaling((y_scaling * 1000.0).round() / 1000.0, true)),
+                            Some(Message::YScaling((y_scaling * 1000.0).round() / 1000.0, 0.0, true)),
                         );
                     }
                 }
@@ -546,6 +639,461 @@ impl canvas::Program<Message> for AxisLabelYCanvas<'_> {
         });
 
         vec![labels, crosshair]
+    }
+
+    fn mouse_interaction(
+        &self,
+        interaction: &Interaction,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> mouse::Interaction {
+        match interaction {
+            Interaction::Zoomin { .. } => {
+                if self.zoom_exists {
+                    mouse::Interaction::ResizingHorizontally
+                } else {
+                    mouse::Interaction::default()
+                }
+            }
+            Interaction::Panning { .. } => mouse::Interaction::None,
+            Interaction::None if cursor.is_over(bounds) => {
+                if self.zoom_exists {
+                    mouse::Interaction::ResizingVertically
+                } else {
+                    mouse::Interaction::default()
+                }
+            }
+            Interaction::None => mouse::Interaction::default(),
+        }
+    }
+}
+
+// X-AXIS LABELS
+pub struct AxisLabelsX<'a> {
+    labels_cache: &'a Cache,
+    crosshair_position: Point,
+    crosshair: bool,
+    min: i64,
+    max: i64,
+    scaling: f32,
+    translation_x: f32,
+    timeframe: u16,
+    cell_width: f32,
+}
+
+impl AxisLabelsX<'_> {
+    fn visible_region(&self, size: Size) -> Region {
+        let width = size.width / self.scaling;
+        let height = size.height / self.scaling;
+
+        Region {
+            x: -self.translation_x - width / 2.0,
+            y: 0.0,
+            width,
+            height,
+        }
+    }
+
+    fn x_to_time(&self, x: f32) -> i64 {
+        let time_per_cell = self.timeframe as i64 * 60 * 1000;    
+        self.max + ((x / self.cell_width) * time_per_cell as f32) as i64
+    }
+}
+
+impl canvas::Program<Message> for AxisLabelsX<'_> {
+    type State = Interaction;
+
+    fn update(
+        &self,
+        interaction: &mut Interaction,
+        event: Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> (event::Status, Option<Message>) {
+        if let Event::Mouse(mouse::Event::ButtonReleased(_)) = event {
+            *interaction = Interaction::None;
+            return (event::Status::Ignored, None);
+        }
+    
+        let Some(cursor_position) = cursor.position_in(bounds) else {
+            return (event::Status::Ignored, None);
+        };
+    
+        if !cursor.is_over(bounds) {
+            return (event::Status::Ignored, None);
+        }
+    
+        match event {
+            Event::Mouse(mouse_event) => match mouse_event {
+                mouse::Event::ButtonPressed(button) => {
+                    if let mouse::Button::Left = button {
+                        *interaction = Interaction::Zoomin {
+                            last_position: cursor_position,
+                        };
+                        return (event::Status::Captured, None);
+                    }
+                }
+                mouse::Event::CursorMoved { .. } => {
+                    if let Interaction::Zoomin { ref mut last_position } = *interaction {
+                        let difference_x = last_position.x - cursor_position.x;
+    
+                        if difference_x.abs() > 1.0 {
+                            *last_position = cursor_position;
+                            return (
+                                event::Status::Captured,
+                                Some(
+                                    Message::XScaling(
+                                        difference_x * 0.2,
+                                        {
+                                            if let Some(cursor_to_center) = cursor.position_from(bounds.center()) {
+                                                cursor_to_center.x
+                                            } else {
+                                                0.0
+                                            }
+                                        },
+                                        false
+                                    )
+                                ),
+                            );
+                        }
+                    }
+                }
+                mouse::Event::WheelScrolled { delta } => match delta {
+                    mouse::ScrollDelta::Lines { y, .. } | mouse::ScrollDelta::Pixels { y, .. } => {
+                        return (
+                            event::Status::Captured,
+                            Some(
+                                Message::XScaling(
+                                    y,
+                                    {
+                                        if let Some(cursor_to_center) = cursor.position_from(bounds.center()) {
+                                            cursor_to_center.x
+                                        } else {
+                                            0.0
+                                        }
+                                    },
+                                    true
+                                )
+                            ),
+                        );
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    
+        (event::Status::Ignored, None)
+    }
+    
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        if self.max == 0 {
+            return vec![];
+        }
+
+        let x_labels_can_fit = (bounds.width / 192.0) as i32;
+        
+        let labels = self.labels_cache.draw(renderer, bounds.size(), |frame| {
+            let region = self.visible_region(frame.size());
+
+            let earliest_in_millis = self.x_to_time(region.x);
+            let latest_in_millis = self.x_to_time(region.x + region.width);
+
+            let (time_step, rounded_earliest) = calculate_time_step(earliest_in_millis, latest_in_millis, x_labels_can_fit, Some(self.timeframe));
+
+            let mut time: i64 = rounded_earliest;
+
+            while time <= latest_in_millis {                    
+                let x_position = ((time - earliest_in_millis) as f64 / (latest_in_millis - earliest_in_millis) as f64) * bounds.width as f64;
+
+                if x_position.is_nan() {
+                    break;
+                }
+
+                if x_position >= 0.0 && x_position <= bounds.width as f64 {
+                    let text_size = 12.0;
+                    let time_as_datetime = NaiveDateTime::from_timestamp(time / 1000, 0);
+                    
+                    let time_format: &str = "%H:%M";
+
+                    let label = canvas::Text {
+                        content: time_as_datetime.format(time_format).to_string(),
+                        position: Point::new(x_position as f32 - (text_size*4.0/3.0), bounds.height - 20.0),
+                        size: iced::Pixels(text_size),
+                        color: Color::from_rgba8(200, 200, 200, 1.0),
+                        ..canvas::Text::default()
+                    };  
+
+                    label.draw_with(|path, color| {
+                        frame.fill(&path, color);
+                    });
+                }
+                
+                time += time_step;
+            }
+
+            if self.crosshair && self.crosshair_position.x > 0.0 {
+                let crosshair_ratio = self.crosshair_position.x as f64 / bounds.width as f64;
+                let crosshair_millis = earliest_in_millis as f64 + crosshair_ratio * (latest_in_millis - earliest_in_millis) as f64;
+        
+                let (snap_ratio, text_content) = {
+                    let crosshair_time = NaiveDateTime::from_timestamp((crosshair_millis / 1000.0) as i64, 0);
+                    let crosshair_timestamp = crosshair_time.timestamp();
+                    let rounded_timestamp = (crosshair_timestamp as f64 / (self.timeframe as f64 * 60.0)).round() as i64 * self.timeframe as i64 * 60;
+                    let rounded_time = NaiveDateTime::from_timestamp(rounded_timestamp, 0);
+        
+                    let snap_ratio = (rounded_timestamp as f64 * 1000.0 - earliest_in_millis as f64) / (latest_in_millis as f64 - earliest_in_millis as f64);
+                    (snap_ratio, rounded_time.format("%H:%M").to_string())
+                };
+        
+                let snap_x = snap_ratio * bounds.width as f64;
+
+                if snap_x.is_nan() {
+                    return;
+                }
+        
+                let text_size = 12.0;
+                let growth_amount = 6.0;
+                let (rectangle_position, text_position) = {
+                    (Point::new(snap_x as f32 - 14.0 - growth_amount, bounds.height - 20.0),
+                        Point::new(snap_x as f32 - 14.0, bounds.height - 20.0))
+                };
+        
+                let text_background = canvas::Path::rectangle(rectangle_position, Size::new(text_content.len() as f32 * text_size/2.0 + 2.0 * growth_amount + 1.0, text_size + text_size/2.0));
+                frame.fill(&text_background, Color::from_rgba8(200, 200, 200, 1.0));
+        
+                let crosshair_label = canvas::Text {
+                    content: text_content,
+                    position: text_position,
+                    size: iced::Pixels(text_size),
+                    color: Color::from_rgba8(0, 0, 0, 1.0),
+                    ..canvas::Text::default()
+                };
+        
+                crosshair_label.draw_with(|path, color| {
+                    frame.fill(&path, color);
+                });
+            }
+        });
+        
+        vec![labels]
+    }
+
+    fn mouse_interaction(
+        &self,
+        interaction: &Interaction,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> mouse::Interaction {
+        match interaction {
+            Interaction::Panning { .. } => mouse::Interaction::None,
+            Interaction::Zoomin { .. } => mouse::Interaction::ResizingHorizontally,
+            Interaction::None if cursor.is_over(bounds) => {
+                mouse::Interaction::ResizingHorizontally
+            }
+            Interaction::None => mouse::Interaction::default(),
+        }
+    }
+}
+
+// Y-AXIS LABELS
+#[derive(Debug, Clone, Copy)]
+pub struct AxisLabelsY<'a> {
+    labels_cache: &'a Cache,
+    translation_y: f32,
+    scaling: f32,
+    min: f32,
+    max: f32,
+    crosshair_position: Point,
+    crosshair: bool,
+    tick_size: f32,
+    cell_height: f32,
+}
+
+impl AxisLabelsY<'_> {
+    fn visible_region(&self, size: Size) -> Region {
+        let width = size.width / self.scaling;
+        let height = size.height / self.scaling;
+
+        Region {
+            x: 0.0,
+            y: -self.translation_y - height / 2.0,
+            width,
+            height,
+        }
+    }
+
+    fn y_to_price(&self, y: f32) -> f32 {
+        self.min - (y / self.cell_height) * self.tick_size
+    }
+}
+
+impl canvas::Program<Message> for AxisLabelsY<'_>{
+    type State = Interaction;
+
+    fn update(
+        &self,
+        interaction: &mut Interaction,
+        event: Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> (event::Status, Option<Message>) {
+        if let Event::Mouse(mouse::Event::ButtonReleased(_)) = event {
+            *interaction = Interaction::None;
+            return (event::Status::Ignored, None);
+        }
+    
+        let Some(cursor_position) = cursor.position_in(bounds) else {
+            return (event::Status::Ignored, None);
+        };
+    
+        if !cursor.is_over(bounds) {
+            return (event::Status::Ignored, None);
+        }
+    
+        match event {
+            Event::Mouse(mouse_event) => match mouse_event {
+                mouse::Event::ButtonPressed(button) => {
+                    if let mouse::Button::Left = button {
+                        *interaction = Interaction::Zoomin {
+                            last_position: cursor_position,
+                        };
+                        return (event::Status::Captured, None);
+                    }
+                }
+                mouse::Event::CursorMoved { .. } => {
+                    if let Interaction::Zoomin { ref mut last_position } = *interaction {
+                        let difference_y = last_position.y - cursor_position.y;
+    
+                        if difference_y.abs() > 1.0 {
+                            *last_position = cursor_position;
+                            return (
+                                event::Status::Captured,
+                                Some(
+                                    Message::YScaling(
+                                        difference_y * 0.4,
+                                        {
+                                            if let Some(cursor_to_center) = cursor.position_from(bounds.center()) {
+                                                cursor_to_center.y
+                                            } else {
+                                                0.0
+                                            }
+                                        },
+                                        false
+                                    )
+                                ),
+                            );
+                        }
+                    }
+                }
+                mouse::Event::WheelScrolled { delta } => match delta {
+                    mouse::ScrollDelta::Lines { y, .. } | mouse::ScrollDelta::Pixels { y, .. } => {
+                        return (
+                            event::Status::Captured,
+                            Some(
+                                Message::YScaling(
+                                    y,
+                                    {
+                                        if let Some(cursor_to_center) = cursor.position_from(bounds.center()) {
+                                            cursor_to_center.y
+                                        } else {
+                                            0.0
+                                        }
+                                    },
+                                    true
+                                )
+                            ),
+                        );
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    
+        (event::Status::Ignored, None)
+    }
+    
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        if self.max == 0.0 {
+            return vec![];
+        }
+
+        let y_labels_can_fit = (bounds.height / 32.0) as i32;
+
+        let labels = self.labels_cache.draw(renderer, bounds.size(), |frame| {
+            let region = self.visible_region(frame.size());
+
+            let highest = self.y_to_price(region.y);
+            let lowest = self.y_to_price(region.y + region.height);
+
+            let (step, rounded_lowest) = calculate_price_step(highest, lowest, y_labels_can_fit);
+            let y_range = highest - lowest;
+            
+            let mut y = rounded_lowest;
+
+            while y <= highest {
+                let y_position = bounds.height - ((y - lowest) / y_range * bounds.height);
+
+                let text_size = 12.0;
+                let decimal_places = if step < 0.5 { 2 } else { usize::from(step < 1.0) };
+                let label_content = format!("{y:.decimal_places$}");
+                let label = canvas::Text {
+                    content: label_content,
+                    position: Point::new(10.0, y_position - text_size / 2.0),
+                    size: iced::Pixels(text_size),
+                    color: Color::from_rgba8(200, 200, 200, 1.0),
+                    ..canvas::Text::default()
+                };  
+
+                label.draw_with(|path, color| {
+                    frame.fill(&path, color);
+                });
+
+                y += step;
+            }
+
+            if self.crosshair && self.crosshair_position.y > 0.0 {
+                let text_size = 12.0;
+                let decimal_places = if step < 1.0 { 2 } else { 1 };
+                let label_content = format!("{:.*}", decimal_places, lowest + (y_range * (bounds.height - self.crosshair_position.y) / bounds.height));
+                
+                let growth_amount = 3.0; 
+                let rectangle_position = Point::new(8.0 - growth_amount, self.crosshair_position.y - text_size / 2.0 - 3.0);
+                let text_position = Point::new(8.0, self.crosshair_position.y - text_size / 2.0 - 3.0);
+
+                let text_background = canvas::Path::rectangle(rectangle_position, Size::new(label_content.len() as f32 * text_size / 2.0 + 2.0 * growth_amount + 4.0, text_size + text_size / 1.8));
+                frame.fill(&text_background, Color::from_rgba8(200, 200, 200, 1.0));
+
+                let label = canvas::Text {
+                    content: label_content,
+                    position: text_position,
+                    size: iced::Pixels(text_size),
+                    color: Color::from_rgba8(0, 0, 0, 1.0),
+                    ..canvas::Text::default()
+                };
+
+                label.draw_with(|path, color| {
+                    frame.fill(&path, color);
+                });
+            }
+        });
+
+        vec![labels]
     }
 
     fn mouse_interaction(
