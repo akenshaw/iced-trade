@@ -38,6 +38,7 @@ uuid = { version = "1.10.0", features = ["v4"] }
 rustc-hash = "2.0.0"
 fern = "0.6.2"
 log = "0.4.22"
+thiserror = "1.0.63"
 [dependencies.async-tungstenite]
 version = "0.25"
 features = ["tokio-rustls-webpki-roots"]
